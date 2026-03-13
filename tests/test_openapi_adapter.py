@@ -8,9 +8,11 @@ from toolregistry_server.openapi import create_openapi_app
 from toolregistry_server.openapi.adapter import (
     _resolve_type,
     _schema_to_pydantic,
+    add_tools_endpoint,
     route_table_to_router,
     setup_dynamic_openapi,
 )
+from toolregistry_server.openapi.middleware import add_etag_middleware
 
 # ============== Fixtures ==============
 
@@ -302,3 +304,231 @@ class TestDynamicOpenAPI:
         response = client.get("/openapi.json")
         paths = response.json()["paths"]
         assert "/tools/default/greet" in paths
+
+
+# ============== Tools Endpoint Tests ==============
+
+
+class TestToolsEndpoint:
+    """Tests for the /tools endpoint."""
+
+    def test_tools_endpoint_returns_list(self, route_table: RouteTable):
+        """Test that /tools endpoint returns a list of tools."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app)
+
+        response = client.get("/tools")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "tools" in data
+        assert "etag" in data
+        assert isinstance(data["tools"], list)
+        assert len(data["tools"]) == 3  # greet, add, async_greet
+
+    def test_tools_endpoint_tool_structure(self, route_table: RouteTable):
+        """Test that each tool has the expected structure."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app)
+
+        response = client.get("/tools")
+        data = response.json()
+
+        for tool in data["tools"]:
+            assert "name" in tool
+            assert "namespace" in tool
+            assert "method" in tool
+            assert "path" in tool
+            assert "description" in tool
+
+    def test_tools_endpoint_etag_header(self, route_table: RouteTable):
+        """Test that /tools endpoint returns ETag header."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app)
+
+        response = client.get("/tools")
+        assert response.status_code == 200
+        assert "ETag" in response.headers
+
+        # ETag in header should match etag in body
+        data = response.json()
+        assert response.headers["ETag"] == data["etag"]
+
+    def test_tools_endpoint_conditional_request(self, route_table: RouteTable):
+        """Test that /tools endpoint supports If-None-Match."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app)
+
+        # First request to get ETag
+        response1 = client.get("/tools")
+        assert response1.status_code == 200
+        etag = response1.headers["ETag"]
+
+        # Second request with If-None-Match
+        response2 = client.get("/tools", headers={"If-None-Match": etag})
+        assert response2.status_code == 304
+
+    def test_tools_endpoint_etag_changes_on_disable(self, route_table: RouteTable):
+        """Test that ETag changes when a tool is disabled."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app)
+
+        # Get initial ETag
+        response1 = client.get("/tools")
+        etag1 = response1.headers["ETag"]
+
+        # Disable a tool
+        route_table.disable("add")
+
+        # Get new ETag
+        response2 = client.get("/tools")
+        etag2 = response2.headers["ETag"]
+
+        # ETags should be different
+        assert etag1 != etag2
+
+    def test_tools_endpoint_excludes_disabled(self, route_table: RouteTable):
+        """Test that /tools endpoint excludes disabled tools."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app)
+
+        # Initially all tools visible
+        response1 = client.get("/tools")
+        tools1 = response1.json()["tools"]
+        tool_names1 = {t["name"] for t in tools1}
+        assert "add" in tool_names1
+
+        # Disable a tool
+        route_table.disable("add")
+
+        # Tool should be excluded
+        response2 = client.get("/tools")
+        tools2 = response2.json()["tools"]
+        tool_names2 = {t["name"] for t in tools2}
+        assert "add" not in tool_names2
+
+
+# ============== ETag Middleware Tests ==============
+
+
+class TestETagMiddleware:
+    """Tests for ETag middleware."""
+
+    def test_etag_middleware_adds_header(self, route_table: RouteTable):
+        """Test that ETag middleware adds ETag header to responses."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table, enable_etag=True)
+        client = TestClient(app)
+
+        response = client.get("/tools")
+        assert "ETag" in response.headers
+
+    def test_etag_middleware_304_on_match(self, route_table: RouteTable):
+        """Test that middleware returns 304 when ETag matches."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table, enable_etag=True)
+        client = TestClient(app)
+
+        # Get ETag
+        response1 = client.get("/tools")
+        etag = response1.headers["ETag"]
+
+        # Request with matching If-None-Match
+        response2 = client.get("/tools", headers={"If-None-Match": etag})
+        assert response2.status_code == 304
+
+    def test_etag_middleware_200_on_mismatch(self, route_table: RouteTable):
+        """Test that middleware returns 200 when ETag doesn't match."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table, enable_etag=True)
+        client = TestClient(app)
+
+        # Request with non-matching If-None-Match
+        response = client.get("/tools", headers={"If-None-Match": '"invalid"'})
+        assert response.status_code == 200
+
+    def test_etag_middleware_disabled(self, route_table: RouteTable):
+        """Test that ETag middleware can be disabled."""
+        from fastapi.testclient import TestClient
+
+        # Create app without ETag middleware
+        app = create_openapi_app(route_table, enable_etag=False)
+        client = TestClient(app)
+
+        # /tools endpoint still adds ETag header (it's built into the endpoint)
+        response = client.get("/tools")
+        assert response.status_code == 200
+        # The endpoint itself adds ETag, but middleware doesn't intercept
+
+    def test_etag_middleware_only_on_get(self, route_table: RouteTable):
+        """Test that ETag middleware only applies to GET requests."""
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table, enable_etag=True)
+        client = TestClient(app)
+
+        # POST request should not be affected by ETag middleware
+        response = client.post(
+            "/tools/default/add",
+            json={"a": 1, "b": 2},
+            headers={"If-None-Match": route_table.etag},
+        )
+        # Should execute normally, not return 304
+        assert response.status_code == 200
+        assert response.json() == 3
+
+
+class TestAddToolsEndpoint:
+    """Tests for add_tools_endpoint function."""
+
+    def test_add_tools_endpoint_to_app(self, route_table: RouteTable):
+        """Test adding /tools endpoint to an existing app."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        add_tools_endpoint(app, route_table)
+
+        client = TestClient(app)
+        response = client.get("/tools")
+        assert response.status_code == 200
+        assert "tools" in response.json()
+
+
+class TestAddETagMiddleware:
+    """Tests for add_etag_middleware function."""
+
+    def test_add_etag_middleware_to_app(self, route_table: RouteTable):
+        """Test adding ETag middleware to an existing app."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        add_tools_endpoint(app, route_table)
+        add_etag_middleware(app, route_table)
+
+        client = TestClient(app)
+
+        # Get ETag
+        response1 = client.get("/tools")
+        etag = response1.headers.get("ETag")
+        assert etag is not None
+
+        # Conditional request
+        response2 = client.get("/tools", headers={"If-None-Match": etag})
+        assert response2.status_code == 304
