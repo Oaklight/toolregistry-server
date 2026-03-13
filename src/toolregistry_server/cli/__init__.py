@@ -21,11 +21,20 @@ Example:
 
     # With configuration file
     $ toolregistry-server openapi --config tools.jsonc
+
+    # With custom .env file
+    $ toolregistry-server openapi --env /path/to/.env
+
+    # Skip loading .env file
+    $ toolregistry-server openapi --no-env
 """
 
 import argparse
 import sys
+from pathlib import Path
 from typing import NoReturn
+
+from loguru import logger
 
 # Default ASCII art banner for ToolRegistry Server
 DEFAULT_BANNER_ART = """
@@ -33,6 +42,28 @@ DEFAULT_BANNER_ART = """
 ░░█░░█░█░█░█░█░░░█▀▄░█▀▀░█░█░░█░░▀▀█░░█░░█▀▄░░█░░▄▄▄░▀▀█░█▀▀░█▀▄░▀▄▀░█▀▀░█▀▄
 ░░▀░░▀▀▀░▀▀▀░▀▀▀░▀░▀░▀▀▀░▀▀▀░▀▀▀░▀▀▀░░▀░░▀░▀░░▀░░░░░░▀▀▀░▀▀▀░▀░▀░░▀░░▀▀▀░▀░▀
 """.strip()
+
+
+def load_env_file(env_path: str | None = None, no_env: bool = False) -> None:
+    """Load environment variables from .env file.
+
+    Args:
+        env_path: Path to .env file. If None, uses current directory's .env
+        no_env: If True, skip loading .env file
+    """
+    if no_env:
+        return
+
+    from dotenv import load_dotenv
+
+    path = Path(env_path) if env_path else Path.cwd() / ".env"
+
+    if path.exists():
+        load_dotenv(path)
+        logger.info(f"Loaded environment from {path}")
+    elif env_path:
+        # User explicitly specified a path but file doesn't exist
+        logger.warning(f"Environment file not found: {path}")
 
 
 def print_banner(
@@ -153,12 +184,32 @@ def create_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add common arguments shared by all subcommands.
+
+    Args:
+        parser: The ArgumentParser to add arguments to.
+    """
+    parser.add_argument(
+        "--env",
+        type=str,
+        default=None,
+        help="Path to .env file. Default: .env in current directory",
+    )
+    parser.add_argument(
+        "--no-env",
+        action="store_true",
+        help="Skip loading .env file",
+    )
+
+
 def _add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
     """Add OpenAPI-specific arguments to the parser.
 
     Args:
         parser: The ArgumentParser to add arguments to.
     """
+    _add_common_arguments(parser)
     parser.add_argument(
         "--host",
         type=str,
@@ -196,6 +247,7 @@ def _add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
     Args:
         parser: The ArgumentParser to add arguments to.
     """
+    _add_common_arguments(parser)
     parser.add_argument(
         "--transport",
         type=str,
@@ -247,6 +299,12 @@ def main(args: list[str] | None = None) -> NoReturn | None:
         parser.print_help()
         sys.exit(0)
 
+    # Load environment variables from .env file
+    load_env_file(
+        env_path=getattr(parsed, "env", None),
+        no_env=getattr(parsed, "no_env", False),
+    )
+
     # Print banner unless disabled
     if not parsed.no_banner:
         print_banner()
@@ -279,5 +337,6 @@ __all__ = [
     "main",
     "create_parser",
     "print_banner",
+    "load_env_file",
     "DEFAULT_BANNER_ART",
 ]
