@@ -147,6 +147,11 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
         enabled = tool_config.get("enabled", True)
         namespace = tool_config.get("namespace")
 
+        # Skip disabled tools entirely - don't register them
+        if not enabled:
+            logger.info(f"Skipping disabled tool: {class_name or module_path}")
+            continue
+
         # Support full class path in "class" field (e.g., "module.path.ClassName")
         if not module_path and class_name and "." in class_name:
             # Split the full class path into module and class name
@@ -180,12 +185,6 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
                         if callable(obj) and not isinstance(obj, type):
                             # register uses namespace parameter
                             registry.register(obj, namespace=namespace)
-
-            if not enabled:
-                # Disable tools from this module
-                for tool_name in list(registry._tools.keys()):
-                    if namespace and tool_name.startswith(f"{namespace}-"):
-                        registry.disable(tool_name, "Disabled in configuration")
 
             logger.info(f"Loaded tools from {module_path}")
         except Exception as e:

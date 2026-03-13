@@ -27,6 +27,80 @@ import argparse
 import sys
 from typing import NoReturn
 
+# Default ASCII art banner for ToolRegistry Server
+DEFAULT_BANNER_ART = """
+░▀█▀░█▀█░█▀█░█░░░█▀▄░█▀▀░█▀▀░▀█▀░█▀▀░▀█▀░█▀▄░█░█░░░░░█▀▀░█▀▀░█▀▄░█░█░█▀▀░█▀▄
+░░█░░█░█░█░█░█░░░█▀▄░█▀▀░█░█░░█░░▀▀█░░█░░█▀▄░░█░░▄▄▄░▀▀█░█▀▀░█▀▄░▀▄▀░█▀▀░█▀▄
+░░▀░░▀▀▀░▀▀▀░▀▀▀░▀░▀░▀▀▀░▀▀▀░▀▀▀░▀▀▀░░▀░░▀░▀░░▀░░░░░░▀▀▀░▀▀▀░▀░▀░░▀░░▀▀▀░▀░▀
+""".strip()
+
+
+def print_banner(
+    version: str | None = None,
+    banner_art: str | None = None,
+    extra_lines: list[str] | None = None,
+) -> None:
+    """Print the ToolRegistry Server banner with centered content and border.
+
+    This function can be used by downstream packages (e.g., toolregistry-hub)
+    to display a customized banner with their own version and art.
+
+    Args:
+        version: Version string to display. If None, uses toolregistry-server version.
+        banner_art: Custom ASCII art to display. If None, uses default banner.
+        extra_lines: Additional lines to display after the version (e.g., update info).
+    """
+    if version is None:
+        from toolregistry_server import __version__
+
+        version = __version__
+
+    if banner_art is None:
+        banner_art = DEFAULT_BANNER_ART
+
+    width = 80
+    border_char = "·"
+
+    # Split banner art into lines
+    art_lines = banner_art.split("\n")
+
+    # Build the banner
+    lines = []
+
+    # Top border
+    lines.append(border_char * width)
+
+    # Empty line
+    lines.append(f": {' ' * (width - 4)} :")
+
+    # Art lines - center each line
+    for line in art_lines:
+        centered = line.center(width - 4)
+        lines.append(f": {centered} :")
+
+    # Empty line
+    lines.append(f": {' ' * (width - 4)} :")
+
+    # Version information
+    version_line = f"Version {version}"
+    centered_version = version_line.center(width - 4)
+    lines.append(f": {centered_version} :")
+
+    # Extra lines (e.g., update available info)
+    if extra_lines:
+        for extra in extra_lines:
+            centered_extra = extra.center(width - 4)
+            lines.append(f": {centered_extra} :")
+
+    # Empty line
+    lines.append(f": {' ' * (width - 4)} :")
+
+    # Bottom border
+    lines.append(border_char * width)
+
+    # Print the banner
+    print("\n".join(lines))
+
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the argument parser for the CLI.
@@ -44,6 +118,12 @@ def create_parser() -> argparse.ArgumentParser:
         "-V",
         action="store_true",
         help="Show version and exit",
+    )
+
+    parser.add_argument(
+        "--no-banner",
+        action="store_true",
+        help="Disable the startup banner",
     )
 
     # Create subparsers for openapi and mcp commands
@@ -167,6 +247,10 @@ def main(args: list[str] | None = None) -> NoReturn | None:
         parser.print_help()
         sys.exit(0)
 
+    # Print banner unless disabled
+    if not parsed.no_banner:
+        print_banner()
+
     # Dispatch to appropriate command handler
     if parsed.command == "openapi":
         from .openapi import run_openapi_server
@@ -194,4 +278,6 @@ def main(args: list[str] | None = None) -> NoReturn | None:
 __all__ = [
     "main",
     "create_parser",
+    "print_banner",
+    "DEFAULT_BANNER_ART",
 ]
