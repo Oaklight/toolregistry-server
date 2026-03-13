@@ -129,6 +129,13 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
     tools = config.get("tools", [])
     for tool_config in tools:
         # Tool configuration format:
+        # Option 1 - Full class path:
+        # {
+        #     "class": "module.path.ClassName",
+        #     "enabled": true,       # optional, default true
+        #     "namespace": "ns"      # optional
+        # }
+        # Option 2 - Separate module and class:
         # {
         #     "module": "module.path",
         #     "class": "ClassName",  # optional
@@ -139,6 +146,13 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
         class_name = tool_config.get("class")
         enabled = tool_config.get("enabled", True)
         namespace = tool_config.get("namespace")
+
+        # Support full class path in "class" field (e.g., "module.path.ClassName")
+        if not module_path and class_name and "." in class_name:
+            # Split the full class path into module and class name
+            parts = class_name.rsplit(".", 1)
+            module_path = parts[0]
+            class_name = parts[1]
 
         if not module_path:
             logger.warning(f"Skipping tool config without module: {tool_config}")
@@ -153,13 +167,18 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
                 # Register a class
                 cls = getattr(module, class_name)
                 instance = cls()
-                registry.register_from_class(instance, namespace=namespace)
+                # register_from_class uses with_namespace parameter
+                # If namespace is provided, use it; otherwise use False (no namespace)
+                registry.register_from_class(
+                    instance, with_namespace=namespace if namespace else False
+                )
             else:
                 # Register all public functions from module
                 for name in dir(module):
                     if not name.startswith("_"):
                         obj = getattr(module, name)
                         if callable(obj) and not isinstance(obj, type):
+                            # register uses namespace parameter
                             registry.register(obj, namespace=namespace)
 
             if not enabled:

@@ -80,6 +80,8 @@ async def run_sse(
         import uvicorn
         from mcp.server.sse import SseServerTransport
         from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.responses import Response
         from starlette.routing import Mount, Route
     except ImportError as e:
         raise ImportError(
@@ -92,13 +94,19 @@ async def run_sse(
     # Create SSE transport
     sse = SseServerTransport(f"{path}/messages/")
 
-    async def handle_sse(scope, receive, send):
-        async with sse.connect_sse(scope, receive, send) as streams:
+    # SSE endpoint handler - must accept Request and return Response
+    # See MCP SDK documentation for the correct pattern
+    async def handle_sse(request: Request) -> Response:
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
             await server.run(
                 streams[0],
                 streams[1],
                 server.create_initialization_options(),
             )
+        # Return empty response to avoid NoneType error when client disconnects
+        return Response()
 
     # Create Starlette app
     routes = [
@@ -141,6 +149,7 @@ async def run_streamable_http(
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
         from starlette.applications import Starlette
         from starlette.routing import Route
+        from starlette.types import Receive, Scope, Send
     except ImportError as e:
         raise ImportError(
             "MCP SDK and Starlette are required for streamable HTTP transport. "
@@ -158,12 +167,22 @@ async def run_streamable_http(
         stateless=False,
     )
 
-    # Create ASGI handler
-    async def handle_mcp(scope, receive, send):
-        await session_manager.handle_request(scope, receive, send)
+    # Create ASGI application class for StreamableHTTP
+    # This is necessary because Starlette Route treats ASGI apps differently
+    # from regular endpoint functions - ASGI apps receive all HTTP methods
+    class StreamableHTTPASGIApp:
+        """ASGI application wrapper for StreamableHTTP session manager."""
+
+        def __init__(self, manager: StreamableHTTPSessionManager):
+            self.manager = manager
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            await self.manager.handle_request(scope, receive, send)
+
+    streamable_http_app = StreamableHTTPASGIApp(session_manager)
 
     # Create Starlette app with lifespan
-    routes = [Route(path, endpoint=handle_mcp)]
+    routes = [Route(path, endpoint=streamable_http_app)]
     app = Starlette(
         routes=routes,
         lifespan=lambda app: session_manager.run(),
