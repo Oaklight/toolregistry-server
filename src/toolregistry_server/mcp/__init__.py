@@ -5,17 +5,22 @@ This module provides functionality to expose ToolRegistry tools via
 the Model Context Protocol for LLM integration.
 
 Main Components:
-    - create_mcp_server: Create an MCP server from a RouteTable
-    - route_table_to_mcp_server: Convert a RouteTable to an MCP server
+    - route_table_to_mcp_server: Convert a RouteTable to an MCP low-level server
+    - create_mcp_server: Alias for route_table_to_mcp_server
+    - run_stdio: Run MCP server over stdio transport
+    - run_sse: Run MCP server over SSE transport
+    - run_streamable_http: Run MCP server over streamable HTTP transport
 
 Example:
+    >>> import asyncio
     >>> from toolregistry import ToolRegistry
     >>> from toolregistry_server import RouteTable
-    >>> from toolregistry_server.mcp import create_mcp_server
+    >>> from toolregistry_server.mcp import create_mcp_server, run_stdio
     >>>
     >>> registry = ToolRegistry()
     >>> route_table = RouteTable(registry)
     >>> server = create_mcp_server(route_table)
+    >>> asyncio.run(run_stdio(server))
 
 Note:
     This module requires the 'mcp' extra to be installed:
@@ -36,6 +41,8 @@ def create_mcp_server(
 ) -> "Server":
     """Create an MCP server from a RouteTable.
 
+    This is an alias for route_table_to_mcp_server() for convenience.
+
     Args:
         route_table: The RouteTable to expose.
         name: Server name for MCP identification.
@@ -46,6 +53,8 @@ def create_mcp_server(
     Raises:
         ImportError: If MCP SDK is not installed.
     """
+    from .adapter import route_table_to_mcp_server
+
     return route_table_to_mcp_server(route_table, name)
 
 
@@ -53,7 +62,11 @@ def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
 ) -> "Server":
-    """Create an MCP server from a RouteTable.
+    """Create an MCP low-level server from a RouteTable.
+
+    Registers list_tools and call_tool handlers that read directly
+    from the route table, ensuring enable/disable state is always
+    in sync (no drift).
 
     Args:
         route_table: The RouteTable to convert.
@@ -65,37 +78,73 @@ def route_table_to_mcp_server(
     Raises:
         ImportError: If MCP SDK is not installed.
     """
-    try:
-        from mcp.server.lowlevel import Server
-        from mcp.types import Tool as MCPTool
-    except ImportError as e:
-        raise ImportError(
-            "MCP SDK is required for MCP support. "
-            "Install with: pip install toolregistry-server[mcp]"
-        ) from e
+    from .adapter import route_table_to_mcp_server as _route_table_to_mcp_server
 
-    server = Server(name)
+    return _route_table_to_mcp_server(route_table, name)
 
-    @server.list_tools()
-    async def handle_list_tools() -> list[MCPTool]:
-        """List all available tools."""
-        return [
-            MCPTool(
-                name=route.tool_name,
-                description=route.description,
-                inputSchema=route.parameters_schema,
-            )
-            for route in route_table.list_routes(enabled_only=True)
-        ]
 
-    # TODO: Implement call_tool handler
-    # This is a skeleton implementation - full implementation will be
-    # migrated from toolregistry-hub's mcp_adapter.py
+async def run_stdio(server: "Server") -> None:
+    """Run an MCP server over stdio transport.
 
-    return server
+    This is the simplest transport, suitable for local tool execution
+    where the MCP client spawns the server as a subprocess.
+
+    Args:
+        server: The MCP Server instance to run.
+    """
+    from .server import run_stdio as _run_stdio
+
+    await _run_stdio(server)
+
+
+async def run_sse(
+    server: "Server",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    path: str = "/sse",
+) -> None:
+    """Run an MCP server over SSE (Server-Sent Events) transport.
+
+    This transport is suitable for web-based MCP clients that connect
+    via HTTP and receive events through SSE.
+
+    Args:
+        server: The MCP Server instance to run.
+        host: Host address to bind to.
+        port: Port number to bind to.
+        path: URL path for the SSE endpoint.
+    """
+    from .server import run_sse as _run_sse
+
+    await _run_sse(server, host, port, path)
+
+
+async def run_streamable_http(
+    server: "Server",
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    path: str = "/mcp",
+) -> None:
+    """Run an MCP server over streamable HTTP transport.
+
+    This is the recommended HTTP transport for production use,
+    supporting bidirectional streaming over HTTP.
+
+    Args:
+        server: The MCP Server instance to run.
+        host: Host address to bind to.
+        port: Port number to bind to.
+        path: URL path for the MCP endpoint.
+    """
+    from .server import run_streamable_http as _run_streamable_http
+
+    await _run_streamable_http(server, host, port, path)
 
 
 __all__ = [
     "create_mcp_server",
     "route_table_to_mcp_server",
+    "run_stdio",
+    "run_sse",
+    "run_streamable_http",
 ]
