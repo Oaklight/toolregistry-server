@@ -8,6 +8,8 @@ Main Components:
     - create_openapi_app: Create a FastAPI application from a RouteTable
     - route_table_to_router: Convert a RouteTable to a FastAPI router
     - setup_dynamic_openapi: Configure dynamic OpenAPI schema generation
+    - ETagMiddleware: Middleware for ETag-based cache validation
+    - add_tools_endpoint: Add /tools endpoint for listing available tools
 
 Example:
     >>> from toolregistry import ToolRegistry
@@ -39,6 +41,7 @@ def create_openapi_app(
     version: str = "1.0.0",
     description: str = "OpenAPI server for ToolRegistry tools",
     dependencies: "Sequence[Any] | None" = None,
+    enable_etag: bool = True,
 ) -> "FastAPI":
     """Create a FastAPI application from a RouteTable.
 
@@ -48,9 +51,15 @@ def create_openapi_app(
         version: API version for OpenAPI schema.
         description: API description for OpenAPI schema.
         dependencies: Optional list of global dependencies (e.g., authentication).
+        enable_etag: Whether to enable ETag middleware for cache validation.
+            Defaults to True.
 
     Returns:
-        A configured FastAPI application.
+        A configured FastAPI application with:
+        - Tool routes from the RouteTable
+        - /tools endpoint for listing available tools
+        - ETag middleware for cache validation (if enabled)
+        - Dynamic OpenAPI schema that filters disabled tools
 
     Raises:
         ImportError: If FastAPI is not installed.
@@ -63,7 +72,12 @@ def create_openapi_app(
             "Install with: pip install toolregistry-server[openapi]"
         ) from e
 
-    from .adapter import route_table_to_router, setup_dynamic_openapi
+    from .adapter import (
+        add_tools_endpoint,
+        route_table_to_router,
+        setup_dynamic_openapi,
+    )
+    from .middleware import add_etag_middleware
 
     # Create app with optional global dependencies
     if dependencies:
@@ -79,6 +93,13 @@ def create_openapi_app(
             version=version,
             description=description,
         )
+
+    # Add ETag middleware for cache validation
+    if enable_etag:
+        add_etag_middleware(app, route_table)
+
+    # Add /tools endpoint for listing available tools
+    add_tools_endpoint(app, route_table)
 
     # Add routes from route table
     router = route_table_to_router(route_table)

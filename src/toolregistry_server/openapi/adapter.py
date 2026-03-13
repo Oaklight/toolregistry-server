@@ -269,6 +269,80 @@ def route_table_to_router(
 
 
 # ---------------------------------------------------------------------------
+# Tools list endpoint
+# ---------------------------------------------------------------------------
+
+
+def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:  # noqa: F821
+    """Add a /tools endpoint that returns the list of available tools.
+
+    This endpoint supports ETag-based cache validation. The response includes
+    the current ETag in both the response body and headers.
+
+    Args:
+        app: The FastAPI application instance.
+        route_table: The RouteTable to query for tools.
+
+    Example:
+        >>> from fastapi import FastAPI
+        >>> from toolregistry_server import RouteTable
+        >>> from toolregistry_server.openapi.adapter import add_tools_endpoint
+        >>>
+        >>> app = FastAPI()
+        >>> route_table = RouteTable(registry)
+        >>> add_tools_endpoint(app, route_table)
+    """
+    try:
+        from fastapi import Request
+        from fastapi.responses import JSONResponse
+    except ImportError as e:
+        raise ImportError(
+            "FastAPI is required for OpenAPI support. "
+            "Install with: pip install toolregistry-server[openapi]"
+        ) from e
+
+    @app.get("/tools", tags=["meta"])
+    async def list_tools(request: Request) -> JSONResponse:
+        """List all available tools with their metadata.
+
+        Returns a JSON object containing:
+        - tools: List of tool information (name, namespace, method, path, description)
+        - etag: Current ETag for cache validation
+
+        Supports conditional requests via If-None-Match header.
+        Returns 304 Not Modified if the ETag matches.
+        """
+        # Check If-None-Match header
+        if_none_match = request.headers.get("If-None-Match")
+        current_etag = route_table.etag
+
+        if if_none_match and if_none_match == current_etag:
+            return JSONResponse(
+                content=None,
+                status_code=304,
+                headers={"ETag": current_etag},
+            )
+
+        # Build tools list
+        tools = []
+        for route in route_table.list_routes(enabled_only=True):
+            tools.append(
+                {
+                    "name": route.tool_name,
+                    "namespace": route.namespace,
+                    "method": route.method_name,
+                    "path": route.path,
+                    "description": route.description,
+                }
+            )
+
+        return JSONResponse(
+            content={"tools": tools, "etag": current_etag},
+            headers={"ETag": current_etag},
+        )
+
+
+# ---------------------------------------------------------------------------
 # Dynamic OpenAPI schema generation
 # ---------------------------------------------------------------------------
 
