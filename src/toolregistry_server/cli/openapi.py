@@ -108,8 +108,62 @@ def load_tokens(tokens_path: str | None) -> list[str]:
         sys.exit(1)
 
 
+def _ns_matches(tool_namespace: str, pattern: str) -> bool:
+    """Check if a tool namespace matches a config pattern.
+
+    Supports exact match and prefix match for hierarchical namespaces.
+    For example, pattern ``"web"`` matches ``"web/brave_search"``.
+
+    Args:
+        tool_namespace: The tool's namespace (e.g. ``"web/brave_search"``).
+        pattern: The config pattern (e.g. ``"web"`` or ``"web/brave_search"``).
+
+    Returns:
+        True if the namespace matches the pattern.
+    """
+    return tool_namespace == pattern or tool_namespace.startswith(pattern + "/")
+
+
+def _should_load_tool(
+    namespace: str | None,
+    mode: str,
+    disabled_namespaces: list[str],
+    enabled_namespaces: list[str],
+) -> bool:
+    """Determine if a tool should be loaded based on mode and namespace lists.
+
+    Args:
+        namespace: The tool's namespace, or None if not specified.
+        mode: Either "denylist" or "allowlist".
+        disabled_namespaces: List of namespaces to disable (denylist mode).
+        enabled_namespaces: List of namespaces to enable (allowlist mode).
+
+    Returns:
+        True if the tool should be loaded, False otherwise.
+    """
+    if namespace is None:
+        # Tools without namespace are always loaded
+        return True
+
+    if mode == "denylist":
+        # In denylist mode, load unless namespace is in disabled list
+        for pattern in disabled_namespaces:
+            if _ns_matches(namespace, pattern):
+                return False
+        return True
+    else:
+        # In allowlist mode, only load if namespace is in enabled list
+        return any(_ns_matches(namespace, pattern) for pattern in enabled_namespaces)
+
+
 def create_registry_from_config(config: dict | None) -> "ToolRegistry":
     """Create a ToolRegistry from configuration.
+
+    Supports two modes:
+    - **denylist** (default): Load all tools except those with namespaces
+      listed in the "disabled" array.
+    - **allowlist**: Only load tools with namespaces listed in the "enabled"
+      array.
 
     Args:
         config: Configuration dictionary, or None for empty registry.
@@ -125,8 +179,28 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
         logger.info("No configuration provided, starting with empty registry")
         return registry
 
+    # Parse mode and namespace lists
+    mode = config.get("mode", "denylist")
+    if mode not in ("denylist", "allowlist"):
+        logger.warning(f"Invalid mode '{mode}', defaulting to 'denylist'")
+        mode = "denylist"
+
+    disabled_namespaces = config.get("disabled", [])
+    enabled_namespaces = config.get("enabled", [])
+
+    if not isinstance(disabled_namespaces, list):
+        logger.warning("'disabled' must be a list, ignoring")
+        disabled_namespaces = []
+
+    if not isinstance(enabled_namespaces, list):
+        logger.warning("'enabled' must be a list, ignoring")
+        enabled_namespaces = []
+
     # Process tools from config
     tools = config.get("tools", [])
+    loaded_count = 0
+    skipped_count = 0
+
     for tool_config in tools:
         # Tool configuration format:
         # Option 1 - Full class path:
@@ -144,12 +218,22 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
         # }
         module_path = tool_config.get("module")
         class_name = tool_config.get("class")
-        enabled = tool_config.get("enabled", True)
+        per_tool_enabled = tool_config.get("enabled", True)
         namespace = tool_config.get("namespace")
 
-        # Skip disabled tools entirely - don't register them
-        if not enabled:
+        # Skip tools with enabled=false at the tool level
+        if not per_tool_enabled:
             logger.info(f"Skipping disabled tool: {class_name or module_path}")
+            skipped_count += 1
+            continue
+
+        # Check if namespace should be loaded based on mode
+        if not _should_load_tool(
+            namespace, mode, disabled_namespaces, enabled_namespaces
+        ):
+            reason = "in disabled list" if mode == "denylist" else "not in enabled list"
+            logger.info(f"Config {mode}: skipping namespace '{namespace}' ({reason})")
+            skipped_count += 1
             continue
 
         # Support full class path in "class" field (e.g., "module.path.ClassName")
@@ -187,8 +271,14 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
                             registry.register(obj, namespace=namespace)
 
             logger.info(f"Loaded tools from {module_path}")
+            loaded_count += 1
         except Exception as e:
             logger.warning(f"Failed to load tools from {module_path}: {e}")
+
+    logger.info(
+        f"Applied tool config (mode={mode}): "
+        f"loaded {loaded_count}, skipped {skipped_count}"
+    )
 
     return registry
 
