@@ -35,6 +35,8 @@ toolregistry-server (server library)
 toolregistry-hub (tool collection + server config)
 ```
 
+See the [Ecosystem](ecosystem.md) page for a detailed overview of all packages.
+
 ## Quick Start
 
 ```bash

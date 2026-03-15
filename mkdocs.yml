@@ -80,6 +80,7 @@ nav:
       - OpenAPI: api/openapi.md
       - MCP: api/mcp.md
       - Authentication: api/auth.md
+  - Ecosystem: ecosystem.md
   - Changelog: changelog.md
   - ToolRegistry: https://toolregistry.readthedocs.io/
   - Hub Tools: https://toolregistry-hub.readthedocs.io/
