@@ -73,24 +73,18 @@ app = create_openapi_app(route_table)
 
 ## Architecture
 
-```
-                  ┌─────────────────┐
-                  │  ToolRegistry   │
-                  │ tool definitions│
-                  └────────┬────────┘
-                           │
-              ┌────────────▼─────────────┐
-              │   RouteTable             │
-              │   central routing layer  │
-              │                          │
-              │  [RE] [RE] [RE] [...]    │
-              └──┬─────────┬──────────┬──┘
-                 │         │          ╎
-       ┌─────────▼──┐  ┌──▼─────┐  ┌─▼──────┐
-       │  OpenAPI   │  │  MCP   │  │  gRPC  │
-       │  Adapter   │  │ Adapter│  │ Adapter│
-       │ FastAPI·REST│  │MCP SDK │  │ future │
-       └────────────┘  └────────┘  └────────┘
+```mermaid
+graph TD
+    TR[ToolRegistry<br/>tool definitions]
+    RT[RouteTable<br/>central routing layer<br/><i>RouteEntry · RouteEntry · ...</i>]
+    OA[OpenAPI Adapter<br/>FastAPI · REST]
+    MA[MCP Adapter<br/>MCP SDK · LLM integration]
+    GA[gRPC Adapter<br/>future]
+
+    TR --> RT
+    RT --> OA
+    RT --> MA
+    RT -.-> GA
 ```
 
 ## Documentation Contents
