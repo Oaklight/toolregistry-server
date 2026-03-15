@@ -12,13 +12,15 @@ Main Components:
     - cli: Command-line interface
 
 Example:
-    >>> from toolregistry import ToolRegistry
-    >>> from toolregistry_server import RouteTable
-    >>>
-    >>> registry = ToolRegistry()
-    >>> route_table = RouteTable(registry)
-    >>> for route in route_table.list_routes():
-    ...     print(route.path)
+    ```python
+    from toolregistry import ToolRegistry
+    from toolregistry_server import RouteTable
+
+    registry = ToolRegistry()
+    route_table = RouteTable(registry)
+    for route in route_table.list_routes():
+        print(route.path)
+    ```
 """
 
 __version__ = "0.1.0"

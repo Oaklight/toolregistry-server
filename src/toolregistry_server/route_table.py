@@ -62,18 +62,21 @@ class RouteTable:
     - ETag generation for cache validation
 
     Example:
-        >>> from toolregistry import ToolRegistry
-        >>> from toolregistry_server import RouteTable
-        >>>
-        >>> registry = ToolRegistry()
-        >>> @registry.register
-        ... def greet(name: str) -> str:
-        ...     return f"Hello, {name}!"
-        >>>
-        >>> route_table = RouteTable(registry)
-        >>> routes = route_table.list_routes()
-        >>> print(routes[0].path)
-        /tools/default/greet
+        ```python
+        from toolregistry import ToolRegistry
+        from toolregistry_server import RouteTable
+
+        registry = ToolRegistry()
+
+        @registry.register
+        def greet(name: str) -> str:
+            return f"Hello, {name}!"
+
+        route_table = RouteTable(registry)
+        routes = route_table.list_routes()
+        print(routes[0].path)
+        # /tools/default/greet
+        ```
     """
 
     _registry: ToolRegistry

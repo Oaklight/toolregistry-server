@@ -284,13 +284,15 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:  # noqa
         route_table: The RouteTable to query for tools.
 
     Example:
-        >>> from fastapi import FastAPI
-        >>> from toolregistry_server import RouteTable
-        >>> from toolregistry_server.openapi.adapter import add_tools_endpoint
-        >>>
-        >>> app = FastAPI()
-        >>> route_table = RouteTable(registry)
-        >>> add_tools_endpoint(app, route_table)
+        ```python
+        from fastapi import FastAPI
+        from toolregistry_server import RouteTable
+        from toolregistry_server.openapi.adapter import add_tools_endpoint
+
+        app = FastAPI()
+        route_table = RouteTable(registry)
+        add_tools_endpoint(app, route_table)
+        ```
     """
     try:
         from fastapi import Request

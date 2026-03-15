@@ -12,15 +12,17 @@ Main Components:
     - run_streamable_http: Run MCP server over streamable HTTP transport
 
 Example:
-    >>> import asyncio
-    >>> from toolregistry import ToolRegistry
-    >>> from toolregistry_server import RouteTable
-    >>> from toolregistry_server.mcp import create_mcp_server, run_stdio
-    >>>
-    >>> registry = ToolRegistry()
-    >>> route_table = RouteTable(registry)
-    >>> server = create_mcp_server(route_table)
-    >>> asyncio.run(run_stdio(server))
+    ```python
+    import asyncio
+    from toolregistry import ToolRegistry
+    from toolregistry_server import RouteTable
+    from toolregistry_server.mcp import create_mcp_server, run_stdio
+
+    registry = ToolRegistry()
+    route_table = RouteTable(registry)
+    server = create_mcp_server(route_table)
+    asyncio.run(run_stdio(server))
+    ```
 
 Note:
     This module requires the 'mcp' extra to be installed:

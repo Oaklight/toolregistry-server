@@ -9,14 +9,16 @@ The server should be created using route_table_to_mcp_server() from adapter.py,
 then run using the functions in this module.
 
 Example:
-    >>> from toolregistry import ToolRegistry
-    >>> from toolregistry_server import RouteTable
-    >>> from toolregistry_server.mcp import route_table_to_mcp_server, run_stdio
-    >>>
-    >>> registry = ToolRegistry()
-    >>> route_table = RouteTable(registry)
-    >>> server = route_table_to_mcp_server(route_table)
-    >>> asyncio.run(run_stdio(server))
+    ```python
+    from toolregistry import ToolRegistry
+    from toolregistry_server import RouteTable
+    from toolregistry_server.mcp import route_table_to_mcp_server, run_stdio
+
+    registry = ToolRegistry()
+    route_table = RouteTable(registry)
+    server = route_table_to_mcp_server(route_table)
+    asyncio.run(run_stdio(server))
+    ```
 """
 
 import asyncio

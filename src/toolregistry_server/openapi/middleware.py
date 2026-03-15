@@ -24,13 +24,15 @@ class ETagMiddleware:
     execution endpoints.
 
     Example:
-        >>> from fastapi import FastAPI
-        >>> from toolregistry_server import RouteTable
-        >>> from toolregistry_server.openapi.middleware import ETagMiddleware
-        >>>
-        >>> app = FastAPI()
-        >>> route_table = RouteTable(registry)
-        >>> app.add_middleware(ETagMiddleware, route_table=route_table)
+        ```python
+        from fastapi import FastAPI
+        from toolregistry_server import RouteTable
+        from toolregistry_server.openapi.middleware import ETagMiddleware
+
+        app = FastAPI()
+        route_table = RouteTable(registry)
+        app.add_middleware(ETagMiddleware, route_table=route_table)
+        ```
 
     Attributes:
         app: The ASGI application to wrap.
@@ -121,13 +123,15 @@ def add_etag_middleware(app: "FastAPI", route_table: "RouteTable") -> None:  # n
         route_table: The RouteTable instance for ETag generation.
 
     Example:
-        >>> from fastapi import FastAPI
-        >>> from toolregistry_server import RouteTable
-        >>> from toolregistry_server.openapi.middleware import add_etag_middleware
-        >>>
-        >>> app = FastAPI()
-        >>> route_table = RouteTable(registry)
-        >>> add_etag_middleware(app, route_table)
+        ```python
+        from fastapi import FastAPI
+        from toolregistry_server import RouteTable
+        from toolregistry_server.openapi.middleware import add_etag_middleware
+
+        app = FastAPI()
+        route_table = RouteTable(registry)
+        add_etag_middleware(app, route_table)
+        ```
     """
     app.add_middleware(ETagMiddleware, route_table=route_table)
 

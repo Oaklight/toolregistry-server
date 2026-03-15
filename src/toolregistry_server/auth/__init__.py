@@ -10,11 +10,13 @@ Main Components:
     - create_bearer_dependency: Create a FastAPI dependency for Bearer auth
 
 Example:
-    >>> from toolregistry_server.auth import BearerTokenAuth, create_bearer_dependency
-    >>>
-    >>> auth = BearerTokenAuth(tokens=["secret-token"])
-    >>> # Use with FastAPI dependency injection
-    >>> dependency = create_bearer_dependency(auth)
+    ```python
+    from toolregistry_server.auth import BearerTokenAuth, create_bearer_dependency
+
+    auth = BearerTokenAuth(tokens=["secret-token"])
+    # Use with FastAPI dependency injection
+    dependency = create_bearer_dependency(auth)
+    ```
 """
 
 from typing import TYPE_CHECKING
@@ -34,11 +36,11 @@ class BearerTokenAuth:
         tokens: Set of valid tokens.
 
     Example:
-        >>> auth = BearerTokenAuth(tokens=["token1", "token2"])
-        >>> auth.verify("token1")
-        True
-        >>> auth.verify("invalid")
-        False
+        ```python
+        auth = BearerTokenAuth(tokens=["token1", "token2"])
+        auth.verify("token1")   # True
+        auth.verify("invalid")  # False
+        ```
     """
 
     def __init__(self, tokens: "Sequence[str] | None" = None) -> None:
@@ -131,13 +133,15 @@ def create_bearer_dependency(auth: BearerTokenAuth) -> "Callable[..., Any]":
         ImportError: If FastAPI is not installed.
 
     Example:
-        >>> from fastapi import FastAPI, Depends
-        >>> from toolregistry_server.auth import BearerTokenAuth, create_bearer_dependency
-        >>>
-        >>> auth = BearerTokenAuth(tokens=["secret-token"])
-        >>> dependency = create_bearer_dependency(auth)
-        >>>
-        >>> app = FastAPI(dependencies=[Depends(dependency)])
+        ```python
+        from fastapi import FastAPI, Depends
+        from toolregistry_server.auth import BearerTokenAuth, create_bearer_dependency
+
+        auth = BearerTokenAuth(tokens=["secret-token"])
+        dependency = create_bearer_dependency(auth)
+
+        app = FastAPI(dependencies=[Depends(dependency)])
+        ```
     """
     try:
         from typing import Annotated

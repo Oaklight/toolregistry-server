@@ -12,13 +12,15 @@ Main Components:
     - add_tools_endpoint: Add /tools endpoint for listing available tools
 
 Example:
-    >>> from toolregistry import ToolRegistry
-    >>> from toolregistry_server import RouteTable
-    >>> from toolregistry_server.openapi import create_openapi_app
-    >>>
-    >>> registry = ToolRegistry()
-    >>> route_table = RouteTable(registry)
-    >>> app = create_openapi_app(route_table)
+    ```python
+    from toolregistry import ToolRegistry
+    from toolregistry_server import RouteTable
+    from toolregistry_server.openapi import create_openapi_app
+
+    registry = ToolRegistry()
+    route_table = RouteTable(registry)
+    app = create_openapi_app(route_table)
+    ```
 
 Note:
     This module requires the 'openapi' extra to be installed:
