@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "toolregistry-server"
 dynamic = ["version"]
-description = "Server library for ToolRegistry - OpenAPI and MCP protocol adapters"
+description = "Define custom tools and serve them via OpenAPI or MCP interfaces"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

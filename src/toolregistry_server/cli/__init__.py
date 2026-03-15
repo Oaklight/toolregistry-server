@@ -141,7 +141,7 @@ def create_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="toolregistry-server",
-        description="ToolRegistry Server - Expose tools via OpenAPI or MCP",
+        description="Define custom tools and serve them via OpenAPI or MCP interfaces",
     )
 
     parser.add_argument(

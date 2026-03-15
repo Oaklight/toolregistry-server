@@ -4,11 +4,11 @@
 [![Python Version](https://img.shields.io/pypi/pyversions/toolregistry-server.svg)](https://pypi.org/project/toolregistry-server/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Server library for [ToolRegistry](https://github.com/Oaklight/ToolRegistry) - providing OpenAPI and MCP protocol adapters for exposing tools as services.
+Define custom tools and serve them via OpenAPI or MCP interfaces. Built on [ToolRegistry](https://github.com/Oaklight/ToolRegistry).
 
 ## Overview
 
-`toolregistry-server` is the server component of the ToolRegistry ecosystem. It provides:
+`toolregistry-server` lets you register Python functions as tools and expose them as services through multiple protocols. It provides:
 
 - **Central Route Table**: A unified routing layer that bridges `ToolRegistry` and protocol adapters
 - **OpenAPI Adapter**: Expose tools as RESTful HTTP endpoints with automatic OpenAPI schema generation
@@ -23,13 +23,13 @@ The ToolRegistry ecosystem consists of three packages:
 | Package | Description | Repository |
 |---------|-------------|------------|
 | [`toolregistry`](https://pypi.org/project/toolregistry/) | Core library - Tool model, ToolRegistry, client integration | [Oaklight/ToolRegistry](https://github.com/Oaklight/ToolRegistry) |
-| [`toolregistry-server`](https://pypi.org/project/toolregistry-server/) | Server library - Route table, protocol adapters | [Oaklight/toolregistry-server](https://github.com/Oaklight/toolregistry-server) |
+| [`toolregistry-server`](https://pypi.org/project/toolregistry-server/) | Tool server - define tools and serve via OpenAPI/MCP | [Oaklight/toolregistry-server](https://github.com/Oaklight/toolregistry-server) |
 | [`toolregistry-hub`](https://pypi.org/project/toolregistry-hub/) | Tool collection - Built-in tools, default server configuration | [Oaklight/toolregistry-hub](https://github.com/Oaklight/toolregistry-hub) |
 
 ```
 toolregistry (core)
        ↓
-toolregistry-server (server library)
+toolregistry-server (tool server)
        ↓
 toolregistry-hub (tool collection + server config)
 ```

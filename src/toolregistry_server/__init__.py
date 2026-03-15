@@ -1,8 +1,8 @@
 """
-toolregistry-server: Server library for ToolRegistry.
+toolregistry-server: Define custom tools and serve them via OpenAPI or MCP.
 
-This package provides protocol adapters for exposing ToolRegistry tools
-as services via OpenAPI (REST) and MCP (Model Context Protocol).
+This package lets you register Python functions as tools and expose them
+as services via OpenAPI (REST) and MCP (Model Context Protocol) interfaces.
 
 Main Components:
     - RouteTable: Central routing layer that bridges ToolRegistry and protocol adapters
