@@ -35,6 +35,8 @@ toolregistry-server (服务器库)
 toolregistry-hub (工具集合 + 服务器配置)
 ```
 
+详情请参阅[生态系统](ecosystem.md)页面，了解所有包的详细概览。
+
 ## 快速开始
 
 ```bash
