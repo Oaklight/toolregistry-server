@@ -1,0 +1,22 @@
+{
+  // Example configuration for toolregistry-server CLI.
+  //
+  // Usage (from project root):
+  //   PYTHONPATH=. toolregistry-server openapi --config examples/config.jsonc
+  //   PYTHONPATH=. toolregistry-server mcp --config examples/config.jsonc
+
+  // "denylist" (default) loads all tools except those in "disabled".
+  // "allowlist" loads only tools with namespaces in "enabled".
+  "mode": "denylist",
+
+  // Namespaces to exclude in denylist mode.
+  "disabled": [],
+
+  "tools": [
+    {
+      // Register all public functions from examples/tools.py
+      "module": "examples.tools",
+      "namespace": "examples"
+    }
+  ]
+}
