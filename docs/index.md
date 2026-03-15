@@ -73,24 +73,18 @@ app = create_openapi_app(route_table)
 
 ## 架构
 
-```
-                  ┌─────────────────┐
-                  │  ToolRegistry   │
-                  │    工具定义      │
-                  └────────┬────────┘
-                           │
-              ┌────────────▼─────────────┐
-              │   RouteTable             │
-              │      中央路由层           │
-              │                          │
-              │  [RE] [RE] [RE] [...]    │
-              └──┬─────────┬──────────┬──┘
-                 │         │          ╎
-       ┌─────────▼──┐  ┌──▼─────┐  ┌─▼──────┐
-       │  OpenAPI   │  │  MCP   │  │  gRPC  │
-       │   适配器    │  │ 适配器  │  │ 适配器  │
-       │ FastAPI·REST│  │MCP SDK │  │ 计划中  │
-       └────────────┘  └────────┘  └────────┘
+```mermaid
+graph TD
+    TR[ToolRegistry<br/>工具定义]
+    RT[RouteTable<br/>中央路由层<br/><i>RouteEntry · RouteEntry · ...</i>]
+    OA[OpenAPI 适配器<br/>FastAPI · REST]
+    MA[MCP 适配器<br/>MCP SDK · LLM 集成]
+    GA[gRPC 适配器<br/>计划中]
+
+    TR --> RT
+    RT --> OA
+    RT --> MA
+    RT -.-> GA
 ```
 
 ## 文档内容
