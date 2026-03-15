@@ -1,0 +1,124 @@
+site_name: ToolRegistry Server
+site_description: ToolRegistry 的服务器库 - 提供 OpenAPI 和 MCP 协议适配器，将工具暴露为服务
+site_author: Peng Ding
+site_url: https://toolregistry-server.readthedocs.io/
+
+repo_name: Oaklight/toolregistry-server
+repo_url: https://github.com/Oaklight/toolregistry-server
+
+# Documentation directory
+docs_dir: docs
+
+# Theme configuration
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.highlight
+    - search.share
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+  language: zh
+
+# Extra configuration
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Oaklight/toolregistry-server
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/toolregistry-server/
+  alternate:
+    - name: English
+      link: /en/
+      lang: en
+    - name: 中文
+      link: /zh-cn/
+      lang: zh
+
+# Navigation structure
+nav:
+  - 首页: index.md
+  - 使用指南:
+      - 安装: usage/installation.md
+      - 快速开始: usage/quickstart.md
+      - 配置: usage/configuration.md
+      - 认证: usage/authentication.md
+  - 适配器:
+      - adapters/index.md
+      - OpenAPI 适配器: adapters/openapi.md
+      - MCP 适配器: adapters/mcp.md
+  - 命令行工具:
+      - cli/index.md
+  - API 参考:
+      - api/index.md
+      - 核心:
+          - RouteTable: api/core/route_table.md
+      - OpenAPI: api/openapi.md
+      - MCP: api/mcp.md
+      - 认证: api/auth.md
+  - 更新日志: changelog.md
+  - ToolRegistry: https://toolregistry.readthedocs.io/
+  - Hub 工具集: https://toolregistry-hub.readthedocs.io/
+
+# Extensions
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+# Plugins
+plugins:
+  - search:
+      lang: en
+      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_toc_entry: false
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+
+# Copyright
+copyright: Copyright &copy; 2025 ToolRegistry Server
