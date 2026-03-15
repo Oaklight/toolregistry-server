@@ -73,36 +73,24 @@ app = create_openapi_app(route_table)
 
 ## Architecture
 
-```mermaid
-graph TD
-    TR(["🔧 ToolRegistry<br/><small>tool definitions</small>"])
-
-    subgraph RT ["📋 RouteTable · central routing layer"]
-        direction LR
-        RE1([RouteEntry])
-        RE2([RouteEntry])
-        RE3([RouteEntry])
-        RE4(["..."])
-    end
-
-    OA["🌐 OpenAPI Adapter<br/><small>FastAPI · REST</small>"]
-    MA["🤖 MCP Adapter<br/><small>MCP SDK · LLM integration</small>"]
-    GA["⚡ gRPC Adapter<br/><small>future</small>"]
-
-    TR ==> RT
-    RT --> OA
-    RT --> MA
-    RT -.-> GA
-
-    style TR fill:#e0f2f1,stroke:#00897b,stroke-width:2px,color:#004d40
-    style RT fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
-    style OA fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#e65100
-    style MA fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#6a1b9a
-    style GA fill:#f5f5f5,stroke:#bdbdbd,stroke-width:1px,color:#9e9e9e
-    style RE1 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
-    style RE2 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
-    style RE3 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
-    style RE4 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+```
+                  ┌─────────────────┐
+                  │  ToolRegistry   │
+                  │ tool definitions│
+                  └────────┬────────┘
+                           │
+              ┌────────────▼─────────────┐
+              │   RouteTable             │
+              │   central routing layer  │
+              │                          │
+              │  [RE] [RE] [RE] [...]    │
+              └──┬─────────┬──────────┬──┘
+                 │         │          ╎
+       ┌─────────▼──┐  ┌──▼─────┐  ┌─▼──────┐
+       │  OpenAPI   │  │  MCP   │  │  gRPC  │
+       │  Adapter   │  │ Adapter│  │ Adapter│
+       │ FastAPI·REST│  │MCP SDK │  │ future │
+       └────────────┘  └────────┘  └────────┘
 ```
 
 ## Documentation Contents
