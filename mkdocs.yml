@@ -1,5 +1,5 @@
 site_name: ToolRegistry Server
-site_description: ToolRegistry 的服务器库 - 提供 OpenAPI 和 MCP 协议适配器
+site_description: 定义自定义工具，通过 OpenAPI 或 MCP 接口提供服务
 site_author: Peng Ding
 site_url: https://toolregistry-server.readthedocs.io/zh/
 repo_name: Oaklight/toolregistry-server
@@ -79,6 +79,13 @@ extra:
       link: https://github.com/Oaklight/toolregistry-server
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/toolregistry-server/
+  alternate:
+    - name: English
+      link: /en/
+      lang: en
+    - name: 中文
+      link: /zh/
+      lang: zh
 
 nav:
   - 首页: index.md
