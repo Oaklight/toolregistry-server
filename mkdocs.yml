@@ -1,17 +1,14 @@
 site_name: ToolRegistry Server
-site_description: Server library for ToolRegistry - OpenAPI and MCP protocol adapters for exposing tools as services
+site_description: Server library for ToolRegistry - providing OpenAPI and MCP protocol adapters
 site_author: Peng Ding
 site_url: https://toolregistry-server.readthedocs.io/
-
 repo_name: Oaklight/toolregistry-server
 repo_url: https://github.com/Oaklight/toolregistry-server
+copyright: Copyright &copy; 2026 Peng Ding
 
-# Documentation directory
-docs_dir: docs
-
-# Theme configuration
 theme:
   name: material
+  language: en
   palette:
     - media: "(prefers-color-scheme)"
       toggle:
@@ -19,15 +16,11 @@ theme:
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
-      accent: teal
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
-      accent: teal
       toggle:
         icon: material/brightness-4
         name: Switch to system preference
@@ -42,24 +35,51 @@ theme:
     - search.suggest
     - content.code.copy
     - content.action.edit
-  language: en
 
-# Extra configuration
+plugins:
+  - search:
+      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_toc_entry: false
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/Oaklight/toolregistry-server
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/toolregistry-server/
-  alternate:
-    - name: English
-      link: /en/
-      lang: en
-    - name: 中文
-      link: /zh-cn/
-      lang: zh
 
-# Navigation structure
 nav:
   - Home: index.md
   - Usage:
@@ -84,46 +104,3 @@ nav:
   - Changelog: changelog.md
   - ToolRegistry: https://toolregistry.readthedocs.io/
   - Hub Tools: https://toolregistry-hub.readthedocs.io/
-
-# Extensions
-markdown_extensions:
-  - admonition
-  - pymdownx.details
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
-  - pymdownx.highlight:
-      anchor_linenums: true
-      line_spans: __span
-      pygments_lang_class: true
-  - pymdownx.inlinehilite
-  - pymdownx.snippets
-  - pymdownx.tabbed:
-      alternate_style: true
-  - attr_list
-  - md_in_html
-  - toc:
-      permalink: true
-
-# Plugins
-plugins:
-  - search:
-      lang: en
-      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
-  - mkdocstrings:
-      handlers:
-        python:
-          paths: [src]
-          options:
-            docstring_style: google
-            show_source: true
-            show_root_heading: true
-            show_root_toc_entry: false
-            merge_init_into_class: true
-            separate_signature: true
-            show_signature_annotations: true
-
-# Copyright
-copyright: Copyright &copy; 2025 ToolRegistry Server
