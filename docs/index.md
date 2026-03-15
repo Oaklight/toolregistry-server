@@ -73,27 +73,36 @@ app = create_openapi_app(route_table)
 
 ## 架构
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      ToolRegistry                           │
-│                     (工具定义)                               │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                       RouteTable                            │
-│                    (中央路由层)                               │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │ RouteEntry  │  │ RouteEntry  │  │ RouteEntry  │  ...    │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│ OpenAPI 适配器  │ │   MCP 适配器    │ │  gRPC 适配器    │
-│   (FastAPI)     │ │   (MCP SDK)     │ │    (计划中)     │
-└─────────────────┘ └─────────────────┘ └─────────────────┘
+```mermaid
+graph TD
+    TR(["🔧 ToolRegistry<br/><small>工具定义</small>"])
+
+    subgraph RT ["📋 RouteTable · 中央路由层"]
+        direction LR
+        RE1([RouteEntry])
+        RE2([RouteEntry])
+        RE3([RouteEntry])
+        RE4(["..."])
+    end
+
+    OA["🌐 OpenAPI 适配器<br/><small>FastAPI · REST</small>"]
+    MA["🤖 MCP 适配器<br/><small>MCP SDK · LLM 集成</small>"]
+    GA["⚡ gRPC 适配器<br/><small>计划中</small>"]
+
+    TR ==> RT
+    RT --> OA
+    RT --> MA
+    RT -.-> GA
+
+    style TR fill:#e0f2f1,stroke:#00897b,stroke-width:2px,color:#004d40
+    style RT fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    style OA fill:#fff3e0,stroke:#ef6c00,stroke-width:2px,color:#e65100
+    style MA fill:#f3e5f5,stroke:#8e24aa,stroke-width:2px,color:#6a1b9a
+    style GA fill:#f5f5f5,stroke:#bdbdbd,stroke-width:1px,color:#9e9e9e
+    style RE1 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    style RE2 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    style RE3 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
+    style RE4 fill:#bbdefb,stroke:#1565c0,color:#0d47a1
 ```
 
 ## 文档内容
