@@ -5,11 +5,16 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
 
 from ..route_table import RouteEntry, RouteTable
+
+if TYPE_CHECKING:
+    from fastapi import APIRouter, FastAPI
 
 # ---------------------------------------------------------------------------
 # JSON Schema type → Python type mapping
@@ -130,7 +135,7 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
 
 
 def _add_route_from_entry(
-    router: "APIRouter",  # noqa: F821
+    router: APIRouter,
     route: RouteEntry,
     route_table: RouteTable,
 ) -> None:
@@ -200,7 +205,7 @@ def _add_route_from_entry(
             methods=["POST"],
             operation_id=route.tool_name,
             summary=summary,
-            tags=tags,  # ty: ignore[invalid-argument-type]
+            tags=tags,
         )
     else:
 
@@ -227,14 +232,14 @@ def _add_route_from_entry(
             methods=["POST"],
             operation_id=route.tool_name,
             summary=summary,
-            tags=tags,  # ty: ignore[invalid-argument-type]
+            tags=tags,
         )
 
 
 def route_table_to_router(
     route_table: RouteTable,
     prefix: str = "",
-) -> "APIRouter":  # noqa: F821
+) -> APIRouter:
     """Convert a :class:`~toolregistry_server.RouteTable` into a FastAPI router.
 
     Routes are generated for **all** registered tools regardless of their
@@ -273,7 +278,7 @@ def route_table_to_router(
 # ---------------------------------------------------------------------------
 
 
-def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:  # noqa: F821
+def add_tools_endpoint(app: FastAPI, route_table: RouteTable) -> None:
     """Add a /tools endpoint that returns the list of available tools.
 
     This endpoint supports ETag-based cache validation. The response includes
@@ -349,7 +354,7 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:  # noqa
 # ---------------------------------------------------------------------------
 
 
-def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:  # noqa: F821
+def setup_dynamic_openapi(app: FastAPI, route_table: RouteTable) -> None:
     """Configure dynamic OpenAPI schema generation that filters out disabled tools.
 
     This replaces FastAPI's default cached OpenAPI schema with a dynamic one
@@ -406,4 +411,4 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:  # n
         # is regenerated on every request, reflecting runtime changes.
         return openapi_schema
 
-    app.openapi = custom_openapi  # ty: ignore[invalid-assignment]
+    app.openapi = custom_openapi

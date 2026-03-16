@@ -5,10 +5,21 @@ This module provides middleware for ETag-based cache validation,
 supporting conditional requests with If-None-Match headers.
 """
 
-from typing import TYPE_CHECKING
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, MutableMapping
+
+    from fastapi import FastAPI
+
     from ..route_table import RouteTable
+
+    Scope = MutableMapping[str, Any]
+    Receive = Callable[[], Any]
+    Send = Callable[[Any], Any]
+    ASGIApp = Callable[[Scope, Receive, Send], Any]
 
 
 class ETagMiddleware:
@@ -43,7 +54,7 @@ class ETagMiddleware:
     # Paths that should have ETag handling applied
     ETAG_PATHS = frozenset({"/tools", "/openapi.json"})
 
-    def __init__(self, app: "ASGIApp", route_table: "RouteTable") -> None:  # noqa: F821
+    def __init__(self, app: ASGIApp, route_table: RouteTable) -> None:
         """Initialize the ETag middleware.
 
         Args:
@@ -55,9 +66,9 @@ class ETagMiddleware:
 
     async def __call__(
         self,
-        scope: "Scope",  # noqa: F821
-        receive: "Receive",  # noqa: F821
-        send: "Send",  # noqa: F821
+        scope: Scope,
+        receive: Receive,
+        send: Send,
     ) -> None:
         """Process the request through the middleware.
 
@@ -112,7 +123,7 @@ class ETagMiddleware:
         await self.app(scope, receive, send_with_etag)
 
 
-def add_etag_middleware(app: "FastAPI", route_table: "RouteTable") -> None:  # noqa: F821
+def add_etag_middleware(app: FastAPI, route_table: RouteTable) -> None:
     """Add ETag middleware to a FastAPI application.
 
     This is a convenience function to add the ETagMiddleware to a FastAPI

@@ -136,7 +136,7 @@ class TestSchemaToPydantic:
 
         # Create instance without providing count
         instance = model()
-        assert instance.count == 10
+        assert instance.count == 10  # ty: ignore[unresolved-attribute]
 
 
 # ============== Router Generation Tests ==============
