@@ -5,8 +5,6 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
@@ -135,7 +133,7 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
 
 
 def _add_route_from_entry(
-    router: APIRouter,
+    router: "APIRouter",
     route: RouteEntry,
     route_table: RouteTable,
 ) -> None:
@@ -184,11 +182,11 @@ def _add_route_from_entry(
 
         def _make_async_endpoint(
             h: Any = handler,
-            M: type[BaseModel] = request_model,
+            model: type[BaseModel] = request_model,
             rt: RouteTable = route_table,
             tname: str = tool_name,
         ):
-            async def _endpoint(data: M) -> Any:  # ty: ignore[invalid-type-form]
+            async def _endpoint(data: Any) -> Any:
                 current_route = rt.get_route(tname)
                 if current_route is None or not current_route.enabled:
                     raise HTTPException(
@@ -197,6 +195,8 @@ def _add_route_from_entry(
                     )
                 return await h(**data.model_dump())
 
+            # Patch annotations so FastAPI/Pydantic sees the concrete model
+            _endpoint.__annotations__["data"] = model
             return _endpoint
 
         router.add_api_route(
@@ -211,11 +211,11 @@ def _add_route_from_entry(
 
         def _make_sync_endpoint(
             h: Any = handler,
-            M: type[BaseModel] = request_model,
+            model: type[BaseModel] = request_model,
             rt: RouteTable = route_table,
             tname: str = tool_name,
         ):
-            def _endpoint(data: M) -> Any:  # ty: ignore[invalid-type-form]
+            def _endpoint(data: Any) -> Any:
                 current_route = rt.get_route(tname)
                 if current_route is None or not current_route.enabled:
                     raise HTTPException(
@@ -224,6 +224,8 @@ def _add_route_from_entry(
                     )
                 return h(**data.model_dump())
 
+            # Patch annotations so FastAPI/Pydantic sees the concrete model
+            _endpoint.__annotations__["data"] = model
             return _endpoint
 
         router.add_api_route(
@@ -239,7 +241,7 @@ def _add_route_from_entry(
 def route_table_to_router(
     route_table: RouteTable,
     prefix: str = "",
-) -> APIRouter:
+) -> "APIRouter":
     """Convert a :class:`~toolregistry_server.RouteTable` into a FastAPI router.
 
     Routes are generated for **all** registered tools regardless of their
@@ -278,7 +280,7 @@ def route_table_to_router(
 # ---------------------------------------------------------------------------
 
 
-def add_tools_endpoint(app: FastAPI, route_table: RouteTable) -> None:
+def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
     """Add a /tools endpoint that returns the list of available tools.
 
     This endpoint supports ETag-based cache validation. The response includes
@@ -309,7 +311,7 @@ def add_tools_endpoint(app: FastAPI, route_table: RouteTable) -> None:
         ) from e
 
     @app.get("/tools", tags=["meta"])
-    async def list_tools(request: Request) -> JSONResponse:
+    async def list_tools(request: Request):
         """List all available tools with their metadata.
 
         Returns a JSON object containing:
@@ -354,7 +356,7 @@ def add_tools_endpoint(app: FastAPI, route_table: RouteTable) -> None:
 # ---------------------------------------------------------------------------
 
 
-def setup_dynamic_openapi(app: FastAPI, route_table: RouteTable) -> None:
+def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
     """Configure dynamic OpenAPI schema generation that filters out disabled tools.
 
     This replaces FastAPI's default cached OpenAPI schema with a dynamic one
