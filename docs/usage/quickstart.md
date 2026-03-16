@@ -107,6 +107,7 @@ toolregistry-server mcp --config config.json --transport streamable-http --port 
 
 ## 下一步
 
+- [可运行示例](https://github.com/Oaklight/toolregistry-server/tree/master/examples) - 可直接运行的完整脚本
 - [配置](configuration.md) - 了解 JSON/JSONC 配置文件
 - [认证](authentication.md) - 设置 Bearer 令牌认证
 - [OpenAPI 适配器](../adapters/openapi.md) - 深入了解 REST API 适配器
