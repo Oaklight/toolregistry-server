@@ -4,7 +4,7 @@ title: Adapters
 
 # Protocol Adapters
 
-`toolregistry-server` provides protocol adapters that expose tools registered in a `ToolRegistry` as network services. Each adapter reads from the central `RouteTable` and translates tool definitions into protocol-specific endpoints.
+`toolregistry-server` provides protocol adapters that expose your custom tools as network services. Each adapter reads from the central `RouteTable` and translates tool definitions into protocol-specific endpoints.
 
 ## Available Adapters
 

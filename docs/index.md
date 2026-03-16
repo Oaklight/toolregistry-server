@@ -11,11 +11,11 @@ hide:
 [![Python Version](https://img.shields.io/pypi/pyversions/toolregistry-server.svg)](https://pypi.org/project/toolregistry-server/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Server library for [ToolRegistry](https://toolregistry.readthedocs.io/)** - providing OpenAPI and MCP protocol adapters for exposing tools as services.
+**Define custom tools and serve them via OpenAPI or MCP interfaces.** Built on [ToolRegistry](https://toolregistry.readthedocs.io/).
 
 ## Overview
 
-`toolregistry-server` is the server component of the ToolRegistry ecosystem. It bridges tool definitions with HTTP APIs and LLM-compatible protocols, enabling centralized tool management across different communication channels.
+`toolregistry-server` lets you register Python functions as tools and expose them as services through multiple protocols — REST APIs via OpenAPI and LLM integration via the Model Context Protocol.
 
 ## Ecosystem
 
@@ -24,13 +24,13 @@ The ToolRegistry ecosystem consists of three packages:
 | Package | Description |
 |---------|-------------|
 | [`toolregistry`](https://toolregistry.readthedocs.io/) | Core library - Tool model, ToolRegistry, client integration |
-| [`toolregistry-server`](https://toolregistry-server.readthedocs.io/) | Server library - Route table, protocol adapters |
+| [`toolregistry-server`](https://toolregistry-server.readthedocs.io/) | Tool server - define tools and serve via OpenAPI/MCP |
 | [`toolregistry-hub`](https://toolregistry-hub.readthedocs.io/) | Tool collection - Built-in tools, default server configuration |
 
 ```
 toolregistry (core)
        ↓
-toolregistry-server (server library)
+toolregistry-server (tool server)
        ↓
 toolregistry-hub (tool collection + server config)
 ```

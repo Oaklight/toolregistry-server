@@ -59,4 +59,4 @@ A curated set of utility tools, deployable via `toolregistry-server`. Provides:
 
 !!! info "This Project"
 
-    You are currently viewing the documentation for **toolregistry-server** — the server library that provides OpenAPI and MCP protocol adapters for exposing tools registered with `toolregistry` as network services.
+    You are currently viewing the documentation for **toolregistry-server** — define custom tools and serve them via OpenAPI or MCP interfaces.
