@@ -107,6 +107,7 @@ See the [CLI Reference](../cli/) and [Configuration Guide](configuration.md) for
 
 ## Next Steps
 
+- [Runnable Examples](https://github.com/Oaklight/toolregistry-server/tree/master/examples) - Complete scripts you can run directly
 - [Configuration](configuration.md) - Learn about JSON/JSONC configuration files
 - [Authentication](authentication.md) - Set up Bearer token authentication
 - [OpenAPI Adapter](../adapters/openapi.md) - Deep dive into the REST API adapter
