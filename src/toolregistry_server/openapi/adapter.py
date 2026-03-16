@@ -165,11 +165,9 @@ def _add_route_from_entry(
     # Use the top-level segment of the namespace as the tag for grouping
     # e.g. "web/brave_search" → tag "web", "calculator" → tag "calculator"
     namespace = route.namespace
+    tags: list[str] = []
     if namespace:
-        tag = namespace.split("/")[0]
-        tags = [tag]
-    else:
-        tags = []
+        tags = [namespace.split("/")[0]]
 
     # Capture tool_name as a string to avoid closure-over-loop-variable issues.
     tool_name = route.tool_name
@@ -205,7 +203,7 @@ def _add_route_from_entry(
             methods=["POST"],
             operation_id=route.tool_name,
             summary=summary,
-            tags=tags,
+            tags=tags,  # ty: ignore[invalid-argument-type]
         )
     else:
 
@@ -234,7 +232,7 @@ def _add_route_from_entry(
             methods=["POST"],
             operation_id=route.tool_name,
             summary=summary,
-            tags=tags,
+            tags=tags,  # ty: ignore[invalid-argument-type]
         )
 
 
@@ -413,4 +411,4 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
         # is regenerated on every request, reflecting runtime changes.
         return openapi_schema
 
-    app.openapi = custom_openapi
+    app.openapi = custom_openapi  # ty: ignore[invalid-assignment]

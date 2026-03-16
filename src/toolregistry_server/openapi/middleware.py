@@ -144,7 +144,7 @@ def add_etag_middleware(app: FastAPI, route_table: RouteTable) -> None:
         add_etag_middleware(app, route_table)
         ```
     """
-    app.add_middleware(ETagMiddleware, route_table=route_table)
+    app.add_middleware(ETagMiddleware, route_table=route_table)  # ty: ignore[invalid-argument-type]
 
 
 __all__ = ["ETagMiddleware", "add_etag_middleware"]

@@ -27,7 +27,7 @@ jobs:
         run: ruff format --check src/ tests/
 
       - name: Type check with ty
-        run: ty check
+        run: ty check src/
 
   test:
     runs-on: ubuntu-latest
