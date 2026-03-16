@@ -11,11 +11,11 @@ hide:
 [![Python Version](https://img.shields.io/pypi/pyversions/toolregistry-server.svg)](https://pypi.org/project/toolregistry-server/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**[ToolRegistry](https://toolregistry.readthedocs.io/) 的服务器库** - 提供 OpenAPI 和 MCP 协议适配器，将工具暴露为服务。
+**定义自定义工具，通过 OpenAPI 或 MCP 接口提供服务。** 基于 [ToolRegistry](https://toolregistry.readthedocs.io/) 构建。
 
 ## 概述
 
-`toolregistry-server` 是 ToolRegistry 生态系统的服务器组件。它将工具定义与 HTTP API 和 LLM 兼容协议桥接，实现跨不同通信通道的集中式工具管理。
+`toolregistry-server` 让您将 Python 函数注册为工具，并通过多种协议将其暴露为服务——通过 OpenAPI 提供 REST API，通过 Model Context Protocol 实现 LLM 集成。
 
 ## 生态系统
 
@@ -24,13 +24,13 @@ ToolRegistry 生态系统由三个包组成：
 | 包 | 描述 |
 |---|------|
 | [`toolregistry`](https://toolregistry.readthedocs.io/) | 核心库 - 工具模型、ToolRegistry、客户端集成 |
-| [`toolregistry-server`](https://toolregistry-server.readthedocs.io/) | 服务器库 - 路由表、协议适配器 |
+| [`toolregistry-server`](https://toolregistry-server.readthedocs.io/) | 工具服务器 - 定义工具并通过 OpenAPI/MCP 提供服务 |
 | [`toolregistry-hub`](https://toolregistry-hub.readthedocs.io/) | 工具集合 - 内置工具、默认服务器配置 |
 
 ```
 toolregistry (核心)
        ↓
-toolregistry-server (服务器库)
+toolregistry-server (工具服务器)
        ↓
 toolregistry-hub (工具集合 + 服务器配置)
 ```

@@ -59,4 +59,4 @@ toolregistry-hub      ← Hub：即用型工具实现
 
 !!! info "当前项目"
 
-    您正在查看 **toolregistry-server** 的文档——提供 OpenAPI 和 MCP 协议适配器的服务器库，用于将 `toolregistry` 注册的工具暴露为网络服务。
+    您正在查看 **toolregistry-server** 的文档——定义自定义工具，通过 OpenAPI 或 MCP 接口提供服务。

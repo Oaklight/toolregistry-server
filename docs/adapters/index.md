@@ -4,7 +4,7 @@ title: 适配器
 
 # 协议适配器
 
-`toolregistry-server` 提供协议适配器，将 `ToolRegistry` 中注册的工具暴露为网络服务。每个适配器从中央 `RouteTable` 读取数据，并将工具定义转换为特定协议的端点。
+`toolregistry-server` 提供协议适配器，将您的自定义工具暴露为网络服务。每个适配器从中央 `RouteTable` 读取数据，并将工具定义转换为特定协议的端点。
 
 ## 可用适配器
 
