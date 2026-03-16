@@ -1,7 +1,7 @@
 site_name: ToolRegistry Server
 site_description: 定义自定义工具，通过 OpenAPI 或 MCP 接口提供服务
 site_author: Peng Ding
-site_url: https://toolregistry-server.readthedocs.io/zh/
+site_url: https://toolregistry-server.readthedocs.io/zh-cn/
 repo_name: Oaklight/toolregistry-server
 repo_url: https://github.com/Oaklight/toolregistry-server
 copyright: Copyright &copy; 2026 Peng Ding
@@ -84,7 +84,7 @@ extra:
       link: /en/
       lang: en
     - name: 中文
-      link: /zh/
+      link: /zh-cn/
       lang: zh
 
 nav:
