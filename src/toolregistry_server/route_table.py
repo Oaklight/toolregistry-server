@@ -96,12 +96,21 @@ class RouteTable:
         """Handle change events from the underlying ToolRegistry.
 
         Keeps the RouteTable in sync when tools are enabled/disabled/registered
-        externally (e.g. via the admin panel).
+        externally (e.g. via the admin panel).  Handles both tool-level and
+        namespace-level enable/disable events.
         """
         if event.event_type in (ChangeEventType.ENABLE, ChangeEventType.DISABLE):
             if event.tool_name:
-                self.refresh(event.tool_name)
-                self._notify_listeners(event.tool_name, event.event_type.value)
+                if event.tool_name in self._routes:
+                    # Direct tool-level change
+                    self.refresh(event.tool_name)
+                    self._notify_listeners(event.tool_name, event.event_type.value)
+                else:
+                    # Namespace-level change — refresh all tools in that namespace
+                    for route in self._routes.values():
+                        if route.namespace == event.tool_name:
+                            self.refresh(route.tool_name)
+                    self._notify_listeners(event.tool_name, event.event_type.value)
         elif event.event_type in (
             ChangeEventType.REGISTER,
             ChangeEventType.UNREGISTER,

@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from toolregistry.events import ChangeEvent, ChangeEventType
+
 from toolregistry_server import RouteEntry, RouteTable
 
 
@@ -444,3 +444,79 @@ class TestRouteTable:
         assert route_table.version == initial_version + 1
         assert len(events) == 1
         assert events[0] == ("greet", "disable")
+
+    def test_namespace_disable_syncs_all_tools(self, mock_registry: MagicMock) -> None:
+        """Test that disabling a namespace refreshes all tools in that namespace."""
+        tool1 = MagicMock()
+        tool1.name = "calculator-add"
+        tool1.namespace = "calculator"
+        tool1.method_name = "add"
+        tool1.description = "Add numbers"
+        tool1.parameters = {}
+        tool1.callable = lambda a, b: a + b
+        tool1.is_async = False
+
+        tool2 = MagicMock()
+        tool2.name = "calculator-sub"
+        tool2.namespace = "calculator"
+        tool2.method_name = "sub"
+        tool2.description = "Subtract numbers"
+        tool2.parameters = {}
+        tool2.callable = lambda a, b: a - b
+        tool2.is_async = False
+
+        tool3 = MagicMock()
+        tool3.name = "datetime-now"
+        tool3.namespace = "datetime"
+        tool3.method_name = "now"
+        tool3.description = "Get current time"
+        tool3.parameters = {}
+        tool3.callable = lambda: "now"
+        tool3.is_async = False
+
+        mock_registry._tools = {
+            "calculator-add": tool1,
+            "calculator-sub": tool2,
+            "datetime-now": tool3,
+        }
+        mock_registry.get_tool = MagicMock(
+            side_effect=lambda n: mock_registry._tools.get(n)
+        )
+
+        # After namespace disable, is_enabled should return False for calculator tools
+        def mock_is_enabled(name):
+            return name not in ("calculator-add", "calculator-sub")
+
+        mock_registry.is_enabled = MagicMock(side_effect=mock_is_enabled)
+        mock_registry.get_disable_reason = MagicMock(return_value=None)
+
+        route_table = RouteTable(mock_registry)
+
+        events: list[tuple[str, str]] = []
+
+        def listener(tool_name: str, event: str) -> None:
+            events.append((tool_name, event))
+
+        route_table.add_listener(listener)
+
+        # Simulate admin panel disabling the "calculator" namespace
+        route_table._on_registry_change(
+            ChangeEvent(
+                event_type=ChangeEventType.DISABLE,
+                tool_name="calculator",
+                reason="namespace disabled",
+            )
+        )
+
+        # Both calculator tools should now be disabled
+        add_route = route_table.get_route("calculator-add")
+        sub_route = route_table.get_route("calculator-sub")
+        dt_route = route_table.get_route("datetime-now")
+
+        assert add_route is not None and add_route.enabled is False
+        assert sub_route is not None and sub_route.enabled is False
+        assert dt_route is not None and dt_route.enabled is True
+
+        # Listener should have been notified
+        assert len(events) == 1
+        assert events[0] == ("calculator", "disable")
