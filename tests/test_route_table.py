@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry_server import RouteEntry, RouteTable
 
 
@@ -57,17 +58,52 @@ class TestRouteEntry:
         assert entry.disable_reason == "Under maintenance"
 
 
+def _make_mock_registry() -> MagicMock:
+    """Create a mock ToolRegistry that simulates on_change callback behavior.
+
+    When enable() or disable() is called on the mock, registered on_change
+    callbacks are invoked with the appropriate ChangeEvent, mimicking real
+    ToolRegistry behavior.
+    """
+    registry = MagicMock()
+    registry._tools = {}
+    registry.is_enabled = MagicMock(return_value=True)
+    registry.get_disable_reason = MagicMock(return_value=None)
+
+    # Track registered callbacks so enable/disable can fire them
+    callbacks: list = []
+
+    def mock_on_change(cb):
+        callbacks.append(cb)
+
+    def mock_enable(tool_name):
+        for cb in callbacks:
+            cb(ChangeEvent(event_type=ChangeEventType.ENABLE, tool_name=tool_name))
+
+    def mock_disable(tool_name, reason=""):
+        for cb in callbacks:
+            cb(
+                ChangeEvent(
+                    event_type=ChangeEventType.DISABLE,
+                    tool_name=tool_name,
+                    reason=reason,
+                )
+            )
+
+    registry.on_change = mock_on_change
+    registry.enable = mock_enable
+    registry.disable = mock_disable
+
+    return registry
+
+
 class TestRouteTable:
     """Tests for the RouteTable class."""
 
     @pytest.fixture
     def mock_registry(self) -> MagicMock:
         """Create a mock ToolRegistry."""
-        registry = MagicMock()
-        registry._tools = {}
-        registry.is_enabled = MagicMock(return_value=True)
-        registry.get_disable_reason = MagicMock(return_value=None)
-        return registry
+        return _make_mock_registry()
 
     @pytest.fixture
     def mock_tool(self) -> MagicMock:
@@ -147,7 +183,6 @@ class TestRouteTable:
 
         route_table.enable("greet")
 
-        mock_registry.enable.assert_called_once_with("greet")
         assert route_table.version == initial_version + 1
 
     def test_disable_tool(self, mock_registry: MagicMock, mock_tool: MagicMock) -> None:
@@ -160,7 +195,6 @@ class TestRouteTable:
 
         route_table.disable("greet", reason="Under maintenance")
 
-        mock_registry.disable.assert_called_once_with("greet", "Under maintenance")
         assert route_table.version == initial_version + 1
 
     def test_refresh_single_route(
@@ -378,3 +412,35 @@ class TestRouteTable:
 
         assert len(events) == 1
         assert events[0] == ("*", "refresh_all")
+
+    def test_external_registry_change_syncs(
+        self, mock_registry: MagicMock, mock_tool: MagicMock
+    ) -> None:
+        """Test that changes made directly on registry (e.g. via admin panel)
+        are reflected in the RouteTable via on_change callback."""
+        mock_registry._tools = {"greet": mock_tool}
+        mock_registry.get_tool = MagicMock(return_value=mock_tool)
+
+        route_table = RouteTable(mock_registry)
+        initial_version = route_table.version
+
+        events: list[tuple[str, str]] = []
+
+        def listener(tool_name: str, event: str) -> None:
+            events.append((tool_name, event))
+
+        route_table.add_listener(listener)
+
+        # Simulate admin panel calling registry.disable() directly
+        # (bypassing route_table.disable())
+        route_table._on_registry_change(
+            ChangeEvent(
+                event_type=ChangeEventType.DISABLE,
+                tool_name="greet",
+                reason="admin disabled",
+            )
+        )
+
+        assert route_table.version == initial_version + 1
+        assert len(events) == 1
+        assert events[0] == ("greet", "disable")

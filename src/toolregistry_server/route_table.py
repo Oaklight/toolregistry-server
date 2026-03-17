@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from toolregistry import ToolRegistry
+from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
 
 
@@ -89,6 +90,24 @@ class RouteTable:
     def __post_init__(self) -> None:
         """Initialize the route table from the registry."""
         self._rebuild()
+        self._registry.on_change(self._on_registry_change)
+
+    def _on_registry_change(self, event: ChangeEvent) -> None:
+        """Handle change events from the underlying ToolRegistry.
+
+        Keeps the RouteTable in sync when tools are enabled/disabled/registered
+        externally (e.g. via the admin panel).
+        """
+        if event.event_type in (ChangeEventType.ENABLE, ChangeEventType.DISABLE):
+            if event.tool_name:
+                self.refresh(event.tool_name)
+                self._notify_listeners(event.tool_name, event.event_type.value)
+        elif event.event_type in (
+            ChangeEventType.REGISTER,
+            ChangeEventType.UNREGISTER,
+            ChangeEventType.REFRESH_ALL,
+        ):
+            self.refresh_all()
 
     def _rebuild(self) -> None:
         """Rebuild route table from registry."""
@@ -168,7 +187,10 @@ class RouteTable:
     # ============== State Change API ==============
 
     def enable(self, tool_name: str) -> None:
-        """Enable a tool and notify listeners.
+        """Enable a tool.
+
+        The route table is automatically refreshed via the registry change
+        callback.
 
         Args:
             tool_name: The name of the tool to enable.
@@ -177,11 +199,12 @@ class RouteTable:
             KeyError: If the tool is not found.
         """
         self._registry.enable(tool_name)
-        self.refresh(tool_name)
-        self._notify_listeners(tool_name, "enable")
 
     def disable(self, tool_name: str, reason: str = "") -> None:
-        """Disable a tool and notify listeners.
+        """Disable a tool.
+
+        The route table is automatically refreshed via the registry change
+        callback.
 
         Args:
             tool_name: The name of the tool to disable.
@@ -191,8 +214,6 @@ class RouteTable:
             KeyError: If the tool is not found.
         """
         self._registry.disable(tool_name, reason)
-        self.refresh(tool_name)
-        self._notify_listeners(tool_name, "disable")
 
     def refresh(self, tool_name: str) -> None:
         """Refresh a single route's state from registry.
