@@ -30,7 +30,7 @@ keywords = [
     "llm",
     "tools",
 ]
-dependencies = ["toolregistry>=0.5.0", "loguru>=0.7.0", "python-dotenv>=1.0.0"]
+dependencies = ["toolregistry>=0.6.0", "loguru>=0.7.0", "python-dotenv>=1.0.0"]
 
 [project.optional-dependencies]
 openapi = ["fastapi>=0.119.0", "uvicorn[standard]>=0.24.0"]
