@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2026-03-22
+
+### Added
+
+- **Parameter validation in MCP adapter**: `RouteEntry` now carries `parameters_model` from `Tool`, enabling Pydantic-based type coercion (e.g. string `"8"` → `int(8)`) before handler execution. This fixes compatibility with MCP clients that serialize all arguments as strings (e.g. Codex).
+
+### Changed
+
+- MCP `call_tool` handler now uses `validate_input=False` to bypass the MCP SDK's strict JSON Schema validation, delegating type validation to Pydantic's more lenient coercion instead.
+
+## [0.1.1] - 2026-03-18
+
+### Fixed
+
+- **RouteTable sync with ToolRegistry**: RouteTable now properly syncs with ToolRegistry on external state changes (e.g. tools added/removed/toggled outside the adapter layer).
+- **Namespace-level enable/disable**: Fixed handling of namespace-level enable/disable operations in RouteTable sync, ensuring bulk toggle propagates correctly to all tools in a namespace.
+
+### Changed
+
+- Require `toolregistry >= 0.6.0` for `on_change` callback support used by RouteTable sync.
+
 ## [0.1.0] - 2026-03-14
 
 Initial release of `toolregistry-server` as a standalone package, spun off from [toolregistry-hub](https://github.com/Oaklight/toolregistry-hub).
