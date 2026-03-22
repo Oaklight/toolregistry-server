@@ -9,6 +9,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
@@ -94,7 +95,7 @@ def route_table_to_mcp_server(
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
         return tools
 
-    @server.call_tool()
+    @server.call_tool(validate_input=False)
     async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         """Execute a tool by name with the given arguments.
 
@@ -131,6 +132,13 @@ def route_table_to_mcp_server(
             )
 
         try:
+            # Validate and coerce parameters (e.g. string "8" → int 8)
+            if isinstance(route.parameters_model, type) and issubclass(
+                route.parameters_model, BaseModel
+            ):
+                model = route.parameters_model(**arguments)
+                arguments = model.model_dump_one_level()
+
             # Execute the tool handler
             if route.is_async:
                 result = await route.handler(**arguments)

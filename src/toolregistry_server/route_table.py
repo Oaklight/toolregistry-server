@@ -45,6 +45,9 @@ class RouteEntry:
     handler: Callable[..., Any]
     is_async: bool
 
+    # Validation
+    parameters_model: Any | None = None
+
     # State
     enabled: bool = True
     disable_reason: str | None = None
@@ -145,6 +148,7 @@ class RouteTable:
             parameters_schema=tool.parameters,
             handler=tool.callable,
             is_async=tool.is_async,
+            parameters_model=getattr(tool, "parameters_model", None),
             enabled=self._registry.is_enabled(tool.name),
             disable_reason=self._registry.get_disable_reason(tool.name),
         )

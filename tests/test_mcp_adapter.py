@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from mcp.server.lowlevel import Server
 from mcp.shared.memory import create_connected_server_and_client_session
+from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
 from toolregistry_server.mcp import create_mcp_server, route_table_to_mcp_server
@@ -680,3 +681,148 @@ class TestExceptionHandling:
             result = await client.call_tool("failing_tool", {})
             assert result.isError is True
             assert "intentional error for testing" in result.content[0].text
+
+
+# ---------------------------------------------------------------------------
+# 8. Parameter validation / type coercion tests
+# ---------------------------------------------------------------------------
+
+
+def search(query: str, *, max_results: int = 5, timeout: float = 10.0) -> str:
+    """Search with typed parameters.
+
+    Args:
+        query: Search query.
+        max_results: Maximum results.
+        timeout: Request timeout.
+
+    Returns:
+        A summary string.
+    """
+    return f"query={query} max_results={max_results}({type(max_results).__name__}) timeout={timeout}({type(timeout).__name__})"
+
+
+class TestParameterValidation:
+    """Tests for parameter validation and type coercion in call_tool."""
+
+    @pytest.fixture
+    def route_table_with_validated_tool(self, mock_registry: MagicMock) -> RouteTable:
+        """Create a RouteTable with a tool that has a parameters_model."""
+        tool = Tool.from_function(add)
+        mock_registry._tools = {"add": tool}
+        return RouteTable(mock_registry)
+
+    @pytest.fixture
+    def route_table_with_search_tool(self, mock_registry: MagicMock) -> RouteTable:
+        """Create a RouteTable with a search tool that has optional typed params."""
+        tool = Tool.from_function(search)
+        mock_registry._tools = {"search": tool}
+        return RouteTable(mock_registry)
+
+    @pytest.mark.asyncio
+    async def test_string_args_coerced_to_int(
+        self, route_table_with_validated_tool: RouteTable
+    ) -> None:
+        """String arguments should be coerced to int when parameters_model is present."""
+        server = route_table_to_mcp_server(route_table_with_validated_tool)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool("add", {"a": "3", "b": "4"})
+            assert result.isError is False
+            assert result.content[0].text == "7"
+
+    @pytest.mark.asyncio
+    async def test_string_args_coerced_for_optional_params(
+        self, route_table_with_search_tool: RouteTable
+    ) -> None:
+        """String values for optional int/float params should be coerced."""
+        server = route_table_to_mcp_server(route_table_with_search_tool)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool(
+                "search",
+                {"query": "test", "max_results": "8", "timeout": "15.5"},
+            )
+            assert result.isError is False
+            text = result.content[0].text
+            assert "max_results=8(int)" in text
+            assert "timeout=15.5(float)" in text
+
+    @pytest.mark.asyncio
+    async def test_default_params_used_when_omitted(
+        self, route_table_with_search_tool: RouteTable
+    ) -> None:
+        """Default values should be used when optional params are omitted."""
+        server = route_table_to_mcp_server(route_table_with_search_tool)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool("search", {"query": "hello"})
+            assert result.isError is False
+            text = result.content[0].text
+            assert "max_results=5(int)" in text
+            assert "timeout=10.0(float)" in text
+
+    @pytest.mark.asyncio
+    async def test_correct_types_pass_through(
+        self, route_table_with_validated_tool: RouteTable
+    ) -> None:
+        """Correctly typed arguments should pass through without issue."""
+        server = route_table_to_mcp_server(route_table_with_validated_tool)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool("add", {"a": 10, "b": 20})
+            assert result.isError is False
+            assert result.content[0].text == "30"
+
+    @pytest.mark.asyncio
+    async def test_all_params_as_strings(
+        self, route_table_with_search_tool: RouteTable
+    ) -> None:
+        """All params as strings (Codex-like behavior) should be coerced."""
+        server = route_table_to_mcp_server(route_table_with_search_tool)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool(
+                "search",
+                {"query": "test query", "max_results": "3", "timeout": "5.0"},
+            )
+            assert result.isError is False
+            text = result.content[0].text
+            assert "query=test query" in text
+            assert "max_results=3(int)" in text
+            assert "timeout=5.0(float)" in text
+
+    @pytest.mark.asyncio
+    async def test_invalid_string_coercion_returns_error(
+        self, route_table_with_validated_tool: RouteTable
+    ) -> None:
+        """Non-numeric string for int param should return an error."""
+        server = route_table_to_mcp_server(route_table_with_validated_tool)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool("add", {"a": "abc", "b": "4"})
+            assert result.isError is True
+
+    @pytest.mark.asyncio
+    async def test_bool_param_coerced_from_string(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """String 'true'/'false' should be coerced to bool."""
+
+        def check(query: str, *, verbose: bool = False) -> str:
+            """Check with bool param.
+
+            Args:
+                query: Query string.
+                verbose: Verbose flag.
+
+            Returns:
+                Result string.
+            """
+            return f"verbose={verbose}({type(verbose).__name__})"
+
+        tool = Tool.from_function(check)
+        mock_registry._tools = {"check": tool}
+        route_table = RouteTable(mock_registry)
+
+        server = route_table_to_mcp_server(route_table)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool(
+                "check", {"query": "test", "verbose": "true"}
+            )
+            assert result.isError is False
+            assert "verbose=True(bool)" in result.content[0].text

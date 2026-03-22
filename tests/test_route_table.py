@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from toolregistry.events import ChangeEvent, ChangeEventType
+from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
 
@@ -520,3 +521,55 @@ class TestRouteTable:
         # Listener should have been notified
         assert len(events) == 1
         assert events[0] == ("calculator", "disable")
+
+    def test_parameters_model_carried_through(self, mock_registry: MagicMock) -> None:
+        """Test that parameters_model from Tool is carried into RouteEntry."""
+
+        def add(a: int, b: int) -> int:
+            """Add two numbers."""
+            return a + b
+
+        tool = Tool.from_function(add)
+        mock_registry._tools = {"add": tool}
+
+        route_table = RouteTable(mock_registry)
+        route = route_table.get_route("add")
+
+        assert route is not None
+        assert route.parameters_model is not None
+        # Verify the model can coerce string → int
+        model = route.parameters_model(a="3", b="4")
+        result = model.model_dump_one_level()
+        assert result == {"a": 3, "b": 4}
+        assert isinstance(result["a"], int)
+
+    def test_parameters_model_none_when_tool_lacks_it(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Test that parameters_model is None when tool lacks the attribute."""
+        tool = MagicMock(
+            spec=[
+                "name",
+                "namespace",
+                "method_name",
+                "description",
+                "parameters",
+                "callable",
+                "is_async",
+            ]
+        )
+        tool.name = "greet"
+        tool.namespace = "default"
+        tool.method_name = "greet"
+        tool.description = "Greet someone"
+        tool.parameters = {}
+        tool.callable = lambda name: f"Hello, {name}!"
+        tool.is_async = False
+
+        mock_registry._tools = {"greet": tool}
+
+        route_table = RouteTable(mock_registry)
+        route = route_table.get_route("greet")
+
+        assert route is not None
+        assert route.parameters_model is None
