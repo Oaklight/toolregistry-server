@@ -1,13 +1,21 @@
 name: Upstream Compatibility
 
 on:
+  # Weekly check against latest PyPI release
+  schedule:
+    - cron: "37 4 * * 1" # Monday 04:37 UTC
+
+  # Immediate trigger from toolregistry release
   repository_dispatch:
     types: [upstream-release]
+
+  # Manual trigger for debugging
   workflow_dispatch:
     inputs:
       version:
-        description: "toolregistry version to test against (e.g. 0.6.0)"
+        description: "toolregistry version to test against (blank = latest)"
         required: false
+        default: ""
 
 jobs:
   test-against-upstream:
@@ -18,18 +26,21 @@ jobs:
         python-version: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies with latest toolregistry
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[all,dev]"
-          # Upgrade toolregistry to the version that triggered this, or latest
+
+      - name: Upgrade toolregistry to target version
+        id: install-upstream
+        run: |
           VERSION="${{ github.event.client_payload.version || inputs.version }}"
           if [ -n "$VERSION" ]; then
             VERSION="${VERSION#v}"
@@ -37,7 +48,68 @@ jobs:
           else
             pip install --upgrade toolregistry
           fi
-          pip show toolregistry | grep Version
+          INSTALLED=$(pip show toolregistry | grep '^Version:' | awk '{print $2}')
+          echo "version=$INSTALLED" >> "$GITHUB_OUTPUT"
+          echo "Installed toolregistry $INSTALLED"
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short
+        run: >
+          pytest tests/ -v --tb=long
+          --junitxml=upstream-compat-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-compat-results-py${{ matrix.python-version }}
+          path: upstream-compat-results.xml
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.install-upstream.outputs.version }}';
+            const pyVersion = '${{ matrix.python-version }}';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `[CI] toolregistry ${version} compatibility failure`;
+            const body = [
+              `## Upstream Compatibility Failure`,
+              ``,
+              `toolregistry **${version}** breaks toolregistry-server tests on Python **${pyVersion}**.`,
+              ``,
+              `**Workflow run:** ${runUrl}`,
+              `**Triggered by:** ${context.eventName}`,
+              ``,
+              `### Next Steps`,
+              `- Check the [test results](${runUrl}) for details`,
+              `- Determine if this is a breaking change in toolregistry or a test issue`,
+              `- Update toolregistry-server code if API changed`,
+              `- Pin \`toolregistry\` version in \`pyproject.toml\` if needed`,
+            ].join('\n');
+
+            // Check for existing open issue to avoid duplicates
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'upstream-compat',
+            });
+
+            if (issues.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['upstream-compat', 'P1'],
+              });
+            } else {
+              // Comment on existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                body: `Still failing with toolregistry **${version}** on Python **${pyVersion}**.\n\n${runUrl}`,
+              });
+            }

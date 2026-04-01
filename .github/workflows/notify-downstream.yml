@@ -1,0 +1,21 @@
+name: Notify Downstream
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify-downstream:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo:
+          - Oaklight/toolregistry-hub
+    steps:
+      - name: Dispatch to ${{ matrix.repo }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DISPATCH_TOKEN }}
+          repository: ${{ matrix.repo }}
+          event-type: upstream-release
+          client-payload: '{"version": "${{ github.event.release.tag_name }}"}'
