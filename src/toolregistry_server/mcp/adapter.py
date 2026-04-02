@@ -8,13 +8,16 @@ at request time (no drift).
 import json
 from typing import TYPE_CHECKING, Any
 
-from loguru import logger
 from pydantic import BaseModel
+
+from .._structlog import get_logger
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
 
     from ..route_table import RouteTable
+
+logger = get_logger()
 
 
 def _serialize_result(result: Any) -> str:
