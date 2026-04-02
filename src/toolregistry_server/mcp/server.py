@@ -24,7 +24,9 @@ Example:
 import asyncio
 from typing import TYPE_CHECKING
 
-from loguru import logger
+from .._structlog import get_logger
+
+logger = get_logger()
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server

@@ -34,7 +34,9 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-from loguru import logger
+from .._structlog import get_logger
+
+logger = get_logger()
 
 # Default ASCII art banner for ToolRegistry Server
 DEFAULT_BANNER_ART = """
