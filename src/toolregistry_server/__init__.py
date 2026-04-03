@@ -26,9 +26,11 @@ Example:
 __version__ = "0.1.2"
 
 from .route_table import RouteEntry, RouteTable
+from .session import SessionContext
 
 __all__ = [
     "__version__",
-    "RouteTable",
     "RouteEntry",
+    "RouteTable",
+    "SessionContext",
 ]
