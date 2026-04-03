@@ -48,6 +48,9 @@ class RouteEntry:
     # Validation
     parameters_model: Any | None = None
 
+    # Session-scoped handler factory (optional)
+    handler_factory: Callable[..., Callable[..., Any]] | None = None
+
     # State
     enabled: bool = True
     disable_reason: str | None = None
