@@ -128,6 +128,35 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
 
 
 # ---------------------------------------------------------------------------
+# Argument coercion
+# ---------------------------------------------------------------------------
+
+
+def _coerce_arguments(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
+    """Validate and coerce request arguments through the tool's parameters model.
+
+    When a ``parameters_model`` is available on the route, the raw arguments
+    are validated through it and dumped via ``model_dump_one_level()``.  This
+    strips framework-injected fields (e.g. ``thought`` from think-augmented
+    tool calling) that the handler does not accept, and coerces types
+    (e.g. string ``"8"`` to int ``8``).
+
+    Args:
+        raw: The raw arguments from the request body.
+        route: The RouteEntry for the tool being called.
+
+    Returns:
+        A dict of arguments suitable for passing to the handler.
+    """
+    if isinstance(route.parameters_model, type) and issubclass(
+        route.parameters_model, BaseModel
+    ):
+        model = route.parameters_model(**raw)
+        return model.model_dump_one_level()
+    return raw
+
+
+# ---------------------------------------------------------------------------
 # Route generation
 # ---------------------------------------------------------------------------
 
@@ -191,7 +220,8 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                return await h(**data.model_dump())
+                arguments = _coerce_arguments(data.model_dump(), current_route)
+                return await h(**arguments)
 
             # Patch annotations so FastAPI/Pydantic sees the concrete model
             _endpoint.__annotations__["data"] = model
@@ -220,7 +250,8 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                return h(**data.model_dump())
+                arguments = _coerce_arguments(data.model_dump(), current_route)
+                return h(**arguments)
 
             # Patch annotations so FastAPI/Pydantic sees the concrete model
             _endpoint.__annotations__["data"] = model
