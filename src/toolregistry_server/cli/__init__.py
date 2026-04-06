@@ -56,7 +56,7 @@ def load_env_file(env_path: str | None = None, no_env: bool = False) -> None:
     if no_env:
         return
 
-    from dotenv import load_dotenv
+    from .._dotenv import load_dotenv
 
     path = Path(env_path) if env_path else Path.cwd() / ".env"
 
