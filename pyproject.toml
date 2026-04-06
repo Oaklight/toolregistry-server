@@ -22,13 +22,16 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
 ]
 keywords = [
-    "toolregistry",
+    "llm",
+    "tool-calling",
+    "function-calling",
+    "ai-agents",
     "mcp",
+    "mcp-server",
     "openapi",
     "fastapi",
-    "server",
-    "llm",
-    "tools",
+    "agentic-ai",
+    "toolregistry",
 ]
 dependencies = ["toolregistry>=0.7.0"]
 
