@@ -10,7 +10,7 @@ hide:
 [![PyPI version](https://img.shields.io/pypi/v/toolregistry-server?color=green)](https://pypi.org/project/toolregistry-server/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-**定义自定义工具，通过 OpenAPI 或 MCP 接口提供服务。** 基于 [ToolRegistry](https://toolregistry.readthedocs.io/) 构建。
+**通过 OpenAPI 和 MCP 为函数调用 LLM 提供自定义工具服务。** 基于 [ToolRegistry](https://toolregistry.readthedocs.io/) 构建。
 
 ## 概述
 

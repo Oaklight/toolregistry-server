@@ -1,5 +1,5 @@
 site_name: ToolRegistry Server
-site_description: 定义自定义工具，通过 OpenAPI 或 MCP 接口提供服务
+site_description: 通过 OpenAPI 和 MCP 为函数调用 LLM 提供自定义工具服务
 site_author: Peng Ding
 site_url: https://toolregistry-server.readthedocs.io/zh-cn/
 repo_name: Oaklight/toolregistry-server
