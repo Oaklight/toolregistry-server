@@ -10,7 +10,7 @@ hide:
 [![PyPI version](https://img.shields.io/pypi/v/toolregistry-server?color=green)](https://pypi.org/project/toolregistry-server/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-**Define custom tools and serve them via OpenAPI or MCP interfaces.** Built on [ToolRegistry](https://toolregistry.readthedocs.io/).
+**Serve custom tools via OpenAPI and MCP for function-calling LLMs.** Built on [ToolRegistry](https://toolregistry.readthedocs.io/).
 
 ## Overview
 
