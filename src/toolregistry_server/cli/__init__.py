@@ -19,8 +19,8 @@ Example:
     # Start MCP server with SSE transport
     $ toolregistry-server mcp --transport sse --port 8000
 
-    # With configuration file
-    $ toolregistry-server openapi --config tools.jsonc
+    # With configuration file (JSONC or YAML)
+    $ toolregistry-server openapi --config tools.yaml
 
     # With custom .env file
     $ toolregistry-server openapi --env /path/to/.env
@@ -228,7 +228,7 @@ def _add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
         "--config",
         type=str,
         default=None,
-        help="Path to a JSON/JSONC configuration file for tools",
+        help="Path to a JSONC or YAML configuration file for tools",
     )
     parser.add_argument(
         "--tokens",
@@ -273,7 +273,7 @@ def _add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
         "--config",
         type=str,
         default=None,
-        help="Path to a JSON/JSONC configuration file for tools",
+        help="Path to a JSONC or YAML configuration file for tools",
     )
 
 

@@ -1,0 +1,49 @@
+# Example configuration for toolregistry-server CLI.
+#
+# Usage (from project root):
+#   PYTHONPATH=. toolregistry-server openapi --config examples/config.yaml
+#   PYTHONPATH=. toolregistry-server mcp --config examples/config.yaml
+
+# "denylist" (default) loads all tools except those in "disabled".
+# "allowlist" loads only tools with namespaces in "enabled".
+mode: denylist
+
+# Namespaces to exclude in denylist mode.
+disabled: []
+
+tools:
+  # Register all public functions from examples/tools.py
+  - type: python
+    module: examples.tools
+    namespace: examples
+
+  # Uncomment to load tools from a Python class:
+  # - type: python
+  #   class: toolregistry_hub.calculator.Calculator
+  #   namespace: calculator
+
+  # Uncomment to load tools from an MCP server (stdio):
+  # - type: mcp
+  #   transport: stdio
+  #   command: ["python", "-m", "mcp_server"]
+  #   namespace: mcp_tools
+
+  # Uncomment to load tools from an MCP server (SSE):
+  # - type: mcp
+  #   transport: sse
+  #   url: http://localhost:8080/sse
+  #   namespace: remote_mcp
+
+  # Uncomment to load tools from an MCP server (streamable-http):
+  # - type: mcp
+  #   transport: http
+  #   url: http://localhost:8080/mcp
+  #   namespace: remote_http
+
+  # Uncomment to load tools from an OpenAPI endpoint:
+  # - type: openapi
+  #   url: https://api.example.com/openapi.json
+  #   namespace: external_api
+  #   auth:
+  #     type: bearer
+  #     token_env: EXTERNAL_API_TOKEN

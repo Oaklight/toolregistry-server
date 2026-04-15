@@ -59,7 +59,7 @@ class TestCreateParser:
                 "--port",
                 "9000",
                 "--config",
-                "tools.jsonc",
+                "tools.yaml",
                 "--tokens",
                 "tokens.txt",
                 "--reload",
@@ -68,7 +68,7 @@ class TestCreateParser:
         assert args.command == "openapi"
         assert args.host == "127.0.0.1"
         assert args.port == 9000
-        assert args.config == "tools.jsonc"
+        assert args.config == "tools.yaml"
         assert args.tokens == "tokens.txt"
         assert args.reload is True
 
@@ -95,14 +95,14 @@ class TestCreateParser:
                 "--port",
                 "9000",
                 "--config",
-                "tools.jsonc",
+                "tools.yaml",
             ]
         )
         assert args.command == "mcp"
         assert args.transport == "sse"
         assert args.host == "0.0.0.0"
         assert args.port == 9000
-        assert args.config == "tools.jsonc"
+        assert args.config == "tools.yaml"
 
     def test_mcp_transport_choices(self):
         """Test mcp transport choices."""
@@ -177,49 +177,51 @@ class TestLoadConfig:
         with pytest.raises(SystemExit):
             load_config("/nonexistent/path/config.json")
 
-    def test_load_config_valid_json(self):
-        """Test load_config with valid JSON file."""
+    def test_load_config_valid_jsonc(self, tmp_path):
+        """Test load_config with valid JSONC file."""
+        from toolregistry.config import ToolConfig
+
         from toolregistry_server.cli.openapi import load_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write('{"tools": []}')
-            f.flush()
+        config_file = tmp_path / "config.jsonc"
+        config_file.write_text('{\n  // comment\n  "tools": []\n}', encoding="utf-8")
 
-            result = load_config(f.name)
-            assert result == {"tools": []}
+        result = load_config(str(config_file))
+        assert isinstance(result, ToolConfig)
+        assert result.tools == ()
 
-            Path(f.name).unlink()
+    def test_load_config_valid_yaml(self, tmp_path):
+        """Test load_config with valid YAML file."""
+        from toolregistry.config import ToolConfig
 
-    def test_load_config_jsonc_with_comments(self):
-        """Test load_config with JSONC file containing comments."""
         from toolregistry_server.cli.openapi import load_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonc", delete=False) as f:
-            f.write("""
-            // This is a comment
-            {
-                "tools": []  // inline comment
-            }
-            """)
-            f.flush()
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("tools: []\n", encoding="utf-8")
 
-            result = load_config(f.name)
-            assert result == {"tools": []}
+        result = load_config(str(config_file))
+        assert isinstance(result, ToolConfig)
+        assert result.tools == ()
 
-            Path(f.name).unlink()
-
-    def test_load_config_invalid_json(self):
+    def test_load_config_invalid_json(self, tmp_path):
         """Test load_config with invalid JSON."""
         from toolregistry_server.cli.openapi import load_config
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("not valid json")
-            f.flush()
+        config_file = tmp_path / "bad.json"
+        config_file.write_text("not valid json", encoding="utf-8")
 
-            with pytest.raises(SystemExit):
-                load_config(f.name)
+        with pytest.raises(SystemExit):
+            load_config(str(config_file))
 
-            Path(f.name).unlink()
+    def test_load_config_invalid_mode(self, tmp_path):
+        """Test load_config with invalid mode raises SystemExit."""
+        from toolregistry_server.cli.openapi import load_config
+
+        config_file = tmp_path / "bad.yaml"
+        config_file.write_text("mode: invalid\ntools: []\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit):
+            load_config(str(config_file))
 
 
 class TestLoadTokens:
@@ -265,17 +267,235 @@ class TestCreateRegistryFromConfig:
 
     def test_create_registry_empty_tools(self):
         """Test creating registry with empty tools list."""
+        from toolregistry.config import ToolConfig
+
         from toolregistry_server.cli.openapi import create_registry_from_config
 
-        config = {"tools": []}
+        config = ToolConfig(tools=())
         registry = create_registry_from_config(config)
         assert len(registry._tools) == 0
 
-    def test_create_registry_invalid_tool_config(self):
-        """Test creating registry with invalid tool config (no module)."""
+    def test_create_registry_invalid_class(self):
+        """Test creating registry with a non-existent Python class logs warning."""
+        from toolregistry.config import PythonSource, ToolConfig
+
         from toolregistry_server.cli.openapi import create_registry_from_config
 
-        config = {"tools": [{"class": "SomeClass"}]}
+        config = ToolConfig(
+            tools=(
+                PythonSource(
+                    class_path="nonexistent_module_xyz.NoClass",
+                    namespace="test",
+                ),
+            ),
+        )
+        # Should not raise — logs a warning instead
         registry = create_registry_from_config(config)
-        # Should skip invalid config and continue
         assert len(registry._tools) == 0
+
+    def test_create_registry_python_module(self, tmp_path, monkeypatch):
+        """Test creating registry with a Python module source."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        # Create a temporary module
+        mod_file = tmp_path / "test_tools.py"
+        mod_file.write_text(
+            "def hello(name: str) -> str:\n"
+            '    """Greet someone."""\n'
+            '    return f"Hello, {name}!"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        config = ToolConfig(
+            tools=(PythonSource(module_path="test_tools", namespace="test"),),
+        )
+        registry = create_registry_from_config(config)
+        tool_names = [t.name for t in registry._tools.values()]
+        assert any("hello" in name for name in tool_names)
+
+    def test_create_registry_disabled_source(self, tmp_path, monkeypatch):
+        """Test that disabled sources are skipped."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        mod_file = tmp_path / "skip_tools.py"
+        mod_file.write_text(
+            "def skipped() -> str:\n    return 'nope'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        config = ToolConfig(
+            tools=(
+                PythonSource(
+                    module_path="skip_tools",
+                    namespace="skip",
+                    enabled=False,
+                ),
+            ),
+        )
+        registry = create_registry_from_config(config)
+        assert len(registry._tools) == 0
+
+    def test_create_registry_denylist_filtering(self, tmp_path, monkeypatch):
+        """Test denylist mode filters by namespace."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        mod_file = tmp_path / "deny_tools.py"
+        mod_file.write_text(
+            "def denied() -> str:\n    return 'denied'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        config = ToolConfig(
+            mode="denylist",
+            disabled=("blocked",),
+            tools=(
+                PythonSource(
+                    module_path="deny_tools",
+                    namespace="blocked",
+                ),
+            ),
+        )
+        registry = create_registry_from_config(config)
+        assert len(registry._tools) == 0
+
+    def test_create_registry_allowlist_filtering(self, tmp_path, monkeypatch):
+        """Test allowlist mode only loads matching namespaces."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        mod_file = tmp_path / "allow_tools.py"
+        mod_file.write_text(
+            "def allowed() -> str:\n    return 'yes'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        config = ToolConfig(
+            mode="allowlist",
+            enabled=("allowed_ns",),
+            tools=(
+                PythonSource(
+                    module_path="allow_tools",
+                    namespace="not_allowed",
+                ),
+            ),
+        )
+        registry = create_registry_from_config(config)
+        assert len(registry._tools) == 0
+
+    def test_create_registry_invalid_module(self):
+        """Test that invalid module logs warning and continues."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        config = ToolConfig(
+            tools=(
+                PythonSource(
+                    module_path="nonexistent_module_xyz",
+                    namespace="bad",
+                ),
+            ),
+        )
+        # Should not raise — logs a warning instead
+        registry = create_registry_from_config(config)
+        assert len(registry._tools) == 0
+
+
+class TestShouldLoadSource:
+    """Tests for _should_load_source helper."""
+
+    def test_no_namespace_always_loads(self):
+        """Sources without namespace are always loaded."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import _should_load_source
+
+        source = PythonSource(module_path="mod")
+        config = ToolConfig(mode="allowlist", enabled=("other",))
+        assert _should_load_source(source, config) is True
+
+    def test_denylist_allows_unmatched(self):
+        """Denylist mode allows sources not in disabled list."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import _should_load_source
+
+        source = PythonSource(module_path="mod", namespace="safe")
+        config = ToolConfig(mode="denylist", disabled=("blocked",))
+        assert _should_load_source(source, config) is True
+
+    def test_denylist_blocks_matched(self):
+        """Denylist mode blocks sources in disabled list."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import _should_load_source
+
+        source = PythonSource(module_path="mod", namespace="blocked")
+        config = ToolConfig(mode="denylist", disabled=("blocked",))
+        assert _should_load_source(source, config) is False
+
+    def test_denylist_blocks_prefix(self):
+        """Denylist mode blocks child namespaces."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import _should_load_source
+
+        source = PythonSource(module_path="mod", namespace="web/search")
+        config = ToolConfig(mode="denylist", disabled=("web",))
+        assert _should_load_source(source, config) is False
+
+    def test_allowlist_allows_matched(self):
+        """Allowlist mode allows sources in enabled list."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import _should_load_source
+
+        source = PythonSource(module_path="mod", namespace="calc")
+        config = ToolConfig(mode="allowlist", enabled=("calc",))
+        assert _should_load_source(source, config) is True
+
+    def test_allowlist_blocks_unmatched(self):
+        """Allowlist mode blocks sources not in enabled list."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import _should_load_source
+
+        source = PythonSource(module_path="mod", namespace="other")
+        config = ToolConfig(mode="allowlist", enabled=("calc",))
+        assert _should_load_source(source, config) is False
+
+
+class TestNsMatches:
+    """Tests for _ns_matches helper."""
+
+    def test_exact_match(self):
+        from toolregistry_server.cli.openapi import _ns_matches
+
+        assert _ns_matches("web", "web") is True
+
+    def test_prefix_match(self):
+        from toolregistry_server.cli.openapi import _ns_matches
+
+        assert _ns_matches("web/search", "web") is True
+
+    def test_no_match(self):
+        from toolregistry_server.cli.openapi import _ns_matches
+
+        assert _ns_matches("calculator", "web") is False
+
+    def test_partial_no_match(self):
+        """'webhook' should NOT match pattern 'web'."""
+        from toolregistry_server.cli.openapi import _ns_matches
+
+        assert _ns_matches("webhook", "web") is False

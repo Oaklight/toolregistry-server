@@ -15,8 +15,35 @@
   "tools": [
     {
       // Register all public functions from examples/tools.py
+      "type": "python",
       "module": "examples.tools",
       "namespace": "examples"
     }
+
+    // Uncomment to load tools from a Python class:
+    // {
+    //   "type": "python",
+    //   "class": "toolregistry_hub.calculator.Calculator",
+    //   "namespace": "calculator"
+    // }
+
+    // Uncomment to load tools from an MCP server (SSE):
+    // {
+    //   "type": "mcp",
+    //   "transport": "sse",
+    //   "url": "http://localhost:8080/sse",
+    //   "namespace": "remote_mcp"
+    // }
+
+    // Uncomment to load tools from an OpenAPI endpoint:
+    // {
+    //   "type": "openapi",
+    //   "url": "https://api.example.com/openapi.json",
+    //   "namespace": "external_api",
+    //   "auth": {
+    //     "type": "bearer",
+    //     "token_env": "EXTERNAL_API_TOKEN"
+    //   }
+    // }
   ]
 }

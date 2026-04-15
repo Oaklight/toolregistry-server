@@ -4,6 +4,7 @@ OpenAPI server startup module.
 This module provides functions to start an OpenAPI server from the CLI.
 """
 
+import importlib
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,16 +15,26 @@ logger = get_logger()
 
 if TYPE_CHECKING:
     from toolregistry import ToolRegistry
+    from toolregistry.config import (
+        MCPSource,
+        OpenAPISource,
+        PythonSource,
+        ToolConfig,
+        ToolSource,
+    )
 
 
-def load_config(config_path: str | None) -> dict | None:
-    """Load configuration from a JSON/JSONC file.
+def load_config(config_path: str | None) -> "ToolConfig | None":
+    """Load configuration from a JSONC or YAML file.
+
+    Delegates to ``toolregistry.config.load_config()`` for parsing and
+    validation.
 
     Args:
         config_path: Path to the configuration file, or None.
 
     Returns:
-        Parsed configuration dictionary, or None if no config specified.
+        Parsed ``ToolConfig``, or None if no config specified.
 
     Raises:
         SystemExit: If the config file cannot be loaded.
@@ -31,45 +42,16 @@ def load_config(config_path: str | None) -> dict | None:
     if config_path is None:
         return None
 
-    path = Path(config_path)
-    if not path.exists():
+    try:
+        from toolregistry.config import ConfigError
+        from toolregistry.config import load_config as _load_config
+
+        return _load_config(config_path)
+    except FileNotFoundError:
         logger.error(f"Configuration file not found: {config_path}")
         sys.exit(1)
-
-    try:
-        import json
-
-        content = path.read_text(encoding="utf-8")
-
-        # Handle JSONC (JSON with comments) by stripping comments
-        lines = []
-        for line in content.splitlines():
-            stripped = line.strip()
-            # Skip full-line comments
-            if stripped.startswith("//"):
-                continue
-            # Remove inline comments (simple approach)
-            if "//" in line:
-                # Be careful not to remove // inside strings
-                # This is a simple heuristic that works for most cases
-                in_string = False
-                result = []
-                i = 0
-                while i < len(line):
-                    if line[i] == '"' and (i == 0 or line[i - 1] != "\\"):
-                        in_string = not in_string
-                    if not in_string and line[i : i + 2] == "//":
-                        break
-                    result.append(line[i])
-                    i += 1
-                lines.append("".join(result))
-            else:
-                lines.append(line)
-
-        clean_content = "\n".join(lines)
-        return json.loads(clean_content)
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in configuration file: {e}")
+    except ConfigError as e:
+        logger.error(f"Invalid configuration: {e}")
         sys.exit(1)
     except Exception as e:
         logger.error(f"Failed to load configuration file: {e}")
@@ -126,54 +108,142 @@ def _ns_matches(tool_namespace: str, pattern: str) -> bool:
     return tool_namespace == pattern or tool_namespace.startswith(pattern + "/")
 
 
-def _should_load_tool(
-    namespace: str | None,
-    mode: str,
-    disabled_namespaces: list[str],
-    enabled_namespaces: list[str],
-) -> bool:
-    """Determine if a tool should be loaded based on mode and namespace lists.
+def _should_load_source(source: "ToolSource", config: "ToolConfig") -> bool:
+    """Determine if a tool source should be loaded based on mode and namespace.
 
     Args:
-        namespace: The tool's namespace, or None if not specified.
-        mode: Either "denylist" or "allowlist".
-        disabled_namespaces: List of namespaces to disable (denylist mode).
-        enabled_namespaces: List of namespaces to enable (allowlist mode).
+        source: The tool source to check.
+        config: The parsed tool configuration.
 
     Returns:
-        True if the tool should be loaded, False otherwise.
+        True if the source should be loaded, False otherwise.
     """
-    if namespace is None:
-        # Tools without namespace are always loaded
+    ns = source.namespace
+    if ns is None:
         return True
+    if config.mode == "denylist":
+        return not any(_ns_matches(ns, p) for p in config.disabled)
+    return any(_ns_matches(ns, p) for p in config.enabled)
 
-    if mode == "denylist":
-        # In denylist mode, load unless namespace is in disabled list
-        for pattern in disabled_namespaces:
-            if _ns_matches(namespace, pattern):
-                return False
-        return True
+
+def _register_python_source(
+    registry: "ToolRegistry",
+    source: "PythonSource",
+) -> None:
+    """Register tools from a Python class or module source.
+
+    Args:
+        registry: The registry to register tools into.
+        source: The Python source configuration.
+    """
+    ns: bool | str = source.namespace if source.namespace else False
+
+    if source.class_path:
+        module_path, class_name = source.class_path.rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+        instance = cls()
+        registry.register_from_class(instance, namespace=ns)
+        logger.info(f"Loaded class tools from {source.class_path}")
+    elif source.module_path:
+        module = importlib.import_module(source.module_path)
+        for name in dir(module):
+            if not name.startswith("_"):
+                obj = getattr(module, name)
+                if callable(obj) and not isinstance(obj, type):
+                    registry.register(obj, namespace=source.namespace)
+        logger.info(f"Loaded module tools from {source.module_path}")
+
+
+def _register_mcp_source(
+    registry: "ToolRegistry",
+    source: "MCPSource",
+) -> None:
+    """Register tools from an MCP server source.
+
+    Args:
+        registry: The registry to register tools into.
+        source: The MCP source configuration.
+    """
+    ns: bool | str = source.namespace if source.namespace else False
+
+    if source.transport == "stdio":
+        assert source.command is not None
+        transport: str | dict = {
+            "command": source.command[0],
+            "args": list(source.command[1:]),
+            "env": dict(source.env) if source.env else {},
+        }
     else:
-        # In allowlist mode, only load if namespace is in enabled list
-        return any(_ns_matches(namespace, pattern) for pattern in enabled_namespaces)
+        assert source.url is not None
+        transport = source.url
+
+    registry.register_from_mcp(
+        transport,
+        namespace=ns,
+        persistent=source.persistent,
+    )
+    logger.info(f"Loaded MCP tools from {source.url or ' '.join(source.command or [])}")
 
 
-def create_registry_from_config(config: dict | None) -> "ToolRegistry":
+def _register_openapi_source(
+    registry: "ToolRegistry",
+    source: "OpenAPISource",
+) -> None:
+    """Register tools from an OpenAPI endpoint source.
+
+    Args:
+        registry: The registry to register tools into.
+        source: The OpenAPI source configuration.
+    """
+    from toolregistry.openapi import HttpxClientConfig, load_openapi_spec
+
+    ns: bool | str = source.namespace if source.namespace else False
+
+    # Build auth headers
+    headers: dict[str, str] = {}
+    if source.auth and source.auth.token:
+        if source.auth.type == "bearer":
+            headers["Authorization"] = f"Bearer {source.auth.token}"
+        elif source.auth.type == "header":
+            headers[source.auth.header_name] = source.auth.token
+
+    # Load spec and determine base URL
+    spec = load_openapi_spec(source.url)
+    base_url = source.base_url
+    if not base_url:
+        servers = spec.get("servers", [])
+        base_url = servers[0].get("url", "") if servers else ""
+
+    client = HttpxClientConfig(base_url=base_url, headers=headers)
+    registry.register_from_openapi(client, spec, namespace=ns, persistent=True)
+    logger.info(f"Loaded OpenAPI tools from {source.url}")
+
+
+def create_registry_from_config(config: "ToolConfig | None") -> "ToolRegistry":
     """Create a ToolRegistry from configuration.
 
-    Supports two modes:
+    Supports three tool source types:
+
+    - **python**: Python classes or modules
+    - **mcp**: MCP servers (stdio, SSE, streamable-http)
+    - **openapi**: OpenAPI endpoints
+
+    And two filtering modes:
+
     - **denylist** (default): Load all tools except those with namespaces
       listed in the "disabled" array.
     - **allowlist**: Only load tools with namespaces listed in the "enabled"
       array.
 
     Args:
-        config: Configuration dictionary, or None for empty registry.
+        config: Parsed ``ToolConfig``, or None for empty registry.
 
     Returns:
         Configured ToolRegistry instance.
     """
     from toolregistry import ToolRegistry
+    from toolregistry.config import MCPSource, OpenAPISource, PythonSource
 
     registry = ToolRegistry()
 
@@ -181,108 +251,59 @@ def create_registry_from_config(config: dict | None) -> "ToolRegistry":
         logger.info("No configuration provided, starting with empty registry")
         return registry
 
-    # Parse mode and namespace lists
-    mode = config.get("mode", "denylist")
-    if mode not in ("denylist", "allowlist"):
-        logger.warning(f"Invalid mode '{mode}', defaulting to 'denylist'")
-        mode = "denylist"
-
-    disabled_namespaces = config.get("disabled", [])
-    enabled_namespaces = config.get("enabled", [])
-
-    if not isinstance(disabled_namespaces, list):
-        logger.warning("'disabled' must be a list, ignoring")
-        disabled_namespaces = []
-
-    if not isinstance(enabled_namespaces, list):
-        logger.warning("'enabled' must be a list, ignoring")
-        enabled_namespaces = []
-
-    # Process tools from config
-    tools = config.get("tools", [])
     loaded_count = 0
     skipped_count = 0
 
-    for tool_config in tools:
-        # Tool configuration format:
-        # Option 1 - Full class path:
-        # {
-        #     "class": "module.path.ClassName",
-        #     "enabled": true,       # optional, default true
-        #     "namespace": "ns"      # optional
-        # }
-        # Option 2 - Separate module and class:
-        # {
-        #     "module": "module.path",
-        #     "class": "ClassName",  # optional
-        #     "enabled": true,       # optional, default true
-        #     "namespace": "ns"      # optional
-        # }
-        module_path = tool_config.get("module")
-        class_name = tool_config.get("class")
-        per_tool_enabled = tool_config.get("enabled", True)
-        namespace = tool_config.get("namespace")
-
-        # Skip tools with enabled=false at the tool level
-        if not per_tool_enabled:
-            logger.info(f"Skipping disabled tool: {class_name or module_path}")
+    for source in config.tools:
+        if not source.enabled:
+            logger.info(f"Skipping disabled source: {source}")
             skipped_count += 1
             continue
 
-        # Check if namespace should be loaded based on mode
-        if not _should_load_tool(
-            namespace, mode, disabled_namespaces, enabled_namespaces
-        ):
-            reason = "in disabled list" if mode == "denylist" else "not in enabled list"
-            logger.info(f"Config {mode}: skipping namespace '{namespace}' ({reason})")
+        if not _should_load_source(source, config):
+            reason = (
+                "in disabled list"
+                if config.mode == "denylist"
+                else "not in enabled list"
+            )
+            logger.info(
+                f"Config {config.mode}: skipping namespace "
+                f"'{source.namespace}' ({reason})"
+            )
             skipped_count += 1
-            continue
-
-        # Support full class path in "class" field (e.g., "module.path.ClassName")
-        if not module_path and class_name and "." in class_name:
-            # Split the full class path into module and class name
-            parts = class_name.rsplit(".", 1)
-            module_path = parts[0]
-            class_name = parts[1]
-
-        if not module_path:
-            logger.warning(f"Skipping tool config without module: {tool_config}")
             continue
 
         try:
-            import importlib
-
-            module = importlib.import_module(module_path)
-
-            if class_name:
-                # Register a class
-                cls = getattr(module, class_name)
-                instance = cls()
-                # register_from_class uses with_namespace parameter
-                # If namespace is provided, use it; otherwise use False (no namespace)
-                registry.register_from_class(
-                    instance, with_namespace=namespace if namespace else False
-                )
-            else:
-                # Register all public functions from module
-                for name in dir(module):
-                    if not name.startswith("_"):
-                        obj = getattr(module, name)
-                        if callable(obj) and not isinstance(obj, type):
-                            # register uses namespace parameter
-                            registry.register(obj, namespace=namespace)
-
-            logger.info(f"Loaded tools from {module_path}")
+            if isinstance(source, PythonSource):
+                _register_python_source(registry, source)
+            elif isinstance(source, MCPSource):
+                _register_mcp_source(registry, source)
+            elif isinstance(source, OpenAPISource):
+                _register_openapi_source(registry, source)
             loaded_count += 1
         except Exception as e:
-            logger.warning(f"Failed to load tools from {module_path}: {e}")
+            source_desc = _describe_source(source)
+            logger.warning(f"Failed to load tools from {source_desc}: {e}")
 
     logger.info(
-        f"Applied tool config (mode={mode}): "
+        f"Applied tool config (mode={config.mode}): "
         f"loaded {loaded_count}, skipped {skipped_count}"
     )
 
     return registry
+
+
+def _describe_source(source: "ToolSource") -> str:
+    """Return a human-readable description of a tool source for logging."""
+    from toolregistry.config import MCPSource, OpenAPISource, PythonSource
+
+    if isinstance(source, PythonSource):
+        return source.class_path or source.module_path or "unknown python source"
+    if isinstance(source, MCPSource):
+        return source.url or " ".join(source.command or [])
+    if isinstance(source, OpenAPISource):
+        return source.url
+    return str(source)
 
 
 def run_openapi_server(

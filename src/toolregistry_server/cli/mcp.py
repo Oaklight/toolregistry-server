@@ -14,33 +14,32 @@ logger = get_logger()
 
 if TYPE_CHECKING:
     from toolregistry import ToolRegistry
+    from toolregistry.config import ToolConfig
 
 
-def create_registry_from_config(config: dict | None) -> "ToolRegistry":
+def create_registry_from_config(config: "ToolConfig | None") -> "ToolRegistry":
     """Create a ToolRegistry from configuration.
 
     Args:
-        config: Configuration dictionary, or None for empty registry.
+        config: Parsed ``ToolConfig``, or None for empty registry.
 
     Returns:
         Configured ToolRegistry instance.
     """
-    # Import the shared implementation from openapi module
     from .openapi import create_registry_from_config as _create_registry
 
     return _create_registry(config)
 
 
-def load_config(config_path: str | None) -> dict | None:
-    """Load configuration from a JSON/JSONC file.
+def load_config(config_path: str | None) -> "ToolConfig | None":
+    """Load configuration from a JSONC or YAML file.
 
     Args:
         config_path: Path to the configuration file, or None.
 
     Returns:
-        Parsed configuration dictionary, or None if no config specified.
+        Parsed ``ToolConfig``, or None if no config specified.
     """
-    # Import the shared implementation from openapi module
     from .openapi import load_config as _load_config
 
     return _load_config(config_path)
