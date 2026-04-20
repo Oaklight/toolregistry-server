@@ -51,6 +51,32 @@ plugins:
             merge_init_into_class: true
             separate_signature: true
             show_signature_annotations: true
+  - llmstxt:
+      full_output: llms-full.txt
+      sections:
+        Home:
+          - index.md
+        Usage:
+          - usage/installation.md
+          - usage/quickstart.md
+          - usage/configuration.md
+          - usage/authentication.md
+        Adapters:
+          - adapters/index.md
+          - adapters/openapi.md
+          - adapters/mcp.md
+        CLI:
+          - cli/index.md
+        API Reference:
+          - api/index.md
+          - api/core/route_table.md
+          - api/openapi.md
+          - api/mcp.md
+          - api/auth.md
+        Ecosystem:
+          - ecosystem.md
+        Changelog:
+          - changelog.md
 
 markdown_extensions:
   - admonition
