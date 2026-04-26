@@ -1,7 +1,7 @@
 site_name: ToolRegistry Server
 site_description: Serve Custom Tools via OpenAPI and MCP for Function-Calling LLMs
 site_author: Peng Ding
-site_url: https://toolregistry-server.readthedocs.io/en/
+site_url: https://toolregistry-server.readthedocs.io/en/latest
 repo_name: Oaklight/toolregistry-server
 repo_url: https://github.com/Oaklight/toolregistry-server
 copyright: Copyright &copy; 2026 Peng Ding
