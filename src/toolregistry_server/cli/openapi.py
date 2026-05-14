@@ -196,7 +196,7 @@ def _register_openapi_source(
         registry: The registry to register tools into.
         source: The OpenAPI source configuration.
     """
-    from toolregistry.integrations.openapi import HttpxClientConfig, load_openapi_spec
+    from toolregistry.integrations.openapi import HttpClientConfig, load_openapi_spec
 
     ns: bool | str = source.namespace if source.namespace else False
 
@@ -215,7 +215,7 @@ def _register_openapi_source(
         servers = spec.get("servers", [])
         base_url = servers[0].get("url", "") if servers else ""
 
-    client = HttpxClientConfig(base_url=base_url, headers=headers)
+    client = HttpClientConfig(base_url=base_url, headers=headers)
     registry.register_from_openapi(client, spec, namespace=ns, persistent=True)
     logger.info(f"Loaded OpenAPI tools from {source.url}")
 
