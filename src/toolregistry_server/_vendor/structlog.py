@@ -2,7 +2,8 @@
 # version = "0.3.0"
 # deps = []
 # tier = "medium"
-# category = "utility"
+# category = "devtools"
+# note = "Install/update via `zerodep add structlog`"
 # ///
 
 """Zero-dependency structured logging with pretty console output.
@@ -48,8 +49,7 @@ import logging
 import os
 import sys
 import traceback
-from collections.abc import Callable
-from typing import IO, Any
+from typing import IO, Any, Callable
 
 __all__ = [
     # Type aliases
@@ -212,7 +212,9 @@ def _supports_color(stream: Any = None) -> bool:
     s = stream or sys.stderr
     if not hasattr(s, "isatty") or not s.isatty():
         return False
-    return os.environ.get("TERM", "") != "dumb"
+    if os.environ.get("TERM", "") == "dumb":
+        return False
+    return True
 
 
 # ── Logger Factories ─────────────────────────────────────────────────────────
