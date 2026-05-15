@@ -18,13 +18,11 @@ Define custom tools and serve them via OpenAPI or MCP interfaces. Built on [Tool
 
 ## Ecosystem
 
-The ToolRegistry ecosystem consists of three packages:
-
-| Package | Description | Repository |
-|---------|-------------|------------|
-| [`toolregistry`](https://pypi.org/project/toolregistry/) | Core library - Tool model, ToolRegistry, client integration | [Oaklight/ToolRegistry](https://github.com/Oaklight/ToolRegistry) |
-| [`toolregistry-server`](https://pypi.org/project/toolregistry-server/) | Tool server - define tools and serve via OpenAPI/MCP | [Oaklight/toolregistry-server](https://github.com/Oaklight/toolregistry-server) |
-| [`toolregistry-hub`](https://pypi.org/project/toolregistry-hub/) | Tool collection - Built-in tools, default server configuration | [Oaklight/toolregistry-hub](https://github.com/Oaklight/toolregistry-hub) |
+| Package | Description | PyPI | Docs |
+|---------|-------------|------|------|
+| [**toolregistry**](https://github.com/Oaklight/ToolRegistry) | Core library — tool registration, schema generation, execution | [![PyPI](https://img.shields.io/pypi/v/toolregistry?color=green)](https://pypi.org/project/toolregistry/) | [Docs](https://toolregistry.readthedocs.io/) |
+| [**toolregistry-server**](https://github.com/Oaklight/toolregistry-server) | Server adapters — expose tools via OpenAPI & MCP | [![PyPI](https://img.shields.io/pypi/v/toolregistry-server?color=green)](https://pypi.org/project/toolregistry-server/) | [Docs](https://toolregistry-server.readthedocs.io/) |
+| [**toolregistry-hub**](https://github.com/Oaklight/toolregistry-hub) | Ready-to-use tools — calculator, web search, file ops, etc. | [![PyPI](https://img.shields.io/pypi/v/toolregistry-hub?color=green)](https://pypi.org/project/toolregistry-hub/) | [Docs](https://toolregistry-hub.readthedocs.io/) |
 
 ```
 toolregistry (core)
