@@ -1,0 +1,25 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty check
+        description: Type check src/ with ty.
+        entry: ty check src/
+        language: system
+        pass_filenames: false
+        require_serial: true
+        types: [python]
+
+  - repo: https://github.com/rohaquinlop/complexipy-pre-commit
+    rev: v4.2.0
+    hooks:
+      - id: complexipy
+        pass_filenames: false
+        args: [., -e, src/toolregistry_server/_vendor, -mx, "20"]

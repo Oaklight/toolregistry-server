@@ -9,23 +9,28 @@ VERSION := $(shell grep -oE '__version__[[:space:]]*=[[:space:]]*"[^"]+"' src/to
 all: lint test build
 
 # ──────────────────────────────────────────────
-# Linting & Formatting
+# Linting & Type Checking
 # ──────────────────────────────────────────────
 
-# Run ruff linter
+# Run all linting and type checking
 lint:
 	@echo "Running ruff check..."
 	ruff check src/ tests/
 	@echo "Running ruff format check..."
 	ruff format --check src/ tests/
-	@echo "Lint complete."
+	@echo "Running ty check..."
+	ty check src/
+	@echo "Running complexipy..."
+	complexipy . -e src/toolregistry_server/_vendor -mx 20
+	@echo "All checks passed."
 
-# Auto-fix lint issues
-lint-fix:
-	@echo "Auto-fixing lint issues..."
+# Auto-fix and format
+fmt:
+	@echo "Running ruff fix..."
 	ruff check --fix src/ tests/
+	@echo "Running ruff format..."
 	ruff format src/ tests/
-	@echo "Lint fix complete."
+	@echo "Format complete."
 
 # ──────────────────────────────────────────────
 # Testing
@@ -68,8 +73,8 @@ help:
 	@echo "Available targets:"
 	@echo ""
 	@echo "Development:"
-	@echo "  lint           - Run ruff linter and format check"
-	@echo "  lint-fix       - Auto-fix lint and formatting issues"
+	@echo "  lint           - Run ruff, ty, and complexipy checks"
+	@echo "  fmt            - Auto-fix and format with ruff"
 	@echo "  test           - Run tests with pytest"
 	@echo ""
 	@echo "Package targets:"
@@ -82,4 +87,4 @@ help:
 	@echo ""
 	@echo "Detected version: $(VERSION)"
 
-.PHONY: all lint lint-fix test build push clean build push clean help
+.PHONY: all lint fmt test build push clean help

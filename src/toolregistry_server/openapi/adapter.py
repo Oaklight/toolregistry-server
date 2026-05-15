@@ -385,6 +385,38 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _filter_disabled_paths(
+    paths: dict[str, Any],
+    disabled_operation_ids: set[str],
+) -> dict[str, Any]:
+    """Remove operations for disabled tools from the OpenAPI paths dict.
+
+    Iterates over all path items and their HTTP methods, dropping any
+    operation whose ``operationId`` appears in *disabled_operation_ids*.
+    Path items that become empty after filtering are omitted entirely.
+
+    Args:
+        paths: The ``paths`` section of an OpenAPI schema.
+        disabled_operation_ids: Set of operation IDs to exclude.
+
+    Returns:
+        A new paths dict with disabled operations removed.
+    """
+    filtered_paths: dict[str, Any] = {}
+    for path, path_item in paths.items():
+        filtered_methods: dict[str, Any] = {}
+        for method, operation in path_item.items():
+            if isinstance(operation, dict):
+                op_id = operation.get("operationId", "")
+                if op_id not in disabled_operation_ids:
+                    filtered_methods[method] = operation
+            else:
+                filtered_methods[method] = operation
+        if filtered_methods:
+            filtered_paths[path] = filtered_methods
+    return filtered_paths
+
+
 def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
     """Configure dynamic OpenAPI schema generation that filters out disabled tools.
 
@@ -424,19 +456,9 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
 
         # Filter out paths whose operations correspond to disabled tools
         if disabled_operation_ids and "paths" in openapi_schema:
-            filtered_paths: dict[str, Any] = {}
-            for path, path_item in openapi_schema["paths"].items():
-                filtered_methods: dict[str, Any] = {}
-                for method, operation in path_item.items():
-                    if isinstance(operation, dict):
-                        op_id = operation.get("operationId", "")
-                        if op_id not in disabled_operation_ids:
-                            filtered_methods[method] = operation
-                    else:
-                        filtered_methods[method] = operation
-                if filtered_methods:
-                    filtered_paths[path] = filtered_methods
-            openapi_schema["paths"] = filtered_paths
+            openapi_schema["paths"] = _filter_disabled_paths(
+                openapi_schema["paths"], disabled_operation_ids
+            )
 
         # Do NOT cache (app.openapi_schema is not set) so the schema
         # is regenerated on every request, reflecting runtime changes.
