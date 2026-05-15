@@ -9,10 +9,10 @@ Then visit:
 """
 
 from toolregistry import ToolRegistry
+from tools import add, greet, multiply
+
 from toolregistry_server import RouteTable
 from toolregistry_server.openapi import create_openapi_app
-
-from tools import add, greet, multiply
 
 # 1. Create registry and register tools
 registry = ToolRegistry()

@@ -10,10 +10,10 @@ by MCP-compatible clients (e.g., Claude Desktop, Claude Code).
 import asyncio
 
 from toolregistry import ToolRegistry
+from tools import add, greet, multiply
+
 from toolregistry_server import RouteTable
 from toolregistry_server.mcp import create_mcp_server, run_stdio
-
-from tools import add, greet, multiply
 
 # 1. Create registry and register tools
 registry = ToolRegistry()

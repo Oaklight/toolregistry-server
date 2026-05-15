@@ -105,6 +105,49 @@ def _serialize_result(result: Any) -> str:
         return str(result)
 
 
+async def _execute_tool(
+    route: Any,
+    arguments: dict,
+    session_ctx: SessionContext | None,
+    session_mgr: "SessionManager",
+) -> Any:
+    """Resolve the handler for a route and execute it with the given arguments.
+
+    Handles session-scoped handler resolution, parameter validation/coercion
+    via the route's Pydantic model, optional session injection, and async/sync
+    dispatch.
+
+    Args:
+        route: The RouteEntry for the tool being invoked.
+        arguments: The input arguments for the tool.
+        session_ctx: The current session context, or None.
+        session_mgr: The SessionManager for handler caching.
+
+    Returns:
+        The raw result from the tool handler.
+    """
+    # Resolve handler (possibly session-scoped)
+    handler = route.handler
+    if route.handler_factory and session_ctx:
+        handler = session_mgr.get_session_handler(session_ctx.session_id, route)
+
+    # Validate and coerce parameters (e.g. string "8" → int 8)
+    if isinstance(route.parameters_model, type) and issubclass(
+        route.parameters_model, BaseModel
+    ):
+        model = route.parameters_model(**arguments)
+        arguments = model.model_dump_one_level()
+
+    # Inject session if handler requests it
+    if session_ctx and should_inject_session(handler):
+        arguments = {**arguments, "_session": session_ctx}
+
+    # Execute the tool handler
+    if route.is_async:
+        return await handler(**arguments)
+    return handler(**arguments)
+
+
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
@@ -197,31 +240,8 @@ def route_table_to_mcp_server(
             token = session_context_var.set(session_ctx)
 
         try:
-            # Resolve handler (possibly session-scoped)
-            handler = route.handler
-            if route.handler_factory and session_ctx:
-                handler = session_mgr.get_session_handler(session_ctx.session_id, route)
-
-            # Validate and coerce parameters (e.g. string "8" → int 8)
-            if isinstance(route.parameters_model, type) and issubclass(
-                route.parameters_model, BaseModel
-            ):
-                model = route.parameters_model(**arguments)
-                arguments = model.model_dump_one_level()
-
-            # Inject session if handler requests it
-            if session_ctx and should_inject_session(handler):
-                arguments = {**arguments, "_session": session_ctx}
-
-            # Execute the tool handler
-            if route.is_async:
-                result = await handler(**arguments)
-            else:
-                result = handler(**arguments)
-
-            # Serialize result to text
+            result = await _execute_tool(route, arguments, session_ctx, session_mgr)
             text = _serialize_result(result)
-
             logger.debug(f"call_tool '{name}': success")
             return [TextContent(type="text", text=text)]
 
