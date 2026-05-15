@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-from .._structlog import get_logger
+from .._vendor.structlog import get_logger
 
 logger = get_logger()
 
@@ -56,7 +56,7 @@ def load_env_file(env_path: str | None = None, no_env: bool = False) -> None:
     if no_env:
         return
 
-    from .._dotenv import load_dotenv
+    from .._vendor.dotenv import load_dotenv
 
     path = Path(env_path) if env_path else Path.cwd() / ".env"
 

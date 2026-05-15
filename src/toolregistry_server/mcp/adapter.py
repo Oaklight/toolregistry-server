@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from .._structlog import get_logger
+from .._vendor.structlog import get_logger
 from ..session import (
     SessionContext,
     SessionManager,

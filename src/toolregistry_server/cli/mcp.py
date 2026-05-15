@@ -8,7 +8,7 @@ import asyncio
 import sys
 from typing import TYPE_CHECKING
 
-from .._structlog import get_logger
+from .._vendor.structlog import get_logger
 
 logger = get_logger()
 
