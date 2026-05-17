@@ -58,6 +58,7 @@ docs_en/, docs_zh/           # Documentation (git worktrees, orphan branches)
 ```bash
 conda activate toolregistry_server   # or your env name
 pip install -e ".[dev]"
+pre-commit install
 ```
 
 Run `make help` for all targets:
@@ -70,11 +71,11 @@ make build         # python -m build
 make push          # twine upload
 ```
 
-No pre-commit hooks — quality is enforced by CI workflows and `make lint`.
+Pre-commit hooks configured (ruff, ty, complexipy) — run `pre-commit install` after setup.
 
 ## Definition of done
 
-1. `make lint` passes (ruff check + format)
+1. `pre-commit run --all-files` passes (ruff, ty, complexipy)
 2. `make test` passes across Python 3.10–3.13
 3. New code has tests in `tests/`
 4. Google-style docstrings on public APIs; comments in English
