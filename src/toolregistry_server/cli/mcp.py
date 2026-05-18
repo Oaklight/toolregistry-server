@@ -89,6 +89,7 @@ def run_mcp_server(
         logger.info("Install with: pip install toolregistry-server[mcp]")
         sys.exit(1)
 
+    config: ToolConfig | None = None
     if registry is None:
         # Load configuration and build registry from config
         config = load_config(config_path)
@@ -97,7 +98,7 @@ def run_mcp_server(
     if profile is not None:
         from .openapi import apply_profile
 
-        apply_profile(registry, profile)
+        apply_profile(registry, profile, config=config)
 
     # Create route table
     route_table = RouteTable(registry)

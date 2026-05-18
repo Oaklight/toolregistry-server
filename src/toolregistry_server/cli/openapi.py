@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from toolregistry.config import (
         MCPSource,
         OpenAPISource,
+        ProfileConfig,
         PythonSource,
         ToolConfig,
         ToolSource,
@@ -220,6 +221,54 @@ def _register_openapi_source(
     logger.info(f"Loaded OpenAPI tools from {source.url}")
 
 
+def _build_ns_tags(config: "ToolConfig") -> dict[str, tuple[str, ...]]:
+    """Build a namespace → tags mapping from source declarations in *config*.
+
+    Args:
+        config: Parsed ``ToolConfig``.
+
+    Returns:
+        Dict mapping namespace strings to their declared tag tuples.
+        Only includes sources that have both a namespace and non-empty tags.
+    """
+    return {
+        source.namespace: source.tags
+        for source in config.tools
+        if source.namespace and source.tags
+    }
+
+
+def _apply_ns_tags(
+    registry: "ToolRegistry",
+    ns_tags: dict[str, tuple[str, ...]],
+) -> None:
+    """Apply namespace-based tag declarations to already-registered tools.
+
+    For each tool in *registry* whose namespace appears in *ns_tags*, sets
+    ``tool.metadata.tags`` to the corresponding ``ToolTag`` enum set.
+    Unknown tag strings are skipped with a warning.
+
+    Args:
+        registry: The registry whose tools will be updated.
+        ns_tags: Mapping of namespace → tag name tuples.
+    """
+    from toolregistry.tool import ToolTag
+
+    for tool in registry._tools.values():
+        if not tool.namespace or tool.namespace not in ns_tags:
+            continue
+        tag_enums: set[ToolTag] = set()
+        for t in ns_tags[tool.namespace]:
+            try:
+                tag_enums.add(ToolTag(t))
+            except ValueError:
+                logger.warning(
+                    f"Unknown tag '{t}' for namespace '{tool.namespace}', skipping"
+                )
+        if tag_enums:
+            tool.metadata.tags = tag_enums
+
+
 def create_registry_from_config(
     config: "ToolConfig | None",
     post_register_hooks: "list[PostRegisterHook] | None" = None,
@@ -266,6 +315,9 @@ def create_registry_from_config(
     loaded_count = 0
     skipped_count = 0
 
+    # Build namespace → tags mapping from config before registration
+    ns_tags = _build_ns_tags(config)
+
     for source in config.tools:
         if not source.enabled:
             logger.info(f"Skipping disabled source: {source}")
@@ -302,6 +354,10 @@ def create_registry_from_config(
         f"loaded {loaded_count}, skipped {skipped_count}"
     )
 
+    # Apply tags from config to registered tools
+    if ns_tags:
+        _apply_ns_tags(registry, ns_tags)
+
     return registry
 
 
@@ -312,20 +368,35 @@ def create_registry_from_config(
 #: Tags that represent local-machine-sensitive operations.
 _LOCAL_TAGS: frozenset[str] = frozenset({"file_system", "destructive", "privileged"})
 
-#: Mapping from profile name → tags to *disable*.
+#: Fallback mapping from profile name → tags to *disable* when no per-profile
+#: override is declared in the config file.
 PROFILE_DISABLE_TAGS: dict[str, frozenset[str]] = {
     "remote": _LOCAL_TAGS,
-    "local": frozenset(),  # local: no tag-based disabling (keep all)
+    "local": frozenset(),  # local: no tag-based disabling (keep all) by default
 }
 
 
-def apply_profile(registry: "ToolRegistry", profile: str) -> None:
+def apply_profile(
+    registry: "ToolRegistry",
+    profile: str,
+    config: "ToolConfig | None" = None,
+) -> None:
     """Apply a deployment profile filter to a registry.
 
-    Calls ``registry.disable_by_tags()`` with the tag set associated with
-    *profile*.  Unknown profile names are logged as a warning and ignored.
+    When *config* contains a ``profiles`` entry for *profile*, its settings
+    take precedence over the built-in defaults:
 
-    Supported profiles:
+    - ``disable_tags``: replaces the built-in tag set used to call
+      ``registry.disable_by_tags()``.
+    - ``enable``: namespace patterns force-enabled after tag filtering.
+    - ``disable``: namespace patterns force-disabled after tag filtering.
+
+    When no matching entry exists in *config*, the function falls back to the
+    built-in ``PROFILE_DISABLE_TAGS`` mapping.  Unknown profile names (absent
+    from both *config* and the built-in mapping) are logged as a warning and
+    ignored.
+
+    Supported built-in profiles (used as fallback defaults):
 
     - ``remote``: disables tools tagged ``file_system``, ``destructive``, or
       ``privileged`` — tools that operate on the server's own machine and
@@ -335,31 +406,69 @@ def apply_profile(registry: "ToolRegistry", profile: str) -> None:
     Args:
         registry: The registry to filter in-place.
         profile: Profile name (e.g. ``"remote"`` or ``"local"``).
+        config: Optional parsed ``ToolConfig``.  When provided, its
+            ``profiles`` dict is consulted first for per-profile overrides.
     """
     from toolregistry.tool import ToolTag
 
-    if profile not in PROFILE_DISABLE_TAGS:
-        logger.warning(
-            f"Unknown profile '{profile}'. "
-            f"Valid profiles: {sorted(PROFILE_DISABLE_TAGS)}"
+    # Resolve profile config: prefer config-file declaration, fall back to built-ins.
+    profile_cfg: ProfileConfig | None = None
+    if config is not None and profile in config.profiles:
+        profile_cfg = config.profiles[profile]
+
+    if profile_cfg is not None:
+        # --- Config-file defined profile ---
+        tags_to_disable: frozenset[str] = frozenset(profile_cfg.disable_tags)
+
+        if tags_to_disable:
+            tag_enums: set[ToolTag] = {ToolTag(t) for t in tags_to_disable}
+            disabled = registry.disable_by_tags(
+                tag_enums,
+                match="any",
+                reason=f"Disabled by profile '{profile}'",
+            )
+            logger.info(
+                f"Profile '{profile}': disabled {len(disabled)} tool(s) "
+                f"with tags {sorted(tags_to_disable)}"
+            )
+        else:
+            logger.info(f"Profile '{profile}': no tag filter applied")
+
+        # Apply name-based enable overrides (highest priority)
+        for name in profile_cfg.enable:
+            registry.enable(name)
+            logger.info(f"Profile '{profile}': force-enabled '{name}'")
+
+        # Apply name-based disable overrides
+        for name in profile_cfg.disable:
+            registry.disable(name, reason=f"Disabled by profile '{profile}'")
+            logger.info(f"Profile '{profile}': force-disabled '{name}'")
+
+    elif profile in PROFILE_DISABLE_TAGS:
+        # --- Built-in fallback profile ---
+        builtin_tags = PROFILE_DISABLE_TAGS[profile]
+        if not builtin_tags:
+            logger.info(f"Profile '{profile}': no tag filter applied")
+            return
+
+        tag_enums = {ToolTag(t) for t in builtin_tags}
+        disabled = registry.disable_by_tags(
+            tag_enums,
+            match="any",
+            reason=f"Disabled by profile '{profile}'",
         )
-        return
+        logger.info(
+            f"Profile '{profile}': disabled {len(disabled)} tool(s) "
+            f"with tags {sorted(t for t in builtin_tags)}"
+        )
 
-    tags_to_disable = PROFILE_DISABLE_TAGS[profile]
-    if not tags_to_disable:
-        logger.info(f"Profile '{profile}': no tag filter applied")
+    else:
+        known = sorted(
+            set(PROFILE_DISABLE_TAGS)
+            | (set(config.profiles) if config is not None else set())
+        )
+        logger.warning(f"Unknown profile '{profile}'. Valid profiles: {known}")
         return
-
-    tag_enums: set[ToolTag] = {ToolTag(t) for t in tags_to_disable}
-    disabled = registry.disable_by_tags(
-        tag_enums,
-        match="any",
-        reason=f"Disabled by profile '{profile}'",
-    )
-    logger.info(
-        f"Profile '{profile}': disabled {len(disabled)} tool(s) "
-        f"with tags {sorted(t for t in tags_to_disable)}"
-    )
 
 
 def _describe_source(source: "ToolSource") -> str:
@@ -414,13 +523,14 @@ def run_openapi_server(
         logger.error(f"Failed to import server components: {e}")
         sys.exit(1)
 
+    config: ToolConfig | None = None
     if registry is None:
         # Load configuration and build registry from config
         config = load_config(config_path)
         registry = create_registry_from_config(config)
 
     if profile is not None:
-        apply_profile(registry, profile)
+        apply_profile(registry, profile, config=config)
 
     # Create route table
     route_table = RouteTable(registry)
