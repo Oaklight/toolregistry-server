@@ -29,12 +29,13 @@ toolregistry-server openapi [选项]
 
 | 选项 | 默认值 | 描述 |
 |------|--------|------|
-| `--config PATH` | 必需 | JSON/JSONC 配置文件路径 |
+| `--config PATH` | - | JSON/JSONC 配置文件路径 |
 | `--host HOST` | `0.0.0.0` | 绑定主机 |
 | `--port PORT` | `8000` | 绑定端口 |
 | `--auth-token TOKEN` | - | 用于认证的 Bearer 令牌 |
 | `--auth-tokens-file PATH` | - | 令牌文件（每行一个） |
 | `--reload` | `false` | 启用开发自动重载 |
+| `--profile PROFILE` | - | 部署 profile：`remote` 或 `local` |
 
 **示例：**
 
@@ -42,7 +43,8 @@ toolregistry-server openapi [选项]
 toolregistry-server openapi \
   --config config.json \
   --port 8000 \
-  --auth-token "my-secret"
+  --auth-token "my-secret" \
+  --profile remote
 ```
 
 ### `mcp` - 启动 MCP 服务器
@@ -53,10 +55,11 @@ toolregistry-server mcp [选项]
 
 | 选项 | 默认值 | 描述 |
 |------|--------|------|
-| `--config PATH` | 必需 | JSON/JSONC 配置文件路径 |
+| `--config PATH` | - | JSON/JSONC 配置文件路径 |
 | `--transport TYPE` | `stdio` | 传输类型：`stdio`、`sse` 或 `streamable-http` |
 | `--host HOST` | `0.0.0.0` | 绑定主机（用于 HTTP 传输） |
 | `--port PORT` | `8000` | 绑定端口（用于 HTTP 传输） |
+| `--profile PROFILE` | - | 部署 profile：`remote` 或 `local` |
 
 **示例：**
 
@@ -100,3 +103,32 @@ run_mcp_server(transport="stdio", registry=registry)
 ```
 
 当 `registry` 为 `None`（默认值）时，函数将按常规方式从 `config_path` 加载工具。
+
+## 部署 Profile
+
+`--profile` 标志在 registry 构建完成后应用基于标签的工具过滤：
+
+| Profile | 效果 |
+|---------|------|
+| `remote` | 禁用带 `file_system`、`destructive` 或 `privileged` 标签的工具 |
+| `local` | 不做标签过滤，所有工具保持启用 |
+| *(不指定)* | 不过滤（默认） |
+
+当向终端用户提供服务且不希望其访问服务器本地文件系统或特权操作时，使用 `remote`：
+
+```bash
+toolregistry-server openapi --config config.json --profile remote
+toolregistry-server mcp --config config.json --profile remote
+```
+
+`apply_profile()` 也作为公开 Python API 提供：
+
+```python
+from toolregistry_server.cli.openapi import apply_profile, PROFILE_DISABLE_TAGS
+
+# 使用内置 profile
+apply_profile(registry, "remote")
+
+# 查看或扩展映射关系
+print(PROFILE_DISABLE_TAGS)
+```
