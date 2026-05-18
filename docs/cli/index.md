@@ -80,3 +80,23 @@ toolregistry-server mcp \
 ## Configuration File
 
 See the [Configuration Guide](../usage/configuration.md) for details on the JSON/JSONC configuration format.
+
+## Programmatic API
+
+Both server functions can be called directly from Python and accept an optional pre-built `ToolRegistry`, letting you skip the config file entirely:
+
+```python
+from toolregistry import ToolRegistry
+from toolregistry_server.cli.openapi import run_openapi_server
+from toolregistry_server.cli.mcp import run_mcp_server
+
+# Build your registry with custom logic
+registry = ToolRegistry()
+registry.register(my_tool)
+
+# Pass it directly — config_path is ignored
+run_openapi_server(host="0.0.0.0", port=8000, registry=registry)
+run_mcp_server(transport="stdio", registry=registry)
+```
+
+When `registry` is `None` (the default), the functions fall back to loading tools from `config_path` as usual.
