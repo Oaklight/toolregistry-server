@@ -80,3 +80,23 @@ toolregistry-server mcp \
 ## 配置文件
 
 参见 [配置指南](../usage/configuration.md) 了解 JSON/JSONC 配置格式的详细信息。
+
+## Python API 用法
+
+两个服务器函数均可在 Python 中直接调用，并接受可选的预构建 `ToolRegistry`，无需配置文件：
+
+```python
+from toolregistry import ToolRegistry
+from toolregistry_server.cli.openapi import run_openapi_server
+from toolregistry_server.cli.mcp import run_mcp_server
+
+# 使用自定义逻辑构建 registry
+registry = ToolRegistry()
+registry.register(my_tool)
+
+# 直接传入 registry — config_path 将被忽略
+run_openapi_server(host="0.0.0.0", port=8000, registry=registry)
+run_mcp_server(transport="stdio", registry=registry)
+```
+
+当 `registry` 为 `None`（默认值）时，函数将按常规方式从 `config_path` 加载工具。

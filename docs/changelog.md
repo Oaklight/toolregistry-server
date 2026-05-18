@@ -2,6 +2,46 @@
 
 本项目的所有重要变更都将记录在此文件中。
 
+## [0.2.2] - 2026-05-18
+
+### 变更
+
+- **`run_openapi_server()` 和 `run_mcp_server()` 支持传入预构建的 registry**：两个函数新增可选参数 `registry: ToolRegistry | None`。当提供该参数时，`config_path` 将被忽略，`create_registry_from_config` 不会被调用，下游包可直接注入自定义 registry 而无需重新实现完整的启动流程（[#28](https://github.com/Oaklight/toolregistry-server/issues/28)）。
+
+## [0.2.1] - 2026-05-10
+
+### 变更
+
+- 将零依赖 vendored 模块重组至 `_vendor/` 子包，结构更清晰。
+- 将 `loguru` 替换为轻量级 vendored structlog shim，消除外部日志依赖。
+- 将 `complexipy` 切换为本地 pre-commit 钩子。
+
+### 修复
+
+- 将 `_vendor/` 目录从 `ruff` 检查中排除，避免对 vendored 代码产生误报。
+
+## [0.2.0] - 2026-05-06
+
+### 新增
+
+- **统一配置系统**：`run_openapi_server()` 和 `run_mcp_server()` 现支持通过 `--config` 参数从 JSONC/YAML 配置文件加载工具，支持 Python 类/模块、MCP 服务器和 OpenAPI 端点三种来源，以及拒绝列表/允许列表过滤（[#24](https://github.com/Oaklight/toolregistry-server/issues/24)）。
+
+### 变更
+
+- 适配 `toolregistry >= 0.9.1` API 变更（废弃的 `toolregistry.openapi` 导入路径已迁移至 `toolregistry.integrations.openapi`）。
+
+## [0.1.3] - 2026-04-15
+
+### 新增
+
+- **MCP 会话上下文透传**：工具处理函数现可接收 MCP 会话上下文对象，支持有状态的工具实现。
+
+### 修复
+
+- 在 OpenAPI 适配器将输入传递给处理函数前，剔除框架注入的字段（如 `__mcp_session__`），避免意外的关键字参数错误。
+- 将 `python-dotenv` 替换为零依赖的 vendored dotenv 加载器，消除外部依赖。
+- 现要求 `toolregistry >= 0.6.1` 以获取 kwargs JSON Schema 修复。
+
 ## [0.1.2] - 2026-03-22
 
 ### 新增
