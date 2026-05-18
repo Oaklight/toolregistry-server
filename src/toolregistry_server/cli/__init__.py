@@ -241,6 +241,17 @@ def _add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Enable auto-reload for development mode",
     )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        metavar="PROFILE",
+        help=(
+            "Deployment profile for tag-based tool filtering. "
+            "'remote' disables tools tagged file_system, destructive, or privileged. "
+            "'local' applies no tag filter. (default: no filtering)"
+        ),
+    )
 
 
 def _add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
@@ -274,6 +285,17 @@ def _add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         help="Path to a JSONC or YAML configuration file for tools",
+    )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        metavar="PROFILE",
+        help=(
+            "Deployment profile for tag-based tool filtering. "
+            "'remote' disables tools tagged file_system, destructive, or privileged. "
+            "'local' applies no tag filter. (default: no filtering)"
+        ),
     )
 
 
@@ -321,6 +343,7 @@ def main(args: list[str] | None = None) -> NoReturn | None:
             config_path=parsed.config,
             tokens_path=parsed.tokens,
             reload=parsed.reload,
+            profile=parsed.profile,
         )
     elif parsed.command == "mcp":
         from .mcp import run_mcp_server
@@ -330,6 +353,7 @@ def main(args: list[str] | None = None) -> NoReturn | None:
             host=parsed.host,
             port=parsed.port,
             config_path=parsed.config,
+            profile=parsed.profile,
         )
 
     return None

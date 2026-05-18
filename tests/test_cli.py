@@ -146,6 +146,20 @@ class TestMain:
             config_path=None,
             tokens_path=None,
             reload=False,
+            profile=None,
+        )
+
+    @patch("toolregistry_server.cli.openapi.run_openapi_server")
+    def test_openapi_command_dispatch_with_profile(self, mock_run):
+        """Test openapi command passes profile correctly."""
+        main(["openapi", "--port", "9000", "--profile", "remote"])
+        mock_run.assert_called_once_with(
+            host="0.0.0.0",
+            port=9000,
+            config_path=None,
+            tokens_path=None,
+            reload=False,
+            profile="remote",
         )
 
     @patch("toolregistry_server.cli.mcp.run_mcp_server")
@@ -157,6 +171,19 @@ class TestMain:
             host="127.0.0.1",
             port=9000,
             config_path=None,
+            profile=None,
+        )
+
+    @patch("toolregistry_server.cli.mcp.run_mcp_server")
+    def test_mcp_command_dispatch_with_profile(self, mock_run):
+        """Test mcp command passes profile correctly."""
+        main(["mcp", "--profile", "remote"])
+        mock_run.assert_called_once_with(
+            transport="stdio",
+            host="127.0.0.1",
+            port=8000,
+            config_path=None,
+            profile="remote",
         )
 
 
@@ -628,3 +655,159 @@ class TestNsMatches:
         from toolregistry_server.cli.openapi import _ns_matches
 
         assert _ns_matches("webhook", "web") is False
+
+
+class TestCreateRegistryFromConfigWithHooks:
+    """Tests for create_registry_from_config with post_register_hooks."""
+
+    def test_hook_called_for_each_tool(self, tmp_path, monkeypatch):
+        """Hook is invoked once per registered tool."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        mod_file = tmp_path / "hook_tools.py"
+        mod_file.write_text(
+            "def alpha() -> str:\n    return 'a'\ndef beta() -> str:\n    return 'b'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        called: list[str] = []
+
+        def my_hook(name, tool, registry):
+            called.append(name)
+            return None
+
+        config = ToolConfig(
+            tools=(PythonSource(module_path="hook_tools", namespace="h"),)
+        )
+        registry = create_registry_from_config(config, post_register_hooks=[my_hook])
+        assert len(called) == 2
+        assert len(registry._tools) == 2
+
+    def test_hook_returning_string_disables_tool(self, tmp_path, monkeypatch):
+        """Hook returning a non-empty string auto-disables the tool."""
+        from toolregistry.config import PythonSource, ToolConfig
+
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        mod_file = tmp_path / "disable_tools.py"
+        mod_file.write_text(
+            "def bad_tool() -> str:\n    return 'bad'\n"
+            "def good_tool() -> str:\n    return 'good'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        def selective_hook(name, tool, registry):
+            if "bad" in name:
+                return "blocked by hook"
+            return None
+
+        config = ToolConfig(
+            tools=(PythonSource(module_path="disable_tools", namespace="d"),)
+        )
+        registry = create_registry_from_config(
+            config, post_register_hooks=[selective_hook]
+        )
+        assert len(registry._tools) == 2
+        enabled = [n for n in registry._tools if registry.is_enabled(n)]
+        assert all("good" in n for n in enabled)
+
+    def test_no_hooks_behaviour_unchanged(self):
+        """Passing no hooks leaves existing behaviour intact."""
+        from toolregistry_server.cli.openapi import create_registry_from_config
+
+        registry = create_registry_from_config(None)
+        assert len(registry._tools) == 0
+
+    def test_parser_has_profile_openapi(self):
+        """Parser exposes --profile for openapi subcommand."""
+        from toolregistry_server.cli import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["openapi", "--profile", "remote"])
+        assert args.profile == "remote"
+
+    def test_parser_has_profile_mcp(self):
+        """Parser exposes --profile for mcp subcommand."""
+        from toolregistry_server.cli import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["mcp", "--profile", "local"])
+        assert args.profile == "local"
+
+    def test_parser_profile_default_none(self):
+        """--profile defaults to None when not provided."""
+        from toolregistry_server.cli import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args(["openapi"])
+        assert args.profile is None
+
+
+class TestApplyProfile:
+    """Tests for apply_profile()."""
+
+    def test_remote_profile_disables_tagged_tools(self, tmp_path, monkeypatch):
+        """remote profile disables file_system/destructive/privileged tools."""
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import Tool, ToolMetadata, ToolTag
+
+        from toolregistry_server.cli.openapi import apply_profile
+
+        registry = ToolRegistry()
+
+        def fs_tool() -> str:
+            """A filesystem tool."""
+            return "fs"
+
+        def safe_tool() -> str:
+            """A safe network tool."""
+            return "safe"
+
+        t1 = Tool.from_function(fs_tool)
+        t1.metadata = ToolMetadata(tags={ToolTag.FILE_SYSTEM})
+        t2 = Tool.from_function(safe_tool)
+        t2.metadata = ToolMetadata(tags={ToolTag.NETWORK})
+
+        registry._tools["fs_tool"] = t1
+        registry._tools["safe_tool"] = t2
+
+        apply_profile(registry, "remote")
+
+        assert not registry.is_enabled("fs_tool")
+        assert registry.is_enabled("safe_tool")
+
+    def test_local_profile_no_change(self, tmp_path):
+        """local profile applies no tag filter."""
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import Tool, ToolMetadata, ToolTag
+
+        from toolregistry_server.cli.openapi import apply_profile
+
+        registry = ToolRegistry()
+
+        def any_tool() -> str:
+            """Any tool."""
+            return "x"
+
+        t = Tool.from_function(any_tool)
+        t.metadata = ToolMetadata(tags={ToolTag.FILE_SYSTEM})
+        registry._tools["any_tool"] = t
+
+        apply_profile(registry, "local")
+        assert registry.is_enabled("any_tool")
+
+    def test_unknown_profile_does_not_raise(self):
+        """Unknown profile name does not raise an exception."""
+        from toolregistry import ToolRegistry
+
+        from toolregistry_server.cli.openapi import apply_profile
+
+        registry = ToolRegistry()
+        # Should complete without raising regardless of unknown profile
+        apply_profile(registry, "nonexistent_profile")
+        # Registry should be unchanged (no tools to disable anyway)
+        assert len(registry._tools) == 0

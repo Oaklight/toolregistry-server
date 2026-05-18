@@ -14,7 +14,7 @@ from .._vendor.structlog import get_logger
 logger = get_logger()
 
 if TYPE_CHECKING:
-    from toolregistry import ToolRegistry
+    from toolregistry import PostRegisterHook, ToolRegistry
     from toolregistry.config import (
         MCPSource,
         OpenAPISource,
@@ -220,7 +220,10 @@ def _register_openapi_source(
     logger.info(f"Loaded OpenAPI tools from {source.url}")
 
 
-def create_registry_from_config(config: "ToolConfig | None") -> "ToolRegistry":
+def create_registry_from_config(
+    config: "ToolConfig | None",
+    post_register_hooks: "list[PostRegisterHook] | None" = None,
+) -> "ToolRegistry":
     """Create a ToolRegistry from configuration.
 
     Supports three tool source types:
@@ -238,6 +241,11 @@ def create_registry_from_config(config: "ToolConfig | None") -> "ToolRegistry":
 
     Args:
         config: Parsed ``ToolConfig``, or None for empty registry.
+        post_register_hooks: Optional list of hooks invoked after each tool
+            is registered. Each hook has signature
+            ``(tool_name: str, tool: Tool, registry: ToolRegistry) -> str | None``.
+            Returning a non-empty string auto-disables the tool with that
+            string as the reason.
 
     Returns:
         Configured ToolRegistry instance.
@@ -246,6 +254,10 @@ def create_registry_from_config(config: "ToolConfig | None") -> "ToolRegistry":
     from toolregistry.config import MCPSource, OpenAPISource, PythonSource
 
     registry = ToolRegistry()
+
+    if post_register_hooks:
+        for hook in post_register_hooks:
+            registry.add_post_register_hook(hook)
 
     if config is None:
         logger.info("No configuration provided, starting with empty registry")
@@ -293,6 +305,63 @@ def create_registry_from_config(config: "ToolConfig | None") -> "ToolRegistry":
     return registry
 
 
+# ---------------------------------------------------------------------------
+# Profile-based tag filtering
+# ---------------------------------------------------------------------------
+
+#: Tags that represent local-machine-sensitive operations.
+_LOCAL_TAGS: frozenset[str] = frozenset({"file_system", "destructive", "privileged"})
+
+#: Mapping from profile name → tags to *disable*.
+PROFILE_DISABLE_TAGS: dict[str, frozenset[str]] = {
+    "remote": _LOCAL_TAGS,
+    "local": frozenset(),  # local: no tag-based disabling (keep all)
+}
+
+
+def apply_profile(registry: "ToolRegistry", profile: str) -> None:
+    """Apply a deployment profile filter to a registry.
+
+    Calls ``registry.disable_by_tags()`` with the tag set associated with
+    *profile*.  Unknown profile names are logged as a warning and ignored.
+
+    Supported profiles:
+
+    - ``remote``: disables tools tagged ``file_system``, ``destructive``, or
+      ``privileged`` — tools that operate on the server's own machine and
+      have no value to remote end-users.
+    - ``local``: no tag-based filtering (all tools remain enabled).
+
+    Args:
+        registry: The registry to filter in-place.
+        profile: Profile name (e.g. ``"remote"`` or ``"local"``).
+    """
+    from toolregistry.tool import ToolTag
+
+    if profile not in PROFILE_DISABLE_TAGS:
+        logger.warning(
+            f"Unknown profile '{profile}'. "
+            f"Valid profiles: {sorted(PROFILE_DISABLE_TAGS)}"
+        )
+        return
+
+    tags_to_disable = PROFILE_DISABLE_TAGS[profile]
+    if not tags_to_disable:
+        logger.info(f"Profile '{profile}': no tag filter applied")
+        return
+
+    tag_enums: set[ToolTag] = {ToolTag(t) for t in tags_to_disable}
+    disabled = registry.disable_by_tags(
+        tag_enums,
+        match="any",
+        reason=f"Disabled by profile '{profile}'",
+    )
+    logger.info(
+        f"Profile '{profile}': disabled {len(disabled)} tool(s) "
+        f"with tags {sorted(t for t in tags_to_disable)}"
+    )
+
+
 def _describe_source(source: "ToolSource") -> str:
     """Return a human-readable description of a tool source for logging."""
     from toolregistry.config import MCPSource, OpenAPISource, PythonSource
@@ -313,6 +382,7 @@ def run_openapi_server(
     tokens_path: str | None = None,
     reload: bool = False,
     registry: "ToolRegistry | None" = None,
+    profile: str | None = None,
 ) -> None:
     """Start the OpenAPI server.
 
@@ -325,6 +395,10 @@ def run_openapi_server(
         registry: Pre-built ToolRegistry to use directly. When provided,
             ``config_path`` is ignored and ``create_registry_from_config``
             is skipped.
+        profile: Deployment profile for tag-based tool filtering.
+            ``"remote"`` disables tools tagged ``file_system``, ``destructive``,
+            or ``privileged``. ``"local"`` applies no filter. ``None`` (default)
+            skips profile filtering entirely.
     """
     try:
         import uvicorn
@@ -344,6 +418,9 @@ def run_openapi_server(
         # Load configuration and build registry from config
         config = load_config(config_path)
         registry = create_registry_from_config(config)
+
+    if profile is not None:
+        apply_profile(registry, profile)
 
     # Create route table
     route_table = RouteTable(registry)

@@ -13,22 +13,30 @@ from .._vendor.structlog import get_logger
 logger = get_logger()
 
 if TYPE_CHECKING:
-    from toolregistry import ToolRegistry
+    from toolregistry import PostRegisterHook, ToolRegistry
     from toolregistry.config import ToolConfig
 
 
-def create_registry_from_config(config: "ToolConfig | None") -> "ToolRegistry":
+def create_registry_from_config(
+    config: "ToolConfig | None",
+    post_register_hooks: "list[PostRegisterHook] | None" = None,
+) -> "ToolRegistry":
     """Create a ToolRegistry from configuration.
 
     Args:
         config: Parsed ``ToolConfig``, or None for empty registry.
+        post_register_hooks: Optional list of hooks invoked after each tool
+            is registered. Each hook has signature
+            ``(tool_name: str, tool: Tool, registry: ToolRegistry) -> str | None``.
+            Returning a non-empty string auto-disables the tool with that
+            string as the reason.
 
     Returns:
         Configured ToolRegistry instance.
     """
     from .openapi import create_registry_from_config as _create_registry
 
-    return _create_registry(config)
+    return _create_registry(config, post_register_hooks=post_register_hooks)
 
 
 def load_config(config_path: str | None) -> "ToolConfig | None":
@@ -51,6 +59,7 @@ def run_mcp_server(
     port: int = 8000,
     config_path: str | None = None,
     registry: "ToolRegistry | None" = None,
+    profile: str | None = None,
 ) -> None:
     """Start the MCP server.
 
@@ -62,6 +71,10 @@ def run_mcp_server(
         registry: Pre-built ToolRegistry to use directly. When provided,
             ``config_path`` is ignored and ``create_registry_from_config``
             is skipped.
+        profile: Deployment profile for tag-based tool filtering.
+            ``"remote"`` disables tools tagged ``file_system``, ``destructive``,
+            or ``privileged``. ``"local"`` applies no filter. ``None`` (default)
+            skips profile filtering entirely.
     """
     try:
         from toolregistry_server import RouteTable
@@ -80,6 +93,11 @@ def run_mcp_server(
         # Load configuration and build registry from config
         config = load_config(config_path)
         registry = create_registry_from_config(config)
+
+    if profile is not None:
+        from .openapi import apply_profile
+
+        apply_profile(registry, profile)
 
     # Create route table
     route_table = RouteTable(registry)
