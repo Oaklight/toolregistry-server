@@ -50,6 +50,7 @@ def run_mcp_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     config_path: str | None = None,
+    registry: "ToolRegistry | None" = None,
 ) -> None:
     """Start the MCP server.
 
@@ -58,6 +59,9 @@ def run_mcp_server(
         host: Host for SSE/HTTP transport.
         port: Port for SSE/HTTP transport.
         config_path: Path to configuration file.
+        registry: Pre-built ToolRegistry to use directly. When provided,
+            ``config_path`` is ignored and ``create_registry_from_config``
+            is skipped.
     """
     try:
         from toolregistry_server import RouteTable
@@ -72,11 +76,10 @@ def run_mcp_server(
         logger.info("Install with: pip install toolregistry-server[mcp]")
         sys.exit(1)
 
-    # Load configuration
-    config = load_config(config_path)
-
-    # Create registry from config
-    registry = create_registry_from_config(config)
+    if registry is None:
+        # Load configuration and build registry from config
+        config = load_config(config_path)
+        registry = create_registry_from_config(config)
 
     # Create route table
     route_table = RouteTable(registry)

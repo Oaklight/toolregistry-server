@@ -160,6 +160,135 @@ class TestMain:
         )
 
 
+class TestRunOpenAPIServerWithRegistry:
+    """Tests for run_openapi_server with a pre-built registry."""
+
+    @patch("uvicorn.run")
+    @patch("toolregistry_server.openapi.create_openapi_app")
+    @patch("toolregistry_server.RouteTable")
+    def test_run_with_registry_skips_config(
+        self, mock_route_table_cls, mock_create_app, mock_uvicorn_run
+    ):
+        """When registry is provided, config loading is bypassed."""
+        from unittest.mock import MagicMock
+
+        from toolregistry_server.cli.openapi import run_openapi_server
+
+        registry = MagicMock()
+        mock_route_table = MagicMock()
+        mock_route_table.list_routes.return_value = []
+        mock_route_table_cls.return_value = mock_route_table
+        mock_create_app.return_value = MagicMock()
+
+        with (
+            patch("toolregistry_server.cli.openapi.load_config") as mock_load_config,
+            patch(
+                "toolregistry_server.cli.openapi.create_registry_from_config"
+            ) as mock_create_reg,
+        ):
+            run_openapi_server(host="127.0.0.1", port=9001, registry=registry)
+            mock_load_config.assert_not_called()
+            mock_create_reg.assert_not_called()
+
+        mock_route_table_cls.assert_called_once_with(registry)
+        mock_uvicorn_run.assert_called_once()
+
+    @patch("uvicorn.run")
+    @patch("toolregistry_server.openapi.create_openapi_app")
+    @patch("toolregistry_server.RouteTable")
+    def test_run_without_registry_uses_config(
+        self, mock_route_table_cls, mock_create_app, mock_uvicorn_run
+    ):
+        """When registry is None, config path is used to build registry."""
+        from unittest.mock import MagicMock
+
+        from toolregistry_server.cli.openapi import run_openapi_server
+
+        mock_route_table = MagicMock()
+        mock_route_table.list_routes.return_value = []
+        mock_route_table_cls.return_value = mock_route_table
+        mock_create_app.return_value = MagicMock()
+        mock_registry = MagicMock()
+
+        with (
+            patch("toolregistry_server.cli.openapi.load_config") as mock_load_config,
+            patch(
+                "toolregistry_server.cli.openapi.create_registry_from_config"
+            ) as mock_create_reg,
+        ):
+            mock_load_config.return_value = None
+            mock_create_reg.return_value = mock_registry
+
+            run_openapi_server(host="127.0.0.1", port=9001)
+
+            mock_load_config.assert_called_once_with(None)
+            mock_create_reg.assert_called_once_with(None)
+
+
+class TestRunMCPServerWithRegistry:
+    """Tests for run_mcp_server with a pre-built registry."""
+
+    @patch("asyncio.run")
+    @patch("toolregistry_server.mcp.route_table_to_mcp_server")
+    @patch("toolregistry_server.RouteTable")
+    def test_run_with_registry_skips_config(
+        self, mock_route_table_cls, mock_to_mcp, mock_asyncio_run
+    ):
+        """When registry is provided, config loading is bypassed."""
+        from unittest.mock import MagicMock
+
+        from toolregistry_server.cli.mcp import run_mcp_server
+
+        registry = MagicMock()
+        mock_route_table = MagicMock()
+        mock_route_table.list_routes.return_value = []
+        mock_route_table_cls.return_value = mock_route_table
+        mock_to_mcp.return_value = MagicMock()
+
+        with (
+            patch("toolregistry_server.cli.mcp.load_config") as mock_load_config,
+            patch(
+                "toolregistry_server.cli.mcp.create_registry_from_config"
+            ) as mock_create_reg,
+        ):
+            run_mcp_server(transport="stdio", registry=registry)
+            mock_load_config.assert_not_called()
+            mock_create_reg.assert_not_called()
+
+        mock_route_table_cls.assert_called_once_with(registry)
+
+    @patch("asyncio.run")
+    @patch("toolregistry_server.mcp.route_table_to_mcp_server")
+    @patch("toolregistry_server.RouteTable")
+    def test_run_without_registry_uses_config(
+        self, mock_route_table_cls, mock_to_mcp, mock_asyncio_run
+    ):
+        """When registry is None, config path is used to build registry."""
+        from unittest.mock import MagicMock
+
+        from toolregistry_server.cli.mcp import run_mcp_server
+
+        mock_route_table = MagicMock()
+        mock_route_table.list_routes.return_value = []
+        mock_route_table_cls.return_value = mock_route_table
+        mock_to_mcp.return_value = MagicMock()
+        mock_registry = MagicMock()
+
+        with (
+            patch("toolregistry_server.cli.mcp.load_config") as mock_load_config,
+            patch(
+                "toolregistry_server.cli.mcp.create_registry_from_config"
+            ) as mock_create_reg,
+        ):
+            mock_load_config.return_value = None
+            mock_create_reg.return_value = mock_registry
+
+            run_mcp_server(transport="stdio")
+
+            mock_load_config.assert_called_once_with(None)
+            mock_create_reg.assert_called_once_with(None)
+
+
 class TestLoadConfig:
     """Tests for load_config function."""
 

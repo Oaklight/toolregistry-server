@@ -312,6 +312,7 @@ def run_openapi_server(
     config_path: str | None = None,
     tokens_path: str | None = None,
     reload: bool = False,
+    registry: "ToolRegistry | None" = None,
 ) -> None:
     """Start the OpenAPI server.
 
@@ -321,6 +322,9 @@ def run_openapi_server(
         config_path: Path to configuration file.
         tokens_path: Path to tokens file.
         reload: Enable auto-reload for development.
+        registry: Pre-built ToolRegistry to use directly. When provided,
+            ``config_path`` is ignored and ``create_registry_from_config``
+            is skipped.
     """
     try:
         import uvicorn
@@ -336,11 +340,10 @@ def run_openapi_server(
         logger.error(f"Failed to import server components: {e}")
         sys.exit(1)
 
-    # Load configuration
-    config = load_config(config_path)
-
-    # Create registry from config
-    registry = create_registry_from_config(config)
+    if registry is None:
+        # Load configuration and build registry from config
+        config = load_config(config_path)
+        registry = create_registry_from_config(config)
 
     # Create route table
     route_table = RouteTable(registry)
