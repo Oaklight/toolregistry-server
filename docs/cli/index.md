@@ -29,12 +29,13 @@ toolregistry-server openapi [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config PATH` | Required | Path to JSON/JSONC configuration file |
+| `--config PATH` | - | Path to JSON/JSONC configuration file |
 | `--host HOST` | `0.0.0.0` | Bind host |
 | `--port PORT` | `8000` | Bind port |
 | `--auth-token TOKEN` | - | Bearer token for authentication |
 | `--auth-tokens-file PATH` | - | File with tokens (one per line) |
 | `--reload` | `false` | Enable auto-reload for development |
+| `--profile PROFILE` | - | Deployment profile: `remote` or `local` |
 
 **Example:**
 
@@ -42,7 +43,8 @@ toolregistry-server openapi [options]
 toolregistry-server openapi \
   --config config.json \
   --port 8000 \
-  --auth-token "my-secret"
+  --auth-token "my-secret" \
+  --profile remote
 ```
 
 ### `mcp` - Start an MCP Server
@@ -53,10 +55,11 @@ toolregistry-server mcp [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config PATH` | Required | Path to JSON/JSONC configuration file |
+| `--config PATH` | - | Path to JSON/JSONC configuration file |
 | `--transport TYPE` | `stdio` | Transport type: `stdio`, `sse`, or `streamable-http` |
 | `--host HOST` | `0.0.0.0` | Bind host (for HTTP transports) |
 | `--port PORT` | `8000` | Bind port (for HTTP transports) |
+| `--profile PROFILE` | - | Deployment profile: `remote` or `local` |
 
 **Examples:**
 
@@ -100,3 +103,32 @@ run_mcp_server(transport="stdio", registry=registry)
 ```
 
 When `registry` is `None` (the default), the functions fall back to loading tools from `config_path` as usual.
+
+## Deployment Profiles
+
+The `--profile` flag applies tag-based tool filtering after the registry is built:
+
+| Profile | Effect |
+|---------|--------|
+| `remote` | Disables tools tagged `file_system`, `destructive`, or `privileged` |
+| `local` | No tag filter — all tools remain enabled |
+| *(none)* | No filtering (default) |
+
+Use `remote` when serving tools to end users who should not have access to the server's own filesystem or privileged operations:
+
+```bash
+toolregistry-server openapi --config config.json --profile remote
+toolregistry-server mcp --config config.json --profile remote
+```
+
+`apply_profile()` is also available as a public Python API:
+
+```python
+from toolregistry_server.cli.openapi import apply_profile, PROFILE_DISABLE_TAGS
+
+# Use a built-in profile
+apply_profile(registry, "remote")
+
+# Inspect or extend the mapping
+print(PROFILE_DISABLE_TAGS)
+```

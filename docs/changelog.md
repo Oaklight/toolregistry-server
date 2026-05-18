@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-05-18
+
+### Added
+
+- **`--profile` CLI flag** for deployment-context tag filtering. `--profile remote` disables tools tagged `file_system`, `destructive`, or `privileged` via `ToolRegistry.disable_by_tags()`; `--profile local` applies no filter. The `profile` parameter is also exposed on `run_openapi_server()` and `run_mcp_server()` for programmatic use ([#30](https://github.com/Oaklight/toolregistry-server/issues/30)).
+- **Post-register hooks in `create_registry_from_config()`**: the function now accepts an optional `post_register_hooks: list[PostRegisterHook] | None` parameter. Hooks are registered on the `ToolRegistry` before any source is loaded; returning a non-empty string from a hook auto-disables the tool ([#31](https://github.com/Oaklight/toolregistry-server/issues/31)).
+- **`apply_profile(registry, profile)`**: new public helper that applies a named profile filter to any `ToolRegistry`. Profile→tag mapping is expressed in `PROFILE_DISABLE_TAGS` (dict) for easy extension.
+
+### Changed
+
+- Minimum `toolregistry` version bumped to `>=0.10.1` to pick up `disable_by_tags()` and `add_post_register_hook()`.
+
 ## [0.2.2] - 2026-05-18
 
 ### Changed
