@@ -54,6 +54,7 @@ class RouteEntry:
     # State
     enabled: bool = True
     disable_reason: str | None = None
+    deferred: bool = False
 
 
 @dataclass
@@ -105,7 +106,11 @@ class RouteTable:
         externally (e.g. via the admin panel).  Handles both tool-level and
         namespace-level enable/disable events.
         """
-        if event.event_type in (ChangeEventType.ENABLE, ChangeEventType.DISABLE):
+        if event.event_type in (
+            ChangeEventType.ENABLE,
+            ChangeEventType.DISABLE,
+            ChangeEventType.METADATA_UPDATE,
+        ):
             if event.tool_name:
                 if event.tool_name in self._routes:
                     # Direct tool-level change
@@ -154,22 +159,34 @@ class RouteTable:
             parameters_model=getattr(tool, "parameters_model", None),
             enabled=self._registry.is_enabled(tool.name),
             disable_reason=self._registry.get_disable_reason(tool.name),
+            deferred=bool(getattr(getattr(tool, "metadata", None), "defer", False)),
         )
 
     # ============== Query API ==============
 
-    def list_routes(self, enabled_only: bool = True) -> list[RouteEntry]:
-        """List all routes, optionally filtering by enabled state.
+    def list_routes(
+        self,
+        enabled_only: bool = True,
+        include_deferred: bool = True,
+    ) -> list[RouteEntry]:
+        """List all routes, optionally filtering by enabled state or defer flag.
 
         Args:
             enabled_only: If True, only return enabled routes.
+            include_deferred: If False, exclude routes whose tool has
+                ``metadata.defer == True``.  Use ``False`` when building
+                the initial tool list presented to an LLM so that deferred
+                tools are only surfaced via ``discover_tools``.
 
         Returns:
             List of RouteEntry objects.
         """
+        routes = self._routes.values()
         if enabled_only:
-            return [r for r in self._routes.values() if r.enabled]
-        return list(self._routes.values())
+            routes = (r for r in routes if r.enabled)
+        if not include_deferred:
+            routes = (r for r in routes if not r.deferred)
+        return list(routes)
 
     def get_route(self, tool_name: str) -> RouteEntry | None:
         """Get a specific route by tool name.

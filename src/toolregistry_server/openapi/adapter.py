@@ -361,9 +361,10 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
                 headers={"ETag": current_etag},
             )
 
-        # Build tools list
+        # Build tools list — deferred tools are excluded from the initial
+        # listing so that LLMs discover them via discover_tools.
         tools = []
-        for route in route_table.list_routes(enabled_only=True):
+        for route in route_table.list_routes(enabled_only=True, include_deferred=False):
             tools.append(
                 {
                     "name": route.tool_name,

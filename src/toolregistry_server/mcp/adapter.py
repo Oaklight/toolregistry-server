@@ -184,9 +184,13 @@ def route_table_to_mcp_server(
 
     @server.list_tools()
     async def handle_list_tools() -> list[MCPTool]:
-        """Return MCP tool definitions for all enabled tools in the route table."""
+        """Return MCP tool definitions for non-deferred enabled tools.
+
+        Deferred tools are excluded from the initial listing so that LLMs
+        discover them via discover_tools.
+        """
         tools: list[MCPTool] = []
-        for route in route_table.list_routes(enabled_only=True):
+        for route in route_table.list_routes(enabled_only=True, include_deferred=False):
             tools.append(
                 MCPTool(
                     name=route.tool_name,
