@@ -155,3 +155,7 @@ Thumbs.db
 *.local
 tokens.txt
 tools.jsonc
+
+# Git worktrees for docs branches
+docs_en/
+docs_zh/
