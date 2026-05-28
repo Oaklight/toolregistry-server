@@ -33,7 +33,7 @@ keywords = [
     "agentic-ai",
     "toolregistry",
 ]
-dependencies = ["toolregistry>=0.10.3,<1.0.0"]
+dependencies = ["toolregistry>=0.11.0,<1.0.0"]
 
 [project.optional-dependencies]
 openapi = ["fastapi>=0.119.0", "uvicorn[standard]>=0.24.0"]

@@ -23,7 +23,7 @@ Example:
     ```
 """
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 from .route_table import RouteEntry, RouteTable
 from .session import SessionContext
