@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with project-specific grouping where useful.
+
+## [0.3.2] - 2026-05-28
+
+### Changed
+
+- Minimum `toolregistry` version bumped to `>=0.11.0` so downstream packages can rely on the latest `ToolConfig` metadata fields.
+- Switched the complexipy pre-commit hook to the official `complexipy-pre-commit` hook with explicit file filtering.
+
+## [0.3.1] - 2026-05-19
+
+### Added
+
+- Route listing now filters deferred tools, matching the progressive-disclosure behavior used by served registries.
+- Deployment profile filtering can now be overridden by configuration files.
+
+### Changed
+
+- Minimum `toolregistry` version bumped to `>=0.10.2`.
+
 ## [0.3.0] - 2026-05-18
 
 ### Added
