@@ -12,11 +12,18 @@ title: 命令行工具参考
 toolregistry-server [选项] <子命令> [子命令选项]
 ```
 
-## 全局选项
+## 顶层选项
 
 | 选项 | 描述 |
 |------|------|
-| `--env-file PATH` | .env 文件路径（默认：`.env`） |
+| `--version`, `-V` | 显示版本并退出 |
+| `--no-banner` | 禁用启动横幅 |
+
+## 通用子命令选项
+
+| 选项 | 描述 |
+|------|------|
+| `--env PATH` | .env 文件路径（默认：当前目录下的 `.env`） |
 | `--no-env` | 跳过加载 .env 文件 |
 
 ## 子命令
@@ -29,11 +36,10 @@ toolregistry-server openapi [选项]
 
 | 选项 | 默认值 | 描述 |
 |------|--------|------|
-| `--config PATH` | - | JSON/JSONC 配置文件路径 |
+| `--config PATH` | - | JSONC 或 YAML 配置文件路径 |
 | `--host HOST` | `0.0.0.0` | 绑定主机 |
 | `--port PORT` | `8000` | 绑定端口 |
-| `--auth-token TOKEN` | - | 用于认证的 Bearer 令牌 |
-| `--auth-tokens-file PATH` | - | 令牌文件（每行一个） |
+| `--tokens PATH` | - | Bearer 令牌文件（每行一个） |
 | `--reload` | `false` | 启用开发自动重载 |
 | `--profile PROFILE` | - | 部署 profile：`remote` 或 `local` |
 
@@ -41,9 +47,9 @@ toolregistry-server openapi [选项]
 
 ```bash
 toolregistry-server openapi \
-  --config config.json \
+  --config config.yaml \
   --port 8000 \
-  --auth-token "my-secret" \
+  --tokens tokens.txt \
   --profile remote
 ```
 
@@ -55,7 +61,7 @@ toolregistry-server mcp [选项]
 
 | 选项 | 默认值 | 描述 |
 |------|--------|------|
-| `--config PATH` | - | JSON/JSONC 配置文件路径 |
+| `--config PATH` | - | JSON、JSONC 或 YAML 配置文件路径 |
 | `--transport TYPE` | `stdio` | 传输类型：`stdio`、`sse` 或 `streamable-http` |
 | `--host HOST` | `0.0.0.0` | 绑定主机（用于 HTTP 传输） |
 | `--port PORT` | `8000` | 绑定端口（用于 HTTP 传输） |
@@ -82,7 +88,7 @@ toolregistry-server mcp \
 
 ## 配置文件
 
-参见 [配置指南](../usage/configuration.md) 了解 JSON/JSONC 配置格式的详细信息。
+参见 [配置指南](../usage/configuration.md) 了解 JSON、JSONC 或 YAML 配置格式的详细信息。
 
 ## Python API 用法
 
