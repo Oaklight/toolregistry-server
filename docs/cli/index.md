@@ -12,11 +12,18 @@ title: CLI Reference
 toolregistry-server [options] <subcommand> [subcommand-options]
 ```
 
-## Global Options
+## Top-Level Options
 
 | Option | Description |
 |--------|-------------|
-| `--env-file PATH` | Path to .env file (default: `.env`) |
+| `--version`, `-V` | Show version and exit |
+| `--no-banner` | Disable the startup banner |
+
+## Common Subcommand Options
+
+| Option | Description |
+|--------|-------------|
+| `--env PATH` | Path to .env file (default: `.env` in the current directory) |
 | `--no-env` | Skip loading .env file |
 
 ## Subcommands
@@ -29,11 +36,10 @@ toolregistry-server openapi [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config PATH` | - | Path to JSON/JSONC configuration file |
+| `--config PATH` | - | Path to JSONC or YAML configuration file |
 | `--host HOST` | `0.0.0.0` | Bind host |
 | `--port PORT` | `8000` | Bind port |
-| `--auth-token TOKEN` | - | Bearer token for authentication |
-| `--auth-tokens-file PATH` | - | File with tokens (one per line) |
+| `--tokens PATH` | - | File with bearer tokens (one per line) |
 | `--reload` | `false` | Enable auto-reload for development |
 | `--profile PROFILE` | - | Deployment profile: `remote` or `local` |
 
@@ -41,9 +47,9 @@ toolregistry-server openapi [options]
 
 ```bash
 toolregistry-server openapi \
-  --config config.json \
+  --config config.yaml \
   --port 8000 \
-  --auth-token "my-secret" \
+  --tokens tokens.txt \
   --profile remote
 ```
 
@@ -55,7 +61,7 @@ toolregistry-server mcp [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config PATH` | - | Path to JSON/JSONC configuration file |
+| `--config PATH` | - | Path to JSON, JSONC, or YAML configuration file |
 | `--transport TYPE` | `stdio` | Transport type: `stdio`, `sse`, or `streamable-http` |
 | `--host HOST` | `0.0.0.0` | Bind host (for HTTP transports) |
 | `--port PORT` | `8000` | Bind port (for HTTP transports) |
@@ -82,7 +88,7 @@ toolregistry-server mcp \
 
 ## Configuration File
 
-See the [Configuration Guide](../usage/configuration.md) for details on the JSON/JSONC configuration format.
+See the [Configuration Guide](../usage/configuration.md) for details on the JSON, JSONC, or YAML configuration format.
 
 ## Programmatic API
 
