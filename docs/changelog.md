@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with project-specific grouping where useful.
 
+## [0.3.3] - 2026-05-31
+
+### Fixed
+
+- Normalize route parameter schemas at the `RouteTable` boundary so all server adapters receive canonical object schemas.
+- Ensure MCP `tools/list` responses always emit object-shaped `inputSchema` values.
+- Harden OpenAPI request model generation for empty or non-object parameter schemas.
+- Bump the minimum `toolregistry` version to `>=0.11.1` for schema-generation fixes in the core package.
+
 ## [0.3.2] - 2026-05-28
 
 ### Changed
