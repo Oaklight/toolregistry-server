@@ -4,6 +4,15 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并在需要时保留项目自身的分类方式。
 
+## [0.3.3] - 2026-05-31
+
+### 修复
+
+- 在 `RouteTable` 边界规范化路由参数 schema，使所有服务适配器都收到标准 object schema。
+- 确保 MCP `tools/list` 响应始终输出 object 形态的 `inputSchema`。
+- 增强 OpenAPI 请求模型生成逻辑，兼容空 schema 或非 object 参数 schema。
+- 将 `toolregistry` 最低版本要求提升至 `>=0.11.1`，以获得 core 包中的 schema 生成修复。
+
 ## [0.3.2] - 2026-05-28
 
 ### 变更
