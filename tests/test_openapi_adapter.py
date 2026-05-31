@@ -138,6 +138,11 @@ class TestSchemaToPydantic:
         instance = model()
         assert instance.count == 10  # ty: ignore[unresolved-attribute]
 
+    def test_non_object_schema_creates_empty_model(self):
+        """Invalid parameter schemas should not break request model generation."""
+        model = _schema_to_pydantic("BadModel", {"type": "string"})
+        assert model.model_fields == {}
+
 
 # ============== Router Generation Tests ==============
 

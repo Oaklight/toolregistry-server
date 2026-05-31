@@ -14,6 +14,18 @@ from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
 
 
+def normalize_parameters_schema(schema: Any) -> dict[str, Any]:
+    """Return a canonical object schema for tool parameters."""
+    if not isinstance(schema, dict) or schema.get("type") not in (None, "object"):
+        return {"type": "object", "properties": {}}
+
+    normalized = dict(schema)
+    normalized["type"] = "object"
+    if not isinstance(normalized.get("properties"), dict):
+        normalized["properties"] = {}
+    return normalized
+
+
 @dataclass
 class RouteEntry:
     """A single route entry in the central router table.
@@ -153,7 +165,7 @@ class RouteTable:
             method_name=method_name,
             path=f"/tools/{namespace}/{method_name}",
             description=tool.description or "",
-            parameters_schema=tool.parameters,
+            parameters_schema=normalize_parameters_schema(tool.parameters),
             handler=tool.callable,
             is_async=tool.is_async,
             parameters_model=getattr(tool, "parameters_model", None),
