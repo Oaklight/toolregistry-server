@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from .._vendor.structlog import get_logger
+from ..route_table import normalize_parameters_schema
 from ..session import (
     SessionContext,
     SessionManager,
@@ -195,7 +196,7 @@ def route_table_to_mcp_server(
                 MCPTool(
                     name=route.tool_name,
                     description=route.description or "",
-                    inputSchema=route.parameters_schema,
+                    inputSchema=normalize_parameters_schema(route.parameters_schema),
                 )
             )
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")

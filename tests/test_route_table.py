@@ -7,6 +7,7 @@ from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
+from toolregistry_server.route_table import normalize_parameters_schema
 
 
 class TestRouteEntry:
@@ -57,6 +58,33 @@ class TestRouteEntry:
 
         assert entry.enabled is False
         assert entry.disable_reason == "Under maintenance"
+
+
+class TestNormalizeParametersSchema:
+    """Tests for canonical server parameter schema normalization."""
+
+    def test_normalizes_empty_schema(self) -> None:
+        """Empty schemas become object schemas with properties."""
+        assert normalize_parameters_schema({}) == {"type": "object", "properties": {}}
+
+    def test_normalizes_non_object_schema(self) -> None:
+        """Non-object parameter schemas become empty object schemas."""
+        assert normalize_parameters_schema({"type": "string"}) == {
+            "type": "object",
+            "properties": {},
+        }
+
+    def test_normalizes_missing_properties(self) -> None:
+        """Object schemas with missing properties get an empty properties map."""
+        assert normalize_parameters_schema({"type": "object"}) == {
+            "type": "object",
+            "properties": {},
+        }
+
+    def test_preserves_valid_schema(self) -> None:
+        """Valid object schemas are preserved."""
+        schema = {"type": "object", "properties": {"x": {"type": "integer"}}}
+        assert normalize_parameters_schema(schema) == schema
 
 
 def _make_mock_registry() -> MagicMock:
@@ -153,6 +181,34 @@ class TestRouteTable:
 
         # Non-existent route
         assert route_table.get_route("nonexistent") is None
+
+    def test_route_table_normalizes_tool_parameters_schema(
+        self, mock_registry: MagicMock, mock_tool: MagicMock
+    ) -> None:
+        """Route entries should store canonical object parameter schemas."""
+        mock_tool.parameters = {"type": "string"}
+        mock_registry._tools = {"greet": mock_tool}
+
+        route_table = RouteTable(mock_registry)
+        route = route_table.get_route("greet")
+
+        assert route is not None
+        assert route.parameters_schema == {"type": "object", "properties": {}}
+
+    def test_route_refresh_normalizes_tool_parameters_schema(
+        self, mock_registry: MagicMock, mock_tool: MagicMock
+    ) -> None:
+        """Route refresh should keep parameter schemas canonical."""
+        mock_registry._tools = {"greet": mock_tool}
+        mock_registry.get_tool = MagicMock(return_value=mock_tool)
+        route_table = RouteTable(mock_registry)
+
+        mock_tool.parameters = {}
+        route_table.refresh("greet")
+        route = route_table.get_route("greet")
+
+        assert route is not None
+        assert route.parameters_schema == {"type": "object", "properties": {}}
 
     def test_list_routes_enabled_only(
         self, mock_registry: MagicMock, mock_tool: MagicMock

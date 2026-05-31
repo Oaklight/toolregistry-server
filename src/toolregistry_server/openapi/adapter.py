@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
 
-from ..route_table import RouteEntry, RouteTable
+from ..route_table import RouteEntry, RouteTable, normalize_parameters_schema
 
 if TYPE_CHECKING:
     from fastapi import APIRouter, FastAPI
@@ -97,7 +97,8 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
         A dynamically created :class:`pydantic.BaseModel` subclass whose
         fields mirror the schema properties.
     """
-    properties: dict[str, Any] = schema.get("properties", {})
+    schema = normalize_parameters_schema(schema)
+    properties: dict[str, Any] = schema["properties"]
     if not properties:
         # Return an empty model when there are no properties
         return create_model(name)

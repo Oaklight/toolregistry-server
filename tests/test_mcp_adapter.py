@@ -252,6 +252,29 @@ class TestListTools:
             assert schema["properties"]["b"]["type"] == "integer"
             assert set(schema["required"]) == {"a", "b"}
 
+    @pytest.mark.asyncio
+    async def test_list_tools_normalizes_invalid_input_schema(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Invalid route schemas are normalized at the MCP boundary."""
+        bad_tool = MagicMock()
+        bad_tool.name = "bad"
+        bad_tool.namespace = "default"
+        bad_tool.method_name = "bad"
+        bad_tool.description = "Bad schema."
+        bad_tool.parameters = {}
+        bad_tool.callable = get_info
+        bad_tool.is_async = False
+        bad_tool.metadata.defer = False
+
+        mock_registry._tools = {"bad": bad_tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.list_tools()
+            assert result.tools[0].inputSchema == {"type": "object", "properties": {}}
+
 
 # ---------------------------------------------------------------------------
 # 3. enable/disable dynamic reflection (key test)
