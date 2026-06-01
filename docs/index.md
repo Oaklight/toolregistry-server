@@ -5,12 +5,24 @@ hide:
   - navigation
 ---
 
-# ToolRegistry Server
+<section class="tr-hero" markdown>
+<p class="tr-kicker">将注册表作为 API 服务</p>
 
-[![PyPI version](https://img.shields.io/pypi/v/toolregistry-server?color=green)](https://pypi.org/project/toolregistry-server/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+# 一个路由表，多种协议。
 
-**通过 OpenAPI 和 MCP 为函数调用 LLM 提供自定义工具服务。** 基于 [ToolRegistry](https://toolregistry.readthedocs.io/) 构建。
+<p class="tr-hero__desc">ToolRegistry Server 将标准化的工具注册表暴露为 OpenAPI 和 MCP 端点，并围绕中央路由表提供认证、配置与部署基础能力。</p>
+
+<p class="tr-badges">
+  <a href="https://pypi.org/project/toolregistry-server/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/toolregistry-server?labelColor=475569&color=166534"></a>
+  <a href="https://github.com/Oaklight/toolregistry-server/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Oaklight/toolregistry-server/ci.yml?branch=master&label=CI&labelColor=475569&color=14532d"></a>
+  <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-14532d?labelColor=475569"></a>
+</p>
+
+<div class="tr-actions" markdown>
+[快速开始](usage/quickstart.md){ .tr-button .tr-button--primary }
+[适配器](adapters/){ .tr-button .tr-button--secondary }
+</div>
+</section>
 
 ## 概述
 
