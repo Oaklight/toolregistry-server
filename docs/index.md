@@ -5,12 +5,24 @@ hide:
   - navigation
 ---
 
-# ToolRegistry Server
+<section class="tr-hero" markdown>
+<p class="tr-kicker">Serve registries as APIs</p>
 
-[![PyPI version](https://img.shields.io/pypi/v/toolregistry-server?color=green)](https://pypi.org/project/toolregistry-server/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+# One route table, multiple protocols.
 
-**Serve custom tools via OpenAPI and MCP for function-calling LLMs.** Built on [ToolRegistry](https://toolregistry.readthedocs.io/).
+<p class="tr-hero__desc">ToolRegistry Server exposes normalized registries as OpenAPI and MCP endpoints, with auth, configuration, and deployment primitives built around a central route table.</p>
+
+<p class="tr-badges">
+  <a href="https://pypi.org/project/toolregistry-server/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/toolregistry-server?labelColor=475569&color=166534"></a>
+  <a href="https://github.com/Oaklight/toolregistry-server/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Oaklight/toolregistry-server/ci.yml?branch=master&label=CI&labelColor=475569&color=14532d"></a>
+  <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-14532d?labelColor=475569"></a>
+</p>
+
+<div class="tr-actions" markdown>
+[Quick Start](usage/quickstart.md){ .tr-button .tr-button--primary }
+[Adapters](adapters/){ .tr-button .tr-button--secondary }
+</div>
+</section>
 
 ## Overview
 
