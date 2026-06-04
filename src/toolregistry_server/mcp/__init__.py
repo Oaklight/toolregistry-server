@@ -126,6 +126,8 @@ async def run_streamable_http(
     host: str = "127.0.0.1",
     port: int = 8000,
     path: str = "/mcp",
+    valid_tokens: set[str] | None = None,
+    server_url: str | None = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
@@ -137,10 +139,14 @@ async def run_streamable_http(
         host: Host address to bind to.
         port: Port number to bind to.
         path: URL path for the MCP endpoint.
+        valid_tokens: Optional set of accepted Bearer tokens.
+        server_url: Public URL of this server for metadata generation.
     """
     from .server import run_streamable_http as _run_streamable_http
 
-    await _run_streamable_http(server, host, port, path)
+    await _run_streamable_http(
+        server, host, port, path, valid_tokens=valid_tokens, server_url=server_url
+    )
 
 
 __all__ = [

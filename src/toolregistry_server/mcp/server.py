@@ -161,17 +161,34 @@ async def run_streamable_http(
     host: str = "127.0.0.1",
     port: int = 8000,
     path: str = "/mcp",
+    valid_tokens: set[str] | None = None,
+    server_url: str | None = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
     This is the recommended HTTP transport for production use,
     supporting bidirectional streaming over HTTP.
 
+    When ``valid_tokens`` is provided, the server enables Bearer token
+    authentication using the MCP SDK's auth infrastructure.  Clients
+    must include ``Authorization: Bearer <token>`` in every request.
+    The server publishes RFC 9728 Protected Resource Metadata at
+    ``/.well-known/oauth-protected-resource<path>`` so that
+    MCP clients (including Claude Code) can discover the auth
+    requirements.
+
     Args:
         server: The MCP Server instance to run.
         host: Host address to bind to.
         port: Port number to bind to.
         path: URL path for the MCP endpoint.
+        valid_tokens: Optional set of accepted Bearer tokens.
+            When ``None``, authentication is disabled.
+        server_url: Public URL of this server (e.g.
+            ``https://example.com/mcp``).  Required when
+            ``valid_tokens`` is set so that Protected Resource
+            Metadata can be generated.  Defaults to
+            ``http://{host}:{port}{path}``.
     """
     try:
         import uvicorn
@@ -210,10 +227,71 @@ async def run_streamable_http(
 
     streamable_http_app = StreamableHTTPASGIApp(session_manager)
 
+    # Build routes and middleware
+    routes: list[Route] = []
+    middleware: list = []
+
+    if valid_tokens:
+        from mcp.server.auth.middleware.bearer_auth import (
+            BearerAuthBackend,
+            RequireAuthMiddleware,
+        )
+        from mcp.server.auth.routes import (
+            build_resource_metadata_url,
+            create_protected_resource_routes,
+        )
+        from pydantic import AnyHttpUrl
+        from starlette.middleware import Middleware
+        from starlette.middleware.authentication import AuthenticationMiddleware
+
+        from .token_verifier import StaticTokenVerifier
+
+        token_verifier = StaticTokenVerifier(valid_tokens)
+
+        # Resolve the public server URL
+        resolved_url = server_url or f"http://{host}:{port}{path}"
+        resource_url = AnyHttpUrl(resolved_url)
+
+        # The issuer_url points to ourselves; we don't run a real AS,
+        # but it's required by the Protected Resource Metadata spec.
+        issuer_url = AnyHttpUrl(resolved_url.rsplit(path, 1)[0] or resolved_url)
+
+        resource_metadata_url = build_resource_metadata_url(resource_url)
+
+        # Starlette middleware: extract Bearer token from every request
+        middleware = [
+            Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(token_verifier)),
+        ]
+
+        # Wrap the MCP endpoint with RequireAuthMiddleware
+        routes.append(
+            Route(
+                path,
+                endpoint=RequireAuthMiddleware(
+                    streamable_http_app, ["mcp"], resource_metadata_url
+                ),
+            )
+        )
+
+        # Publish Protected Resource Metadata (RFC 9728)
+        routes.extend(
+            create_protected_resource_routes(
+                resource_url=resource_url,
+                authorization_servers=[issuer_url],
+                scopes_supported=["mcp"],
+            )
+        )
+
+        logger.info(
+            f"Bearer token authentication enabled ({len(valid_tokens)} token(s))"
+        )
+    else:
+        routes.append(Route(path, endpoint=streamable_http_app))
+
     # Create Starlette app with lifespan
-    routes = [Route(path, endpoint=streamable_http_app)]
     app = Starlette(
         routes=routes,
+        middleware=middleware,
         lifespan=lambda app: session_manager.run(),
         exception_handlers=_make_http_exception_handlers(),
     )
