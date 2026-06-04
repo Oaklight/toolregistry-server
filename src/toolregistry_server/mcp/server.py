@@ -32,6 +32,31 @@ if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
 
 
+def _make_http_exception_handlers() -> dict:
+    """Return Starlette exception_handlers that emit JSON-RPC-shaped errors.
+
+    Claude Code probes OAuth discovery endpoints (``.well-known/oauth-*``)
+    before connecting to remote MCP servers. The error response must NOT
+    use OAuth 2.0 error format (``error`` + ``error_description`` fields
+    per RFC 6749 §5.2), because Claude Code would interpret that as
+    "OAuth is present but misconfigured" rather than "no OAuth needed".
+
+    Instead we use a plain JSON format that is clearly non-OAuth, so
+    the client correctly treats the 404 as "no OAuth required".
+    """
+    from starlette.exceptions import HTTPException
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    async def _json_http_error(request: Request, exc: HTTPException) -> JSONResponse:
+        return JSONResponse(
+            {"detail": exc.detail},
+            status_code=exc.status_code,
+        )
+
+    return {404: _json_http_error, 405: _json_http_error}
+
+
 async def run_stdio(server: "Server") -> None:
     """Run an MCP server over stdio transport.
 
@@ -117,7 +142,7 @@ async def run_sse(
         Route(path, endpoint=handle_sse, methods=["GET"]),
         Mount(f"{path}/messages/", app=sse.handle_post_message),
     ]
-    app = Starlette(routes=routes)
+    app = Starlette(routes=routes, exception_handlers=_make_http_exception_handlers())
 
     # Run with uvicorn
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
@@ -190,6 +215,7 @@ async def run_streamable_http(
     app = Starlette(
         routes=routes,
         lifespan=lambda app: session_manager.run(),
+        exception_handlers=_make_http_exception_handlers(),
     )
 
     # Run with uvicorn
