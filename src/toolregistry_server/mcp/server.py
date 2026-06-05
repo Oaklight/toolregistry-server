@@ -260,7 +260,9 @@ async def run_streamable_http(
 
         # Starlette middleware: extract Bearer token from every request
         middleware = [
-            Middleware(AuthenticationMiddleware, backend=BearerAuthBackend(token_verifier)),
+            Middleware(
+                AuthenticationMiddleware, backend=BearerAuthBackend(token_verifier)
+            ),
         ]
 
         # Wrap the MCP endpoint with RequireAuthMiddleware
