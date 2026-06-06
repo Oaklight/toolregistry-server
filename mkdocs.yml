@@ -157,5 +157,8 @@ nav:
           - OpenAPI 模块: reference/api/openapi.md
           - MCP 模块: reference/api/mcp.md
           - 认证模块: reference/api/auth.md
-  - 生态系统: ecosystem.md
+  - 生态系统:
+      - 概览: ecosystem.md
+      - ToolRegistry: https://toolregistry.readthedocs.io/
+      - Hub 工具: https://toolregistry-hub.readthedocs.io/
   - 更新日志: changelog.md
