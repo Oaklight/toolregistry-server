@@ -159,5 +159,3 @@ nav:
           - 认证模块: reference/api/auth.md
   - 生态系统: ecosystem.md
   - 更新日志: changelog.md
-  - ToolRegistry: https://toolregistry.readthedocs.io/
-  - Hub 工具: https://toolregistry-hub.readthedocs.io/
