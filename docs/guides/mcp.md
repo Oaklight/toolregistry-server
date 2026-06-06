@@ -98,4 +98,4 @@ http://localhost:8000/mcp
 
 ## API 参考
 
-参见 [MCP API 参考](../api/mcp.md) 获取详细文档。
+参见 [MCP API 参考](../reference/api/mcp.md) 获取详细文档。

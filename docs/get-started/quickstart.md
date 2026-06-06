@@ -103,12 +103,12 @@ toolregistry-server mcp --config config.json
 toolregistry-server mcp --config config.json --transport streamable-http --port 8000
 ```
 
-参见 [命令行工具参考](../cli/) 和 [配置指南](configuration.md) 了解配置文件格式的详细信息。
+参见 [命令行工具参考](../reference/cli/) 和 [配置指南](../guides/configuration.md) 了解配置文件格式的详细信息。
 
 ## 下一步
 
-- [可运行示例](https://github.com/Oaklight/toolregistry-server/tree/master/examples) - 可直接运行的完整脚本
-- [配置](configuration.md) - 了解 JSON/JSONC 配置文件
-- [认证](authentication.md) - 设置 Bearer 令牌认证
-- [OpenAPI 适配器](../adapters/openapi.md) - 深入了解 REST API 适配器
-- [MCP 适配器](../adapters/mcp.md) - 深入了解 MCP 适配器
+- [示例](../examples/) - 可运行的脚本和配置片段
+- [配置](../guides/configuration.md) - 了解 JSON/JSONC 配置文件
+- [认证](../guides/authentication.md) - 设置 Bearer 令牌认证
+- [OpenAPI 适配器](../guides/openapi.md) - 深入了解 REST API 适配器
+- [MCP 适配器](../guides/mcp.md) - 深入了解 MCP 适配器

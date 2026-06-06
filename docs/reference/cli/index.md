@@ -88,7 +88,7 @@ toolregistry-server mcp \
 
 ## 配置文件
 
-参见 [配置指南](../usage/configuration.md) 了解 JSON、JSONC 或 YAML 配置格式的详细信息。
+参见 [配置指南](../../guides/configuration.md) 了解 JSON、JSONC 或 YAML 配置格式的详细信息。
 
 ## Python API 用法
 

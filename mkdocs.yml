@@ -75,23 +75,24 @@ plugins:
       sections:
         首页:
           - index.md
-        使用指南:
-          - usage/installation.md
-          - usage/quickstart.md
-          - usage/configuration.md
-          - usage/authentication.md
-        适配器:
-          - adapters/index.md
-          - adapters/openapi.md
-          - adapters/mcp.md
-        命令行工具:
-          - cli/index.md
-        API 参考:
-          - api/index.md
-          - api/core/route_table.md
-          - api/openapi.md
-          - api/mcp.md
-          - api/auth.md
+        快速上手:
+          - get-started/installation.md
+          - get-started/quickstart.md
+        指南:
+          - guides/configuration.md
+          - guides/authentication.md
+          - guides/openapi.md
+          - guides/mcp.md
+        示例:
+          - examples/index.md
+        参考:
+          - reference/cli/index.md
+          - reference/adapters.md
+          - reference/api/index.md
+          - reference/api/core/route_table.md
+          - reference/api/openapi.md
+          - reference/api/mcp.md
+          - reference/api/auth.md
         生态系统:
           - ecosystem.md
         更新日志:
@@ -137,24 +138,25 @@ extra:
 
 nav:
   - 首页: index.md
-  - 使用指南:
-      - 安装: usage/installation.md
-      - 快速开始: usage/quickstart.md
-      - 配置: usage/configuration.md
-      - 认证: usage/authentication.md
-  - 适配器:
-      - adapters/index.md
-      - OpenAPI 适配器: adapters/openapi.md
-      - MCP 适配器: adapters/mcp.md
-  - 命令行工具:
-      - cli/index.md
-  - API 参考:
-      - api/index.md
-      - 核心:
-          - RouteTable: api/core/route_table.md
-      - OpenAPI: api/openapi.md
-      - MCP: api/mcp.md
-      - 认证: api/auth.md
+  - 快速上手:
+      - 安装: get-started/installation.md
+      - 快速开始: get-started/quickstart.md
+  - 指南:
+      - 配置: guides/configuration.md
+      - 认证: guides/authentication.md
+      - OpenAPI 适配器: guides/openapi.md
+      - MCP 适配器: guides/mcp.md
+  - 示例:
+      - examples/index.md
+  - 参考:
+      - 命令行工具: reference/cli/index.md
+      - 协议适配器: reference/adapters.md
+      - API 参考:
+          - reference/api/index.md
+          - RouteTable & RouteEntry: reference/api/core/route_table.md
+          - OpenAPI 模块: reference/api/openapi.md
+          - MCP 模块: reference/api/mcp.md
+          - 认证模块: reference/api/auth.md
   - 生态系统: ecosystem.md
   - 更新日志: changelog.md
   - ToolRegistry: https://toolregistry.readthedocs.io/
