@@ -75,23 +75,24 @@ plugins:
       sections:
         Home:
           - index.md
-        Usage:
-          - usage/installation.md
-          - usage/quickstart.md
-          - usage/configuration.md
-          - usage/authentication.md
-        Adapters:
-          - adapters/index.md
-          - adapters/openapi.md
-          - adapters/mcp.md
-        CLI:
-          - cli/index.md
-        API Reference:
-          - api/index.md
-          - api/core/route_table.md
-          - api/openapi.md
-          - api/mcp.md
-          - api/auth.md
+        Get Started:
+          - get-started/installation.md
+          - get-started/quickstart.md
+        Guides:
+          - guides/configuration.md
+          - guides/authentication.md
+          - guides/openapi.md
+          - guides/mcp.md
+        Examples:
+          - examples/index.md
+        Reference:
+          - reference/cli/index.md
+          - reference/adapters.md
+          - reference/api/index.md
+          - reference/api/core/route_table.md
+          - reference/api/openapi.md
+          - reference/api/mcp.md
+          - reference/api/auth.md
         Ecosystem:
           - ecosystem.md
         Changelog:
@@ -137,24 +138,25 @@ extra:
 
 nav:
   - Home: index.md
-  - Usage:
-      - Installation: usage/installation.md
-      - Quick Start: usage/quickstart.md
-      - Configuration: usage/configuration.md
-      - Authentication: usage/authentication.md
-  - Adapters:
-      - adapters/index.md
-      - OpenAPI Adapter: adapters/openapi.md
-      - MCP Adapter: adapters/mcp.md
-  - CLI:
-      - cli/index.md
-  - API Reference:
-      - api/index.md
-      - Core:
-          - RouteTable: api/core/route_table.md
-      - OpenAPI: api/openapi.md
-      - MCP: api/mcp.md
-      - Authentication: api/auth.md
+  - Get Started:
+      - Installation: get-started/installation.md
+      - Quick Start: get-started/quickstart.md
+  - Guides:
+      - Configuration: guides/configuration.md
+      - Authentication: guides/authentication.md
+      - OpenAPI Adapter: guides/openapi.md
+      - MCP Adapter: guides/mcp.md
+  - Examples:
+      - examples/index.md
+  - Reference:
+      - CLI: reference/cli/index.md
+      - Protocol Adapters: reference/adapters.md
+      - API Reference:
+          - reference/api/index.md
+          - RouteTable & RouteEntry: reference/api/core/route_table.md
+          - OpenAPI Module: reference/api/openapi.md
+          - MCP Module: reference/api/mcp.md
+          - Auth Module: reference/api/auth.md
   - Ecosystem: ecosystem.md
   - Changelog: changelog.md
   - ToolRegistry: https://toolregistry.readthedocs.io/

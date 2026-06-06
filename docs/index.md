@@ -19,35 +19,21 @@ hide:
 </p>
 
 <div class="tr-actions" markdown>
-[Quick Start](usage/quickstart.md){ .tr-button .tr-button--primary }
-[OpenAPI](adapters/openapi.md){ .tr-button .tr-button--secondary }
-[MCP](adapters/mcp.md){ .tr-button .tr-button--secondary }
+[Get Started](get-started/quickstart.md){ .tr-button .tr-button--primary }
+[OpenAPI Guide](guides/openapi.md){ .tr-button .tr-button--secondary }
+[MCP Guide](guides/mcp.md){ .tr-button .tr-button--secondary }
 </div>
 </section>
 
-## Overview
+## What is toolregistry-server?
 
-`toolregistry-server` lets you register Python functions as tools and expose them as services through multiple protocols — REST APIs via OpenAPI and LLM integration via the Model Context Protocol.
-
-## Ecosystem
-
-The ToolRegistry ecosystem consists of three packages:
-
-| Package | Description |
-|---------|-------------|
-| [`toolregistry`](https://toolregistry.readthedocs.io/) | Core library - Tool model, ToolRegistry, client integration |
-| [`toolregistry-server`](https://toolregistry-server.readthedocs.io/) | Tool server - define tools and serve via OpenAPI/MCP |
-| [`toolregistry-hub`](https://toolregistry-hub.readthedocs.io/) | Tool collection - Built-in tools, default server configuration |
+`toolregistry-server` is the **serving layer** in the [ToolRegistry ecosystem](ecosystem.md). It takes a `ToolRegistry` full of Python functions and exposes them as network services — REST APIs via OpenAPI, or LLM tool interfaces via the Model Context Protocol (MCP).
 
 ```
-toolregistry (core)
-       ↓
-toolregistry-server (tool server)
-       ↓
-toolregistry-hub (tool collection + server config)
+toolregistry (core)         → define & manage tools
+toolregistry-server (this)  → serve tools over OpenAPI & MCP
+toolregistry-hub (extras)   → curated, ready-to-use tools
 ```
-
-See the [Ecosystem](ecosystem.md) page for a detailed overview of all packages.
 
 ## Quick Start
 
@@ -60,7 +46,6 @@ from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
 from toolregistry_server.openapi import create_openapi_app
 
-# Create a registry and register tools
 registry = ToolRegistry()
 
 @registry.register
@@ -68,22 +53,21 @@ def greet(name: str) -> str:
     """Greet someone by name."""
     return f"Hello, {name}!"
 
-# Create route table and FastAPI app
 route_table = RouteTable(registry)
 app = create_openapi_app(route_table)
 ```
 
-[Installation Guide →](usage/installation.md) | [Quick Start →](usage/quickstart.md)
+[Installation →](get-started/installation.md) · [Quick Start →](get-started/quickstart.md) · [Examples →](examples/)
 
 ## Key Features
 
-- **Central Route Table**: A unified routing layer that bridges `ToolRegistry` and protocol adapters
-- **OpenAPI Adapter**: Expose tools as RESTful HTTP endpoints with automatic OpenAPI schema generation
-- **MCP Adapter**: Expose tools via the [Model Context Protocol](https://modelcontextprotocol.io/) for LLM integration
-- **Authentication**: Built-in Bearer token authentication support
-- **CLI**: Command-line interface for running servers without custom code
-- **Dynamic Enable/Disable**: Runtime tool state management without server restart
-- **ETag Caching**: HTTP caching via ETag headers for efficient API responses
+- **Central Route Table** — unified routing layer bridging `ToolRegistry` and protocol adapters
+- **OpenAPI Adapter** — RESTful HTTP endpoints with automatic schema generation
+- **MCP Adapter** — [Model Context Protocol](https://modelcontextprotocol.io/) for LLM integration
+- **Authentication** — built-in Bearer token support
+- **CLI** — run servers from config files without writing code
+- **Dynamic Enable/Disable** — toggle tools at runtime without restart
+- **ETag Caching** — efficient HTTP caching via ETag headers
 
 ## Architecture
 
@@ -100,16 +84,6 @@ graph TD
     RT --> MA
     RT -.-> GA
 ```
-
-## Documentation Contents
-
-- [**Installation Guide**](usage/installation.md) - Install `toolregistry-server` with optional extras
-- [**Quick Start**](usage/quickstart.md) - Get up and running in minutes
-- [**Configuration**](usage/configuration.md) - JSON/JSONC configuration for the CLI
-- [**Authentication**](usage/authentication.md) - Bearer token authentication setup
-- [**Adapters**](adapters/) - OpenAPI and MCP protocol adapters
-- [**CLI Reference**](cli/) - Command-line interface usage
-- [**API Reference**](api/) - Comprehensive API documentation
 
 ## License
 

@@ -112,4 +112,4 @@ app = create_openapi_app(
 )
 ```
 
-See the [OpenAPI API Reference](../api/openapi.md) for detailed documentation.
+See the [OpenAPI API Reference](../reference/api/openapi.md) for detailed documentation.

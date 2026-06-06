@@ -103,12 +103,12 @@ toolregistry-server mcp --config config.json
 toolregistry-server mcp --config config.json --transport streamable-http --port 8000
 ```
 
-See the [CLI Reference](../cli/) and [Configuration Guide](configuration.md) for details on the config file format.
+See the [CLI Reference](../reference/cli/) and [Configuration Guide](../guides/configuration.md) for details on the config file format.
 
 ## Next Steps
 
-- [Runnable Examples](https://github.com/Oaklight/toolregistry-server/tree/master/examples) - Complete scripts you can run directly
-- [Configuration](configuration.md) - Learn about JSON/JSONC configuration files
-- [Authentication](authentication.md) - Set up Bearer token authentication
-- [OpenAPI Adapter](../adapters/openapi.md) - Deep dive into the REST API adapter
-- [MCP Adapter](../adapters/mcp.md) - Deep dive into the MCP adapter
+- [Examples](../examples/) - Runnable scripts and config snippets
+- [Configuration](../guides/configuration.md) - Learn about JSON/JSONC configuration files
+- [Authentication](../guides/authentication.md) - Set up Bearer token authentication
+- [OpenAPI Adapter](../guides/openapi.md) - Deep dive into the REST API adapter
+- [MCP Adapter](../guides/mcp.md) - Deep dive into the MCP adapter

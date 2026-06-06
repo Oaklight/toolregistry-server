@@ -98,4 +98,4 @@ Tool errors are returned as structured MCP error responses with appropriate erro
 
 ## API Reference
 
-See the [MCP API Reference](../api/mcp.md) for detailed documentation.
+See the [MCP API Reference](../reference/api/mcp.md) for detailed documentation.

@@ -88,7 +88,7 @@ toolregistry-server mcp \
 
 ## Configuration File
 
-See the [Configuration Guide](../usage/configuration.md) for details on the JSON, JSONC, or YAML configuration format.
+See the [Configuration Guide](../../guides/configuration.md) for details on the JSON, JSONC, or YAML configuration format.
 
 ## Programmatic API
 
