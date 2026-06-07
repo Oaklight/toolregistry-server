@@ -10,8 +10,8 @@ title: 适配器
 
 | 适配器 | 协议 | 传输方式 | 状态 |
 |--------|------|----------|------|
-| [OpenAPI](openapi.md) | REST/HTTP | HTTP | 稳定 |
-| [MCP](mcp.md) | 模型上下文协议 | stdio、SSE、可流式 HTTP | 稳定 |
+| [OpenAPI](../guides/openapi.md) | REST/HTTP | HTTP | 稳定 |
+| [MCP](../guides/mcp.md) | 模型上下文协议 | stdio、SSE、可流式 HTTP | 稳定 |
 | gRPC | gRPC | HTTP/2 | 计划中 |
 
 ## 适配器工作原理
