@@ -10,8 +10,8 @@ title: Adapters
 
 | Adapter | Protocol | Transport | Status |
 |---------|----------|-----------|--------|
-| [OpenAPI](openapi.md) | REST/HTTP | HTTP | Stable |
-| [MCP](mcp.md) | Model Context Protocol | stdio, SSE, Streamable HTTP | Stable |
+| [OpenAPI](../guides/openapi.md) | REST/HTTP | HTTP | Stable |
+| [MCP](../guides/mcp.md) | Model Context Protocol | stdio, SSE, Streamable HTTP | Stable |
 | gRPC | gRPC | HTTP/2 | Planned |
 
 ## How Adapters Work
