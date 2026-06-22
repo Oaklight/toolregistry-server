@@ -217,7 +217,8 @@ class MCPAdapter(Adapter):
             logger.info(f"HTTP endpoint: http://{host}:{port}/mcp")
             from ...auth import load_tokens
 
-            valid_tokens = set(load_tokens(tokens_path)) or None
+            tokens_list = load_tokens(tokens_path)
+            valid_tokens = set(tokens_list) if tokens_list else None
             await run_streamable_http(
                 self._server,
                 host=host,
