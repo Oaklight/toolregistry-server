@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from toolregistry_server.cli import create_parser, main
+from toolregistry_server.cli import CLI, main
 
 
 class TestCreateParser:
@@ -15,31 +15,31 @@ class TestCreateParser:
 
     def test_parser_creation(self):
         """Test that parser is created successfully."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         assert isinstance(parser, argparse.ArgumentParser)
         assert parser.prog == "toolregistry-server"
 
     def test_version_flag(self):
         """Test --version flag is recognized."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(["--version"])
         assert args.version is True
 
     def test_version_short_flag(self):
         """Test -V flag is recognized."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(["-V"])
         assert args.version is True
 
     def test_no_command(self):
         """Test parsing with no command."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args([])
         assert args.command is None
 
     def test_openapi_command(self):
         """Test openapi subcommand parsing."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(["openapi"])
         assert args.command == "openapi"
         assert args.host == "0.0.0.0"
@@ -50,7 +50,7 @@ class TestCreateParser:
 
     def test_openapi_with_options(self):
         """Test openapi subcommand with all options."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(
             [
                 "openapi",
@@ -74,7 +74,7 @@ class TestCreateParser:
 
     def test_mcp_command(self):
         """Test mcp subcommand parsing."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(["mcp"])
         assert args.command == "mcp"
         assert args.transport == "stdio"
@@ -84,7 +84,7 @@ class TestCreateParser:
 
     def test_mcp_with_options(self):
         """Test mcp subcommand with all options."""
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(
             [
                 "mcp",
@@ -106,7 +106,7 @@ class TestCreateParser:
 
     def test_mcp_transport_choices(self):
         """Test mcp transport choices."""
-        parser = create_parser()
+        parser = CLI().create_parser()
 
         # Valid choices
         for transport in ["stdio", "sse", "streamable-http"]:
@@ -128,7 +128,7 @@ class TestMain:
         assert exc_info.value.code == 0
 
         captured = capsys.readouterr()
-        assert "toolregistry-server" in captured.out
+        assert "ToolRegistry Server" in captured.out
 
     def test_no_command_shows_help(self, capsys):
         """Test that no command shows help."""
@@ -136,7 +136,9 @@ class TestMain:
             main([])
         assert exc_info.value.code == 0
 
-    @patch("toolregistry_server.app.serve_openapi")
+    @patch.object(
+        __import__("toolregistry_server.app", fromlist=["App"]).App, "serve_openapi"
+    )
     def test_openapi_command_dispatch(self, mock_serve):
         """Test openapi command dispatches correctly."""
         main(["openapi", "--config", "tools.yaml", "--port", "9000"])
@@ -149,7 +151,9 @@ class TestMain:
             reload=False,
         )
 
-    @patch("toolregistry_server.app.serve_openapi")
+    @patch.object(
+        __import__("toolregistry_server.app", fromlist=["App"]).App, "serve_openapi"
+    )
     def test_openapi_command_dispatch_with_profile(self, mock_serve):
         """Test openapi command passes profile correctly."""
         main(
@@ -172,7 +176,7 @@ class TestMain:
             reload=False,
         )
 
-    @patch("toolregistry_server.app.serve_mcp")
+    @patch("toolregistry_server.app.App.serve_mcp")
     def test_mcp_command_dispatch(self, mock_serve):
         """Test mcp command dispatches correctly."""
         main(["mcp", "--config", "tools.yaml", "--transport", "sse", "--port", "9000"])
@@ -184,7 +188,7 @@ class TestMain:
             transport="sse",
         )
 
-    @patch("toolregistry_server.app.serve_mcp")
+    @patch("toolregistry_server.app.App.serve_mcp")
     def test_mcp_command_dispatch_with_profile(self, mock_serve):
         """Test mcp command passes profile correctly."""
         main(["mcp", "--config", "tools.yaml", "--profile", "remote"])
@@ -671,25 +675,25 @@ class TestCreateRegistryFromConfigWithHooks:
 
     def test_parser_has_profile_openapi(self):
         """Parser exposes --profile for openapi subcommand."""
-        from toolregistry_server.cli import create_parser
+        from toolregistry_server.cli import CLI
 
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(["openapi", "--profile", "remote"])
         assert args.profile == "remote"
 
     def test_parser_has_profile_mcp(self):
         """Parser exposes --profile for mcp subcommand."""
-        from toolregistry_server.cli import create_parser
+        from toolregistry_server.cli import CLI
 
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(["mcp", "--profile", "local"])
         assert args.profile == "local"
 
     def test_parser_profile_default_none(self):
         """--profile defaults to None when not provided."""
-        from toolregistry_server.cli import create_parser
+        from toolregistry_server.cli import CLI
 
-        parser = create_parser()
+        parser = CLI().create_parser()
         args = parser.parse_args(["openapi"])
         assert args.profile is None
 

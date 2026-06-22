@@ -28,6 +28,7 @@ __version__ = "0.3.3"
 
 from .app import App, serve_mcp, serve_openapi
 from .auth import load_tokens
+from .identity import ServerIdentity
 from .registry_builder import (
     PROFILE_DISABLE_TAGS,
     apply_config,
@@ -45,6 +46,7 @@ __all__ = [
     "App",
     "__version__",
     "PROFILE_DISABLE_TAGS",
+    "ServerIdentity",
     "RouteEntry",
     "RouteTable",
     "SessionContext",

@@ -2,7 +2,7 @@
 
 Provides :class:`App` — the programmatic entry point for running
 servers.  Downstream packages subclass it to customize registry
-construction.
+construction and identity.
 
 Design
 ------
@@ -14,6 +14,10 @@ Design
 2. Wraps it in a ``RouteTable``
 3. Delegates to ``adapter_cls.create_and_run(route_table, **kwargs)``
 
+Identity (product name, version, banner art) is set once on the
+``App`` and automatically flows to adapters — OpenAPI title, MCP
+server name, CLI banner.
+
 ``serve_openapi`` / ``serve_mcp`` are convenience wrappers that
 bind a specific adapter class.  They exist so that end users don't
 need to import adapter classes for the common case::
@@ -21,11 +25,6 @@ need to import adapter classes for the common case::
     # Quick start — no adapter import needed:
     from toolregistry_server import serve_openapi
     serve_openapi(config_path="tools.yaml")
-
-    # Equivalent explicit form:
-    from toolregistry_server.app import App
-    from toolregistry_server.adapters.openapi import OpenAPIAdapter
-    App().serve(OpenAPIAdapter, config_path="tools.yaml")
 
 Adding a new adapter
 ~~~~~~~~~~~~~~~~~~~~
@@ -43,11 +42,15 @@ Override ``prepare_registry`` to customize how the registry is
 built (e.g. built-in tools, hooks, admin panel)::
 
     class HubApp(App):
+        def __init__(self):
+            super().__init__(identity=ServerIdentity(
+                name="ToolRegistry Hub",
+                version=hub_version,
+                banner_art=HUB_BANNER,
+            ))
+
         def prepare_registry(self, **kwargs):
-            registry = build_hub_registry(...)
-            if kwargs.get("admin_port"):
-                registry.enable_admin(port=kwargs["admin_port"])
-            return registry
+            return build_hub_registry(...)
 
     app = HubApp()
     app.serve_mcp(transport="stdio")
@@ -65,15 +68,25 @@ if TYPE_CHECKING:
     from toolregistry import ToolRegistry
 
     from .adapters import Adapter
+    from .identity import ServerIdentity
     from .route_table import RouteTable
 
 
 class App:
     """Server application — builds registry and dispatches to adapters.
 
+    Args:
+        identity: Server identity (name, version, description, banner art).
+            Defaults to ``ServerIdentity()`` (toolregistry-server branding).
+
     Override :meth:`prepare_registry` to customize how the registry
     is constructed (e.g. built-in tools, hooks, metadata overrides).
     """
+
+    def __init__(self, identity: ServerIdentity | None = None) -> None:
+        from .identity import ServerIdentity
+
+        self.identity = identity or ServerIdentity()
 
     def prepare_registry(self, **kwargs) -> ToolRegistry:
         """Build or resolve a ``ToolRegistry``.
@@ -121,29 +134,29 @@ class App:
     def serve(self, adapter_cls: type[Adapter], **kwargs) -> None:
         """Build registry and serve via any adapter.
 
+        Identity is injected into kwargs so adapters can use it
+        (e.g. OpenAPI title, MCP server name).
+
         Args:
             adapter_cls: The adapter class to use (e.g. OpenAPIAdapter).
             **kwargs: Split between :meth:`prepare_registry` and
                 ``adapter_cls.create_and_run``.
         """
+        # Inject identity so adapters can read it
+        kwargs.setdefault("identity", self.identity)
+
         registry = self.prepare_registry(**kwargs)
         route_table = self._make_route_table(registry)
         adapter_cls.create_and_run(route_table, **kwargs)
 
     def serve_openapi(self, **kwargs) -> None:
-        """Build registry and start an OpenAPI server.
-
-        Convenience wrapper for ``serve(OpenAPIAdapter, ...)``.
-        """
+        """Build registry and start an OpenAPI server."""
         from .adapters.openapi import OpenAPIAdapter
 
         self.serve(OpenAPIAdapter, **kwargs)
 
     def serve_mcp(self, **kwargs) -> None:
-        """Build registry and start an MCP server.
-
-        Convenience wrapper for ``serve(MCPAdapter, ...)``.
-        """
+        """Build registry and start an MCP server."""
         from .adapters.mcp import MCPAdapter
 
         self.serve(MCPAdapter, **kwargs)

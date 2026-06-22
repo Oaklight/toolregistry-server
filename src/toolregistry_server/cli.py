@@ -1,33 +1,27 @@
-"""
-Command-line interface for ToolRegistry Server.
+"""Command-line interface for ToolRegistry Server.
 
-This module provides the CLI entry point for running ToolRegistry servers
-with support for both OpenAPI and MCP protocols.
+Provides :class:`CLI` — a class-based CLI framework that downstream
+packages subclass to customize parser, banner, and dispatch.
 
 Usage:
-    toolregistry-server openapi [OPTIONS]
-    toolregistry-server mcp [OPTIONS]
-    toolregistry-server --help
+    toolregistry-server openapi --config tools.yaml [OPTIONS]
+    toolregistry-server mcp --config tools.yaml [OPTIONS]
 
-Example:
-    # Start OpenAPI server on port 8000
-    $ toolregistry-server openapi --port 8000
+Subclassing (e.g. Hub)::
 
-    # Start MCP server with stdio transport
-    $ toolregistry-server mcp --transport stdio
+    class HubCLI(CLI):
+        def __init__(self):
+            super().__init__(app=HubApp(identity=hub_identity))
 
-    # Start MCP server with SSE transport
-    $ toolregistry-server mcp --transport sse --port 8000
+        def create_parser(self):
+            parser = super().create_parser()
+            # add hub-specific args to each subparser
+            return parser
 
-    # With configuration file (JSONC or YAML)
-    $ toolregistry-server openapi --config tools.yaml
-
-    # With custom .env file
-    $ toolregistry-server openapi --env /path/to/.env
-
-    # Skip loading .env file
-    $ toolregistry-server openapi --no-env
+    HubCLI().main()
 """
+
+from __future__ import annotations
 
 import argparse
 import sys
@@ -35,12 +29,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from .app import App
 
 from ._vendor.structlog import get_logger
-from .banner import BANNER_ART as DEFAULT_BANNER_ART
 
 logger = get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Standalone utilities (used by CLI and downstream)
+# ---------------------------------------------------------------------------
 
 
 def load_env_file(env_path: str | None = None, no_env: bool = False) -> None:
@@ -61,7 +59,6 @@ def load_env_file(env_path: str | None = None, no_env: bool = False) -> None:
         load_dotenv(path)
         logger.info(f"Loaded environment from {path}")
     elif env_path:
-        # User explicitly specified a path but file doesn't exist
         logger.warning(f"Environment file not found: {path}")
 
 
@@ -70,230 +67,194 @@ def print_banner(
     banner_art: str | None = None,
     extra_lines: list[str] | None = None,
 ) -> None:
-    """Print the ToolRegistry Server banner with centered content and border.
-
-    This function can be used by downstream packages (e.g., toolregistry-hub)
-    to display a customized banner with their own version and art.
+    """Print a bordered ASCII banner.
 
     Args:
-        version: Version string to display. If None, uses toolregistry-server version.
-        banner_art: Custom ASCII art to display. If None, uses default banner.
-        extra_lines: Additional lines to display after the version (e.g., update info).
+        version: Version string to display.
+        banner_art: ASCII art to display. If None, uses default.
+        extra_lines: Additional lines after the version.
     """
     if version is None:
-        from toolregistry_server import __version__
+        from . import __version__
 
         version = __version__
 
     if banner_art is None:
-        banner_art = DEFAULT_BANNER_ART
+        from .banner import BANNER_ART
+
+        banner_art = BANNER_ART
 
     width = 80
     border_char = "·"
-
-    # Split banner art into lines
     art_lines = banner_art.split("\n")
 
-    # Build the banner
     lines = []
-
-    # Top border
     lines.append(border_char * width)
-
-    # Empty line
     lines.append(f": {' ' * (width - 4)} :")
-
-    # Art lines - center each line
     for line in art_lines:
-        centered = line.center(width - 4)
-        lines.append(f": {centered} :")
-
-    # Empty line
+        lines.append(f": {line.center(width - 4)} :")
     lines.append(f": {' ' * (width - 4)} :")
-
-    # Version information
-    version_line = f"Version {version}"
-    centered_version = version_line.center(width - 4)
-    lines.append(f": {centered_version} :")
-
-    # Extra lines (e.g., update available info)
+    lines.append(f": {f'Version {version}'.center(width - 4)} :")
     if extra_lines:
         for extra in extra_lines:
-            centered_extra = extra.center(width - 4)
-            lines.append(f": {centered_extra} :")
-
-    # Empty line
+            lines.append(f": {extra.center(width - 4)} :")
     lines.append(f": {' ' * (width - 4)} :")
-
-    # Bottom border
     lines.append(border_char * width)
-
-    # Print the banner
     print("\n".join(lines))
 
 
-def create_parser() -> argparse.ArgumentParser:
-    """Create the argument parser for the CLI.
+# ---------------------------------------------------------------------------
+# CLI class
+# ---------------------------------------------------------------------------
 
-    Returns:
-        Configured ArgumentParser instance with subcommands.
+
+class CLI:
+    """Class-based CLI framework.
+
+    Subclass and override methods to customize:
+
+    - :meth:`create_parser` — add arguments
+    - :meth:`get_version_string` — version output
+    - :meth:`print_banner` — startup banner
+    - :meth:`dispatch` — command routing
+
+    The :class:`~toolregistry_server.app.App` instance used for dispatch
+    is set via the constructor, enabling identity and registry
+    customization.
     """
-    parser = argparse.ArgumentParser(
-        prog="toolregistry-server",
-        description="Define custom tools and serve them via OpenAPI or MCP interfaces",
-    )
 
-    parser.add_argument(
-        "--version",
-        "-V",
-        action="store_true",
-        help="Show version and exit",
-    )
+    def __init__(self, app: App | None = None) -> None:
+        from .app import App
 
-    parser.add_argument(
-        "--no-banner",
-        action="store_true",
-        help="Disable the startup banner",
-    )
+        self.app = app or App()
 
-    # Create subparsers — each adapter registers its own arguments
-    subparsers = parser.add_subparsers(
-        dest="command",
-        title="commands",
-        description="Available server modes",
-        metavar="{openapi,mcp}",
-    )
+    def create_parser(self) -> argparse.ArgumentParser:
+        """Create the argument parser.
 
-    from .adapters.mcp import MCPAdapter
-    from .adapters.openapi import OpenAPIAdapter
+        Override to add subcommands, change prog name, or add
+        extra arguments.
+        """
+        from .adapters.mcp import MCPAdapter
+        from .adapters.openapi import OpenAPIAdapter
 
-    openapi_parser = subparsers.add_parser(
-        "openapi", help="Start OpenAPI (REST) server"
-    )
-    OpenAPIAdapter.add_cli_arguments(openapi_parser)
-
-    mcp_parser = subparsers.add_parser("mcp", help="Start MCP server")
-    MCPAdapter.add_cli_arguments(mcp_parser)
-
-    return parser
-
-
-def run_cli(
-    parsed: argparse.Namespace,
-    *,
-    version_string: str | None = None,
-    banner_fn: "Callable[[], None] | None" = None,
-    dispatch_fn: "Callable[[argparse.Namespace], None] | None" = None,
-) -> NoReturn | None:
-    """Reusable CLI main loop.
-
-    Handles version flag, no-command help, .env loading, banner,
-    and dispatch.  Downstream packages (e.g. Hub) can override
-    specific steps via keyword arguments.
-
-    Args:
-        parsed: Parsed argparse namespace.
-        version_string: Version string for ``--version`` output.
-            Defaults to ``"toolregistry-server <version>"``.
-        banner_fn: Callable to print the banner.  Defaults to
-            :func:`print_banner`.  Pass ``None`` to skip.
-        dispatch_fn: Callable that receives *parsed* and dispatches
-            to the appropriate serve function.  Defaults to the
-            built-in config-based dispatch.
-    """
-    # Handle version flag
-    if parsed.version:
-        if version_string is None:
-            from toolregistry_server import __version__
-
-            version_string = f"toolregistry-server {__version__}"
-        print(version_string)
-        sys.exit(0)
-
-    # If no command specified, show help
-    if parsed.command is None:
-        # Re-create parser to print help (parsed doesn't carry it)
-        create_parser().print_help()
-        sys.exit(0)
-
-    # Load environment variables from .env file
-    load_env_file(
-        env_path=getattr(parsed, "env", None),
-        no_env=getattr(parsed, "no_env", False),
-    )
-
-    # Print banner
-    if not parsed.no_banner:
-        if banner_fn is not None:
-            banner_fn()
-        else:
-            print_banner()
-
-    # Dispatch
-    try:
-        if dispatch_fn is not None:
-            dispatch_fn(parsed)
-        else:
-            _default_dispatch(parsed)
-    except ImportError as e:
-        logger.error(f"Server dependencies not installed: {e}")
-        logger.info(
-            "Install with: pip install toolregistry-server[openapi] "
-            "or toolregistry-server[mcp]"
+        parser = argparse.ArgumentParser(
+            prog=self.app.identity.prog,
+            description=self.app.identity.description,
         )
-        sys.exit(1)
-    except FileNotFoundError as e:
-        logger.error(str(e))
-        sys.exit(1)
-    except ValueError as e:
-        logger.error(str(e))
-        sys.exit(1)
+        parser.add_argument("--version", "-V", action="store_true", help="Show version")
+        parser.add_argument("--no-banner", action="store_true", help="Disable banner")
 
-    return None
-
-
-def _default_dispatch(parsed: argparse.Namespace) -> None:
-    """Default dispatch for standalone toolregistry-server CLI."""
-    config_path = getattr(parsed, "config", None)
-    if config_path is None:
-        logger.error("No config file specified. Use --config to provide one.")
-        sys.exit(1)
-
-    if parsed.command == "openapi":
-        from toolregistry_server.app import serve_openapi
-
-        serve_openapi(
-            config_path=config_path,
-            profile=getattr(parsed, "profile", None),
-            host=parsed.host,
-            port=parsed.port,
-            tokens_path=getattr(parsed, "tokens", None),
-            reload=getattr(parsed, "reload", False),
+        subparsers = parser.add_subparsers(
+            dest="command",
+            metavar="{openapi,mcp}",
         )
-    elif parsed.command == "mcp":
-        from toolregistry_server.app import serve_mcp
 
-        serve_mcp(
-            config_path=config_path,
-            profile=getattr(parsed, "profile", None),
-            host=parsed.host,
-            port=parsed.port,
-            transport=parsed.transport,
+        openapi_parser = subparsers.add_parser("openapi", help="Start OpenAPI server")
+        OpenAPIAdapter.add_cli_arguments(openapi_parser)
+
+        mcp_parser = subparsers.add_parser("mcp", help="Start MCP server")
+        MCPAdapter.add_cli_arguments(mcp_parser)
+
+        return parser
+
+    def get_version_string(self) -> str:
+        """Return version string for ``--version`` output."""
+        identity = self.app.identity
+        return f"{identity.name} {identity.version}"
+
+    def print_banner(self) -> None:
+        """Print the startup banner using identity."""
+        identity = self.app.identity
+        print_banner(
+            version=identity.version,
+            banner_art=identity.banner_art,
         )
+
+    def dispatch(self, parsed: argparse.Namespace) -> None:
+        """Route parsed args to app.serve_*.
+
+        Override to add custom commands or pre-processing.
+        """
+        config_path = getattr(parsed, "config", None)
+        if config_path is None:
+            logger.error("No config file specified. Use --config to provide one.")
+            sys.exit(1)
+
+        if parsed.command == "openapi":
+            self.app.serve_openapi(
+                config_path=config_path,
+                profile=getattr(parsed, "profile", None),
+                host=parsed.host,
+                port=parsed.port,
+                tokens_path=getattr(parsed, "tokens", None),
+                reload=getattr(parsed, "reload", False),
+            )
+        elif parsed.command == "mcp":
+            self.app.serve_mcp(
+                config_path=config_path,
+                profile=getattr(parsed, "profile", None),
+                host=parsed.host,
+                port=parsed.port,
+                transport=parsed.transport,
+            )
+
+    def main(self, args: list[str] | None = None) -> NoReturn | None:
+        """Run the CLI."""
+        parser = self.create_parser()
+        parsed = parser.parse_args(args)
+
+        # --version
+        if parsed.version:
+            print(self.get_version_string())
+            sys.exit(0)
+
+        # No command → help
+        if parsed.command is None:
+            parser.print_help()
+            sys.exit(0)
+
+        # Load .env
+        load_env_file(
+            env_path=getattr(parsed, "env", None),
+            no_env=getattr(parsed, "no_env", False),
+        )
+
+        # Banner
+        if not parsed.no_banner:
+            self.print_banner()
+
+        # Dispatch with error handling
+        try:
+            self.dispatch(parsed)
+        except ImportError as e:
+            logger.error(f"Server dependencies not installed: {e}")
+            sys.exit(1)
+        except FileNotFoundError as e:
+            logger.error(str(e))
+            sys.exit(1)
+        except ValueError as e:
+            logger.error(str(e))
+            sys.exit(1)
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Module-level entry point
+# ---------------------------------------------------------------------------
 
 
 def main(args: list[str] | None = None) -> NoReturn | None:
-    """Main entry point for the standalone toolregistry-server CLI."""
-    parser = create_parser()
-    parsed = parser.parse_args(args)
-    return run_cli(parsed)
+    """Entry point for ``toolregistry-server`` CLI."""
+    return CLI().main(args)
 
+
+# Backward compat — kept for downstream that imports these
+# (Hub currently uses print_banner and load_env_file directly)
 
 __all__ = [
-    "DEFAULT_BANNER_ART",
-    "create_parser",
+    "CLI",
     "load_env_file",
     "main",
     "print_banner",
-    "run_cli",
 ]
