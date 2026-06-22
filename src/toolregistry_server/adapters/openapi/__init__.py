@@ -224,21 +224,21 @@ class OpenAPIAdapter(Adapter):
     def create_and_run(cls, route_table: RouteTable, **kwargs) -> None:
         """Construct and run an OpenAPI server in one step.
 
-        Extracts ``tokens_path``, ``title``, ``version``, ``description``
-        from kwargs for adapter construction; passes ``host``, ``port``,
-        ``reload`` to :meth:`run`.
+        Reads ``identity`` from kwargs for title/version/description
+        defaults.  Explicit ``title``/``version``/``description``
+        kwargs take precedence over identity.
         """
         from ...auth import load_tokens
+        from ...identity import ServerIdentity
 
+        identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         tokens = load_tokens(kwargs.pop("tokens_path", None))
         adapter = cls(
             route_table,
             tokens=tokens or None,
-            title=kwargs.pop("title", "ToolRegistry Server"),
-            version=kwargs.pop("version", "1.0.0"),
-            description=kwargs.pop(
-                "description", "OpenAPI server for ToolRegistry tools"
-            ),
+            title=kwargs.pop("title", identity.name),
+            version=kwargs.pop("version", identity.version),
+            description=kwargs.pop("description", identity.description),
         )
         adapter.run(**kwargs)
 

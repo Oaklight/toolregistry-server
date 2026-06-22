@@ -257,10 +257,13 @@ class MCPAdapter(Adapter):
     def create_and_run(cls, route_table: "RouteTable", **kwargs) -> None:
         """Construct and run an MCP server in one step.
 
-        Extracts ``name`` from kwargs for adapter construction; passes
-        ``transport``, ``host``, ``port``, etc. to :meth:`run`.
+        Reads ``identity`` from kwargs for server name default.
+        Explicit ``name`` kwarg takes precedence over identity.
         """
-        name = kwargs.pop("name", "ToolRegistry-Server")
+        from ...identity import ServerIdentity
+
+        identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
+        name = kwargs.pop("name", identity.name)
         adapter = cls(route_table, name=name)
         adapter.run(**kwargs)
 
