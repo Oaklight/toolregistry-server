@@ -83,6 +83,7 @@ plugins:
           - guides/authentication.md
           - guides/openapi.md
           - guides/mcp.md
+          - guides/extending.md
         Examples:
           - examples/index.md
         Reference:
@@ -146,6 +147,7 @@ nav:
       - Authentication: guides/authentication.md
       - OpenAPI Adapter: guides/openapi.md
       - MCP Adapter: guides/mcp.md
+      - Extending: guides/extending.md
   - Examples:
       - examples/index.md
   - Reference:
