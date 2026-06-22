@@ -1,10 +1,10 @@
 ---
-title: 命令行工具参考
+title: CLI 参考
 ---
 
-# 命令行工具
+# 命令行界面
 
-`toolregistry-server` 提供命令行工具，无需编写代码即可运行服务器。
+`toolregistry-server` 提供命令行工具，无需编写自定义代码即可运行服务器。
 
 ## 用法
 
@@ -14,34 +14,34 @@ toolregistry-server [选项] <子命令> [子命令选项]
 
 ## 顶层选项
 
-| 选项 | 描述 |
+| 选项 | 说明 |
 |------|------|
 | `--version`, `-V` | 显示版本并退出 |
 | `--no-banner` | 禁用启动横幅 |
 
-## 通用子命令选项
+## 子命令通用选项
 
-| 选项 | 描述 |
+| 选项 | 说明 |
 |------|------|
-| `--env PATH` | .env 文件路径（默认：当前目录下的 `.env`） |
+| `--env PATH` | .env 文件路径（默认：当前目录下的 `.env`）|
 | `--no-env` | 跳过加载 .env 文件 |
 
 ## 子命令
 
-### `openapi` - 启动 OpenAPI 服务器
+### `openapi` — 启动 OpenAPI 服务器
 
 ```bash
 toolregistry-server openapi [选项]
 ```
 
-| 选项 | 默认值 | 描述 |
+| 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--config PATH` | - | JSONC 或 YAML 配置文件路径 |
 | `--host HOST` | `0.0.0.0` | 绑定主机 |
 | `--port PORT` | `8000` | 绑定端口 |
 | `--tokens PATH` | - | Bearer 令牌文件（每行一个） |
-| `--reload` | `false` | 启用开发自动重载 |
-| `--profile PROFILE` | - | 部署 profile：`remote` 或 `local` |
+| `--reload` | `false` | 启用热重载（用于开发） |
+| `--profile PROFILE` | - | 部署配置文件：`remote` 或 `local` |
 
 **示例：**
 
@@ -53,27 +53,28 @@ toolregistry-server openapi \
   --profile remote
 ```
 
-### `mcp` - 启动 MCP 服务器
+### `mcp` — 启动 MCP 服务器
 
 ```bash
 toolregistry-server mcp [选项]
 ```
 
-| 选项 | 默认值 | 描述 |
+| 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--config PATH` | - | JSON、JSONC 或 YAML 配置文件路径 |
-| `--transport TYPE` | `stdio` | 传输类型：`stdio`、`sse` 或 `streamable-http` |
-| `--host HOST` | `0.0.0.0` | 绑定主机（用于 HTTP 传输） |
-| `--port PORT` | `8000` | 绑定端口（用于 HTTP 传输） |
-| `--profile PROFILE` | - | 部署 profile：`remote` 或 `local` |
+| `--transport TYPE` | `stdio` | 传输类型：`stdio`、`sse`、`streamable-http` 或 `http` |
+| `--host HOST` | `0.0.0.0` | 绑定主机（HTTP 传输） |
+| `--port PORT` | `8000` | 绑定端口（HTTP 传输） |
+| `--tokens PATH` | - | Bearer 令牌文件（用于 streamable-http/http 传输） |
+| `--profile PROFILE` | - | 部署配置文件：`remote` 或 `local` |
 
 **示例：**
 
 ```bash
-# stdio 传输（用于 Claude Desktop 等）
+# stdio 传输（适用于 Claude Desktop 等）
 toolregistry-server mcp --config config.json
 
-# 可流式 HTTP 传输
+# Streamable HTTP 传输
 toolregistry-server mcp \
   --config config.json \
   --transport streamable-http \
@@ -84,57 +85,95 @@ toolregistry-server mcp \
   --config config.json \
   --transport sse \
   --port 8000
+
+# 带 Bearer Token 认证（streamable-http）
+toolregistry-server mcp \
+  --config config.json \
+  --transport streamable-http \
+  --tokens tokens.txt
 ```
 
 ## 配置文件
 
-参见 [配置指南](../../guides/configuration.md) 了解 JSON、JSONC 或 YAML 配置格式的详细信息。
+有关 JSON、JSONC 或 YAML 配置格式的详细说明，请参阅 [配置指南](../../guides/configuration.md)。
 
-## Python API 用法
+## 编程 API
 
-两个服务器函数均可在 Python 中直接调用，并接受可选的预构建 `ToolRegistry`，无需配置文件：
+### `App` 类（推荐）
+
+`App` 类是规范的编程入口点。继承它并重写 `prepare_registry()` 以使用自定义逻辑构建注册表：
 
 ```python
 from toolregistry import ToolRegistry
-from toolregistry_server.cli.openapi import run_openapi_server
-from toolregistry_server.cli.mcp import run_mcp_server
+from toolregistry_server import App
 
-# 使用自定义逻辑构建 registry
-registry = ToolRegistry()
-registry.register(my_tool)
+class MyApp(App):
+    def prepare_registry(self):
+        registry = ToolRegistry()
+        registry.register(my_tool)
+        self.registry = registry
 
-# 直接传入 registry — config_path 将被忽略
-run_openapi_server(host="0.0.0.0", port=8000, registry=registry)
-run_mcp_server(transport="stdio", registry=registry)
+if __name__ == "__main__":
+    MyApp().serve_openapi(host="0.0.0.0", port=8000)
+    # 或：MyApp().serve_mcp(transport="stdio")
 ```
 
-当 `registry` 为 `None`（默认值）时，函数将按常规方式从 `config_path` 加载工具。
+### `CLI` 类 — 自定义子命令
 
-## 部署 Profile
+`CLI` 类是规范的命令行入口点。继承它并重写 `configure_subparsers()` 以添加自定义参数：
 
-`--profile` 标志在 registry 构建完成后应用基于标签的工具过滤：
+```python
+from argparse import ArgumentParser
+from toolregistry_server import CLI, App
 
-| Profile | 效果 |
-|---------|------|
-| `remote` | 禁用带 `file_system`、`destructive` 或 `privileged` 标签的工具 |
-| `local` | 不做标签过滤，所有工具保持启用 |
-| *(不指定)* | 不过滤（默认） |
+class MyCLI(CLI):
+    def configure_subparsers(self, subparsers: dict[str, ArgumentParser]):
+        # 向 openapi 子命令添加自定义参数
+        subparsers["openapi"].add_argument(
+            "--my-flag", action="store_true", help="启用自定义功能"
+        )
 
-当向终端用户提供服务且不希望其访问服务器本地文件系统或特权操作时，使用 `remote`：
+if __name__ == "__main__":
+    MyCLI().main()
+```
+
+使用独立的 `run_cli()` 辅助函数作为简单入口点：
+
+```python
+from toolregistry_server import run_cli
+
+run_cli()
+```
+
+### `ServerIdentity` — 自定义横幅与版本
+
+传入 `ServerIdentity` 以自定义启动横幅和 `--version` 输出：
+
+```python
+from toolregistry_server import App, ServerIdentity
+
+identity = ServerIdentity(
+    name="my-server",
+    version="1.2.3",
+    description="我的自定义工具服务器",
+)
+
+App(identity=identity).serve_openapi()
+```
+
+## 部署配置文件
+
+`--profile` 参数在注册表构建完成后应用基于标签的工具过滤：
+
+| 配置文件 | 效果 |
+|----------|------|
+| `remote` | 禁用标记为 `file_system`、`destructive` 或 `privileged` 的工具 |
+| `local` | 无标签过滤 — 所有工具保持启用 |
+| *（无）* | 不过滤（默认） |
+
+向不应访问服务器文件系统或特权操作的最终用户提供工具时，请使用 `remote`：
 
 ```bash
 toolregistry-server openapi --config config.json --profile remote
 toolregistry-server mcp --config config.json --profile remote
-```
-
-`apply_profile()` 也作为公开 Python API 提供：
-
-```python
-from toolregistry_server.cli.openapi import apply_profile, PROFILE_DISABLE_TAGS
-
-# 使用内置 profile
-apply_profile(registry, "remote")
-
-# 查看或扩展映射关系
-print(PROFILE_DISABLE_TAGS)
 ```
