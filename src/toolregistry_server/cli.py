@@ -176,6 +176,7 @@ class CLI:
         Args:
             subparsers: Mapping of command name to its sub-parser.
         """
+        pass
 
     def get_version_string(self) -> str:
         """Return version string for ``--version`` output."""
