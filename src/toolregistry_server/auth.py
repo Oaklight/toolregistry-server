@@ -189,8 +189,59 @@ def create_bearer_dependency(auth: BearerTokenAuth) -> "Callable[..., Any]":
     return verify_bearer_token
 
 
+def load_tokens(
+    tokens_path: str | None = None,
+    *,
+    env_var: str | None = "API_BEARER_TOKEN",
+) -> list[str]:
+    """Load bearer tokens from a file and/or environment variable.
+
+    Reads tokens from both sources and deduplicates:
+
+    1. ``tokens_path`` file (one token per line, ``#`` comments skipped)
+    2. ``env_var`` environment variable (comma-separated)
+
+    Args:
+        tokens_path: Path to a tokens file, or ``None``.
+        env_var: Environment variable name to read comma-separated tokens
+            from.  Pass ``None`` to skip env var reading.
+
+    Returns:
+        Deduplicated list of tokens.  Empty list if none configured.
+
+    Raises:
+        FileNotFoundError: If *tokens_path* is given but does not exist.
+    """
+    import os
+    from pathlib import Path
+
+    seen: dict[str, None] = {}  # ordered dedup
+
+    # File source
+    if tokens_path is not None:
+        path = Path(tokens_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Tokens file not found: {tokens_path}")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                seen[line] = None
+
+    # Env var source
+    if env_var:
+        env_val = os.environ.get(env_var, "").strip()
+        if env_val:
+            for t in env_val.split(","):
+                t = t.strip()
+                if t:
+                    seen[t] = None
+
+    return list(seen)
+
+
 __all__ = [
     "BearerTokenAuth",
     "create_bearer_dependency",
+    "load_tokens",
     "verify_token",
 ]

@@ -340,37 +340,41 @@ def main(args: list[str] | None = None) -> NoReturn | None:
         sys.exit(1)
 
     # Dispatch to app-level serve functions
-    if parsed.command == "openapi":
-        try:
+    try:
+        if parsed.command == "openapi":
             from toolregistry_server.app import serve_openapi
-        except ImportError as e:
-            logger.error(f"OpenAPI server dependencies not installed: {e}")
-            logger.info("Install with: pip install toolregistry-server[openapi]")
-            sys.exit(1)
 
-        serve_openapi(
-            config_path=config_path,
-            profile=getattr(parsed, "profile", None),
-            host=parsed.host,
-            port=parsed.port,
-            tokens_path=getattr(parsed, "tokens", None),
-            reload=getattr(parsed, "reload", False),
-        )
-    elif parsed.command == "mcp":
-        try:
+            serve_openapi(
+                config_path=config_path,
+                profile=getattr(parsed, "profile", None),
+                host=parsed.host,
+                port=parsed.port,
+                tokens_path=getattr(parsed, "tokens", None),
+                reload=getattr(parsed, "reload", False),
+            )
+        elif parsed.command == "mcp":
             from toolregistry_server.app import serve_mcp
-        except ImportError as e:
-            logger.error(f"MCP server dependencies not installed: {e}")
-            logger.info("Install with: pip install toolregistry-server[mcp]")
-            sys.exit(1)
 
-        serve_mcp(
-            config_path=config_path,
-            profile=getattr(parsed, "profile", None),
-            host=parsed.host,
-            port=parsed.port,
-            transport=parsed.transport,
+            serve_mcp(
+                config_path=config_path,
+                profile=getattr(parsed, "profile", None),
+                host=parsed.host,
+                port=parsed.port,
+                transport=parsed.transport,
+            )
+    except ImportError as e:
+        logger.error(f"Server dependencies not installed: {e}")
+        logger.info(
+            "Install with: pip install toolregistry-server[openapi] "
+            "or toolregistry-server[mcp]"
         )
+        sys.exit(1)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
     return None
 

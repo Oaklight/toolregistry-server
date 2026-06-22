@@ -26,7 +26,6 @@ Note:
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..._vendor.structlog import get_logger
@@ -124,41 +123,6 @@ def create_openapi_app(
 
 
 # ---------------------------------------------------------------------------
-# Token loading
-# ---------------------------------------------------------------------------
-
-
-def load_tokens(tokens_path: str | None) -> list[str]:
-    """Load authentication tokens from a file.
-
-    Args:
-        tokens_path: Path to the tokens file, or None.
-
-    Returns:
-        List of tokens, or empty list if no file specified.
-
-    Raises:
-        FileNotFoundError: If the tokens file does not exist.
-        OSError: If the tokens file cannot be read.
-    """
-    if tokens_path is None:
-        return []
-
-    path = Path(tokens_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Tokens file not found: {tokens_path}")
-
-    content = path.read_text(encoding="utf-8")
-    tokens = []
-    for line in content.splitlines():
-        line = line.strip()
-        # Skip empty lines and comments
-        if line and not line.startswith("#"):
-            tokens.append(line)
-    return tokens
-
-
-# ---------------------------------------------------------------------------
 # Adapter class
 # ---------------------------------------------------------------------------
 
@@ -232,5 +196,4 @@ class OpenAPIAdapter(Adapter):
 __all__ = [
     "OpenAPIAdapter",
     "create_openapi_app",
-    "load_tokens",
 ]
