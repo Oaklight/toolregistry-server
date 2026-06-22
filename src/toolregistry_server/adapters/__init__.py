@@ -1,12 +1,12 @@
 """Protocol adapters for ToolRegistry.
 
 This package contains adapters that expose a :class:`~toolregistry_server.RouteTable`
-over different service protocols:
+over different protocols:
 
 - ``openapi``: RESTful HTTP endpoints via FastAPI
 - ``mcp``: Model Context Protocol for LLM integration
 
-All adapters inherit from :class:`Adapter` and implement :meth:`serve`.
+All adapters inherit from :class:`Adapter` and implement :meth:`run`.
 """
 
 from __future__ import annotations
@@ -22,14 +22,19 @@ class Adapter(ABC):
     """Base class for protocol adapters.
 
     An adapter takes a :class:`~toolregistry_server.RouteTable` and
-    exposes it over a specific protocol (OpenAPI, MCP, etc.).
+    exposes it over a specific protocol (OpenAPI, MCP, gRPC, CLI, etc.).
 
-    Subclasses must implement :meth:`serve` to start the server.
+    Subclasses must implement :meth:`run`.  Each adapter defines its
+    own keyword arguments — network adapters typically accept ``host``
+    and ``port``, while others (e.g. MCP stdio, CLI) may not.
 
     Example::
 
-        adapter = OpenAPIAdapter(route_table, tokens=["secret"])
-        adapter.serve(host="0.0.0.0", port=8000)
+        adapter = OpenAPIAdapter(route_table)
+        adapter.run(host="0.0.0.0", port=8000)
+
+        # or equivalently:
+        adapter(host="0.0.0.0", port=8000)
     """
 
     def __init__(self, route_table: RouteTable) -> None:
@@ -41,24 +46,24 @@ class Adapter(ABC):
         return self._route_table
 
     @abstractmethod
-    def serve(self, *, host: str, port: int, **kwargs) -> None:
-        """Start the server.
+    def run(self, **kwargs) -> None:
+        """Run the adapter.
 
-        Args:
-            host: Host address to bind to.  Ignored by transports that
-                don't bind a network socket (e.g. MCP stdio).
-            port: Port number to bind to.  Ignored by transports that
-                don't bind a network socket (e.g. MCP stdio).
-            **kwargs: Protocol-specific options (e.g. ``transport``,
-                ``reload``).
+        Each subclass defines its own keyword arguments.  Typical
+        examples:
+
+        - ``OpenAPIAdapter.run(host=, port=, reload=)``
+        - ``MCPAdapter.run(transport=, host=, port=)``
         """
 
-    def __call__(self, *, host: str = "127.0.0.1", port: int = 8000, **kwargs) -> None:
-        """Alias for :meth:`serve` — makes the adapter directly callable.
+    async def run_async(self, **kwargs) -> None:
+        """Async version of :meth:`run`.
 
-        Example::
-
-            adapter = MCPAdapter(route_table)
-            adapter(host="0.0.0.0", port=8000, transport="sse")
+        Override in subclasses that have native async implementations.
+        The default delegates to :meth:`run` synchronously.
         """
-        self.serve(host=host, port=port, **kwargs)
+        self.run(**kwargs)
+
+    def __call__(self, **kwargs) -> None:
+        """Alias for :meth:`run` — makes the adapter directly callable."""
+        self.run(**kwargs)

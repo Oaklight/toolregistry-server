@@ -17,7 +17,7 @@ Example:
     registry = ToolRegistry()
     route_table = RouteTable(registry)
     adapter = MCPAdapter(route_table)
-    adapter.serve(host="127.0.0.1", port=8000, transport="stdio")
+    adapter.run(transport="stdio")
     ```
 
 Note:
@@ -156,19 +156,50 @@ class MCPAdapter(Adapter):
         """The MCP Server instance."""
         return self._server
 
-    def serve(self, *, host: str = "127.0.0.1", port: int = 8000, **kwargs) -> None:
-        """Start the MCP server.
+    def run(
+        self,
+        *,
+        transport: str = "stdio",
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        **kwargs,
+    ) -> None:
+        """Start the MCP server (blocking).
+
+        Calls :meth:`run_async` via ``asyncio.run()``.  Use
+        :meth:`run_async` directly when already inside an event loop.
 
         Args:
-            host: Host address to bind to.
-            port: Port number to bind to.
-            transport: MCP transport type (default: ``"stdio"``).
-                One of ``"stdio"``, ``"sse"``, ``"streamable-http"``,
-                or ``"http"`` (alias for ``"streamable-http"``).
+            transport: MCP transport type.  One of ``"stdio"``, ``"sse"``,
+                ``"streamable-http"``, or ``"http"`` (alias).
+            host: Host address to bind to (SSE/HTTP only).
+            port: Port number to bind to (SSE/HTTP only).
             tokens_path: Path to Bearer token file (streamable-http only).
             server_url: Public server URL (streamable-http only).
         """
-        transport = kwargs.get("transport", "stdio")
+        asyncio.run(self.run_async(transport=transport, host=host, port=port, **kwargs))
+
+    async def run_async(
+        self,
+        *,
+        transport: str = "stdio",
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        **kwargs,
+    ) -> None:
+        """Start the MCP server (async).
+
+        Use this when already inside an event loop.  Otherwise use
+        :meth:`run` for the blocking variant.
+
+        Args:
+            transport: MCP transport type.  One of ``"stdio"``, ``"sse"``,
+                ``"streamable-http"``, or ``"http"`` (alias).
+            host: Host address to bind to (SSE/HTTP only).
+            port: Port number to bind to (SSE/HTTP only).
+            tokens_path: Path to Bearer token file (streamable-http only).
+            server_url: Public server URL (streamable-http only).
+        """
         if transport == "http":
             transport = "streamable-http"
         tokens_path = kwargs.get("tokens_path")
@@ -178,23 +209,21 @@ class MCPAdapter(Adapter):
         logger.info(f"Registered {len(self._route_table.list_routes())} tool(s)")
 
         if transport == "stdio":
-            asyncio.run(run_stdio(self._server))
+            await run_stdio(self._server)
         elif transport == "sse":
             logger.info(f"SSE endpoint: http://{host}:{port}/sse")
-            asyncio.run(run_sse(self._server, host=host, port=port))
+            await run_sse(self._server, host=host, port=port)
         elif transport == "streamable-http":
             logger.info(f"HTTP endpoint: http://{host}:{port}/mcp")
             from ...auth import load_tokens
 
             valid_tokens = set(load_tokens(tokens_path)) or None
-            asyncio.run(
-                run_streamable_http(
-                    self._server,
-                    host=host,
-                    port=port,
-                    valid_tokens=valid_tokens,
-                    server_url=server_url,
-                )
+            await run_streamable_http(
+                self._server,
+                host=host,
+                port=port,
+                valid_tokens=valid_tokens,
+                server_url=server_url,
             )
         else:
             raise ValueError(f"Unknown transport type: {transport}")
