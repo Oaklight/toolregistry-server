@@ -4,18 +4,19 @@ This module provides functionality to expose ToolRegistry tools as
 RESTful HTTP endpoints using FastAPI.
 
 Main Components:
+    - OpenAPIAdapter: Adapter class for serving tools via OpenAPI
     - create_openapi_app: Create a FastAPI application from a RouteTable
-    - run_openapi_server: Start an OpenAPI server (registry + transport)
 
 Example:
     ```python
     from toolregistry import ToolRegistry
     from toolregistry_server import RouteTable
-    from toolregistry_server.adapters.openapi import create_openapi_app
+    from toolregistry_server.adapters.openapi import OpenAPIAdapter
 
     registry = ToolRegistry()
     route_table = RouteTable(registry)
-    app = create_openapi_app(route_table)
+    adapter = OpenAPIAdapter(route_table)
+    adapter.serve(host="0.0.0.0", port=8000)
     ```
 
 Note:
@@ -23,10 +24,13 @@ Note:
     pip install toolregistry-server[openapi]
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..._vendor.structlog import get_logger
+from .. import Adapter
 
 logger = get_logger()
 
@@ -34,7 +38,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from fastapi import FastAPI
-    from toolregistry import ToolRegistry
 
     from ...route_table import RouteTable
 
@@ -45,13 +48,13 @@ if TYPE_CHECKING:
 
 
 def create_openapi_app(
-    route_table: "RouteTable",
+    route_table: RouteTable,
     title: str = "ToolRegistry Server",
     version: str = "1.0.0",
     description: str = "OpenAPI server for ToolRegistry tools",
-    dependencies: "Sequence[Any] | None" = None,
+    dependencies: Sequence[Any] | None = None,
     enable_etag: bool = True,
-) -> "FastAPI":
+) -> FastAPI:
     """Create a FastAPI application from a RouteTable.
 
     Args:
@@ -156,99 +159,78 @@ def load_tokens(tokens_path: str | None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Server startup
+# Adapter class
 # ---------------------------------------------------------------------------
 
 
-def run_openapi_server(
-    host: str = "0.0.0.0",
-    port: int = 8000,
-    config_path: str | None = None,
-    tokens_path: str | None = None,
-    reload: bool = False,
-    registry: "ToolRegistry | None" = None,
-    profile: str | None = None,
-) -> None:
-    """Start the OpenAPI server.
+class OpenAPIAdapter(Adapter):
+    """Serve tools as RESTful HTTP endpoints via FastAPI.
 
     Args:
-        host: Host to bind the server to.
-        port: Port to bind the server to.
-        config_path: Path to configuration file.
-        tokens_path: Path to tokens file.
-        reload: Enable auto-reload for development.
-        registry: Pre-built ToolRegistry to use directly. When provided,
-            ``config_path`` is ignored and ``registry_from_config``
-            is skipped.
-        profile: Deployment profile for tag-based tool filtering.
-            ``"remote"`` disables tools tagged ``file_system``, ``destructive``,
-            or ``privileged``. ``"local"`` disables tools tagged ``network``.
-            ``None`` (default) skips profile filtering entirely.
-
-    Raises:
-        ImportError: If uvicorn or FastAPI is not installed.
+        route_table: The RouteTable to expose.
+        tokens: Optional list of Bearer tokens for authentication.
+        title: API title for OpenAPI schema.
+        version: API version string.
+        description: API description.
     """
-    import uvicorn
 
-    from ...registry_builder import apply_profile, load_config, registry_from_config
-    from ...route_table import RouteTable
+    def __init__(
+        self,
+        route_table: RouteTable,
+        *,
+        tokens: list[str] | None = None,
+        title: str = "ToolRegistry Server",
+        version: str = "1.0.0",
+        description: str = "OpenAPI server for ToolRegistry tools",
+    ) -> None:
+        super().__init__(route_table)
 
-    config = None
-    if registry is None:
-        # Load configuration and build registry from config
-        config = load_config(config_path)
-        if config:
-            registry = registry_from_config(config)
-        else:
-            from toolregistry import ToolRegistry
+        dependencies = None
+        if tokens:
+            from fastapi import Depends
 
-            registry = ToolRegistry()
+            from ...auth import BearerTokenAuth, create_bearer_dependency
 
-    if profile is not None:
-        apply_profile(registry, profile, config=config)
+            auth = BearerTokenAuth(tokens=tokens)
+            dependencies = [Depends(create_bearer_dependency(auth))]
+            logger.info(f"Authentication enabled with {len(tokens)} token(s)")
 
-    # Create route table
-    route_table = RouteTable(registry)
-
-    # Load tokens for authentication
-    tokens = load_tokens(tokens_path)
-
-    # Create dependencies for authentication if tokens are provided
-    dependencies = None
-    if tokens:
-        from fastapi import Depends
-
-        from ...auth import (
-            BearerTokenAuth,
-            create_bearer_dependency,
+        self._app = create_openapi_app(
+            route_table,
+            title=title,
+            version=version,
+            description=description,
+            dependencies=dependencies,
         )
 
-        auth = BearerTokenAuth(tokens=tokens)
-        dependencies = [Depends(create_bearer_dependency(auth))]
-        logger.info(f"Authentication enabled with {len(tokens)} token(s)")
+    @property
+    def app(self) -> FastAPI:
+        """The FastAPI application instance."""
+        return self._app
 
-    # Create the FastAPI app
-    app = create_openapi_app(
-        route_table,
-        title="ToolRegistry Server",
-        version="1.0.0",
-        description="OpenAPI server for ToolRegistry tools",
-        dependencies=dependencies,
-    )
+    def serve(self, *, host: str = "0.0.0.0", port: int = 8000, **kwargs) -> None:
+        """Start the OpenAPI server.
 
-    # Log startup info
-    logger.info(f"Starting OpenAPI server on {host}:{port}")
-    logger.info(f"Registered {len(route_table.list_routes())} tool(s)")
+        Args:
+            host: Host to bind to.
+            port: Port to bind to.
+            reload: Enable auto-reload for development (default: False).
+        """
+        import uvicorn
 
-    # Run the server
-    if reload:
-        logger.warning("Reload mode is not fully supported with dynamic configuration")
+        reload = kwargs.get("reload", False)
+        if reload:
+            logger.warning(
+                "Reload mode is not fully supported with dynamic configuration"
+            )
 
-    uvicorn.run(app, host=host, port=port, reload=reload)
+        logger.info(f"Starting OpenAPI server on {host}:{port}")
+        logger.info(f"Registered {len(self._route_table.list_routes())} tool(s)")
+        uvicorn.run(self._app, host=host, port=port, reload=reload)
 
 
 __all__ = [
+    "OpenAPIAdapter",
     "create_openapi_app",
     "load_tokens",
-    "run_openapi_server",
 ]

@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-from .._vendor.structlog import get_logger
+from ._vendor.structlog import get_logger
 
 logger = get_logger()
 
@@ -56,7 +56,7 @@ def load_env_file(env_path: str | None = None, no_env: bool = False) -> None:
     if no_env:
         return
 
-    from .._vendor.dotenv import load_dotenv
+    from ._vendor.dotenv import load_dotenv
 
     path = Path(env_path) if env_path else Path.cwd() / ".env"
 
@@ -249,7 +249,7 @@ def _add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Deployment profile for tag-based tool filtering. "
             "'remote' disables tools tagged file_system, destructive, or privileged. "
-            "'local' applies no tag filter. (default: no filtering)"
+            "'local' disables tools tagged network. (default: no filtering)"
         ),
     )
 
@@ -264,9 +264,9 @@ def _add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--transport",
         type=str,
-        choices=["stdio", "sse", "streamable-http"],
+        choices=["stdio", "sse", "streamable-http", "http"],
         default="stdio",
-        help="Transport type: stdio, sse, or streamable-http (default: stdio)",
+        help="Transport type: stdio, sse, streamable-http (or http as alias) (default: stdio)",
     )
     parser.add_argument(
         "--host",
@@ -294,7 +294,7 @@ def _add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Deployment profile for tag-based tool filtering. "
             "'remote' disables tools tagged file_system, destructive, or privileged. "
-            "'local' applies no tag filter. (default: no filtering)"
+            "'local' disables tools tagged network. (default: no filtering)"
         ),
     )
 
@@ -333,27 +333,43 @@ def main(args: list[str] | None = None) -> NoReturn | None:
     if not parsed.no_banner:
         print_banner()
 
-    # Dispatch to appropriate command handler
-    if parsed.command == "openapi":
-        from .openapi import run_openapi_server
+    # Validate config
+    config_path = getattr(parsed, "config", None)
+    if config_path is None:
+        logger.error("No config file specified. Use --config to provide one.")
+        sys.exit(1)
 
-        run_openapi_server(
+    # Dispatch to app-level serve functions
+    if parsed.command == "openapi":
+        try:
+            from toolregistry_server.app import serve_openapi
+        except ImportError as e:
+            logger.error(f"OpenAPI server dependencies not installed: {e}")
+            logger.info("Install with: pip install toolregistry-server[openapi]")
+            sys.exit(1)
+
+        serve_openapi(
+            config_path=config_path,
+            profile=getattr(parsed, "profile", None),
             host=parsed.host,
             port=parsed.port,
-            config_path=parsed.config,
-            tokens_path=parsed.tokens,
-            reload=parsed.reload,
-            profile=parsed.profile,
+            tokens_path=getattr(parsed, "tokens", None),
+            reload=getattr(parsed, "reload", False),
         )
     elif parsed.command == "mcp":
-        from .mcp import run_mcp_server
+        try:
+            from toolregistry_server.app import serve_mcp
+        except ImportError as e:
+            logger.error(f"MCP server dependencies not installed: {e}")
+            logger.info("Install with: pip install toolregistry-server[mcp]")
+            sys.exit(1)
 
-        run_mcp_server(
-            transport=parsed.transport,
+        serve_mcp(
+            config_path=config_path,
+            profile=getattr(parsed, "profile", None),
             host=parsed.host,
             port=parsed.port,
-            config_path=parsed.config,
-            profile=parsed.profile,
+            transport=parsed.transport,
         )
 
     return None

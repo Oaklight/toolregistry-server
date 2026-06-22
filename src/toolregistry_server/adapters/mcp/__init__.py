@@ -4,21 +4,20 @@ This module provides functionality to expose ToolRegistry tools via
 the Model Context Protocol for LLM integration.
 
 Main Components:
-    - create_mcp_server: Create an MCP server from a RouteTable
-    - run_mcp_server: Start an MCP server (registry + transport)
+    - MCPAdapter: Adapter class for serving tools via MCP
+    - route_table_to_mcp_server: Create an MCP server from a RouteTable
     - run_stdio / run_sse / run_streamable_http: Transport runners
 
 Example:
     ```python
-    import asyncio
     from toolregistry import ToolRegistry
     from toolregistry_server import RouteTable
-    from toolregistry_server.adapters.mcp import create_mcp_server, run_stdio
+    from toolregistry_server.adapters.mcp import MCPAdapter
 
     registry = ToolRegistry()
     route_table = RouteTable(registry)
-    server = create_mcp_server(route_table)
-    asyncio.run(run_stdio(server))
+    adapter = MCPAdapter(route_table)
+    adapter.serve(host="127.0.0.1", port=8000, transport="stdio")
     ```
 
 Note:
@@ -31,13 +30,12 @@ import os
 from typing import TYPE_CHECKING
 
 from ..._vendor.structlog import get_logger
+from .. import Adapter
 
 logger = get_logger()
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
-    from toolregistry import ToolRegistry
-    from toolregistry.config import ToolConfig
 
     from ...route_table import RouteTable
 
@@ -45,29 +43,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Server factory
 # ---------------------------------------------------------------------------
-
-
-def create_mcp_server(
-    route_table: "RouteTable",
-    name: str = "ToolRegistry-Server",
-) -> "Server":
-    """Create an MCP server from a RouteTable.
-
-    This is an alias for route_table_to_mcp_server() for convenience.
-
-    Args:
-        route_table: The RouteTable to expose.
-        name: Server name for MCP identification.
-
-    Returns:
-        A configured MCP Server instance.
-
-    Raises:
-        ImportError: If MCP SDK is not installed.
-    """
-    from .adapter import route_table_to_mcp_server
-
-    return route_table_to_mcp_server(route_table, name)
 
 
 def route_table_to_mcp_server(
@@ -193,95 +168,77 @@ def _collect_bearer_tokens(tokens_path: str | None = None) -> set[str] | None:
 
 
 # ---------------------------------------------------------------------------
-# Server startup
+# Adapter class
 # ---------------------------------------------------------------------------
 
 
-def run_mcp_server(
-    transport: str = "stdio",
-    host: str = "127.0.0.1",
-    port: int = 8000,
-    config_path: str | None = None,
-    registry: "ToolRegistry | None" = None,
-    profile: str | None = None,
-    tokens_path: str | None = None,
-    server_url: str | None = None,
-) -> None:
-    """Start the MCP server.
+class MCPAdapter(Adapter):
+    """Serve tools via the Model Context Protocol.
 
     Args:
-        transport: Transport type: stdio, sse, or streamable-http.
-        host: Host for SSE/HTTP transport.
-        port: Port for SSE/HTTP transport.
-        config_path: Path to configuration file.
-        registry: Pre-built ToolRegistry to use directly. When provided,
-            ``config_path`` is ignored and ``registry_from_config``
-            is skipped.
-        profile: Deployment profile for tag-based tool filtering.
-            ``"remote"`` disables tools tagged ``file_system``, ``destructive``,
-            or ``privileged``. ``"local"`` disables tools tagged ``network``.
-            ``None`` (default) skips profile filtering entirely.
-        tokens_path: Path to a file containing Bearer tokens (one per line).
-            Also reads ``API_BEARER_TOKEN`` env var. Only used with
-            ``streamable-http`` transport.
-        server_url: Public URL of this server for auth metadata generation.
-
-    Raises:
-        ImportError: If MCP SDK is not installed.
-        ValueError: If an unknown transport type is specified.
+        route_table: The RouteTable to expose.
+        name: Server name for MCP identification.
     """
-    from ...registry_builder import apply_profile, load_config, registry_from_config
-    from ...route_table import RouteTable
 
-    config: ToolConfig | None = None
-    if registry is None:
-        config = load_config(config_path)
-        if config:
-            registry = registry_from_config(config)
-        else:
-            from toolregistry import ToolRegistry
+    def __init__(
+        self,
+        route_table: "RouteTable",
+        *,
+        name: str = "ToolRegistry-Server",
+    ) -> None:
+        super().__init__(route_table)
+        self._server = route_table_to_mcp_server(route_table, name)
 
-            registry = ToolRegistry()
+    @property
+    def server(self) -> "Server":
+        """The MCP Server instance."""
+        return self._server
 
-    if profile is not None:
-        apply_profile(registry, profile, config=config)
+    def serve(self, *, host: str = "127.0.0.1", port: int = 8000, **kwargs) -> None:
+        """Start the MCP server.
 
-    # Create route table
-    route_table = RouteTable(registry)
+        Args:
+            host: Host address to bind to.
+            port: Port number to bind to.
+            transport: MCP transport type (default: ``"stdio"``).
+                One of ``"stdio"``, ``"sse"``, ``"streamable-http"``,
+                or ``"http"`` (alias for ``"streamable-http"``).
+            tokens_path: Path to Bearer token file (streamable-http only).
+            server_url: Public server URL (streamable-http only).
+        """
+        transport = kwargs.get("transport", "stdio")
+        if transport == "http":
+            transport = "streamable-http"
+        tokens_path = kwargs.get("tokens_path")
+        server_url = kwargs.get("server_url")
 
-    # Create MCP server
-    mcp_server = route_table_to_mcp_server(route_table)
+        logger.info(f"Starting MCP server with {transport} transport")
+        logger.info(f"Registered {len(self._route_table.list_routes())} tool(s)")
 
-    # Log startup info
-    logger.info(f"Starting MCP server with {transport} transport")
-    logger.info(f"Registered {len(route_table.list_routes())} tool(s)")
-
-    # Run the appropriate transport
-    if transport == "stdio":
-        asyncio.run(run_stdio(mcp_server))
-    elif transport == "sse":
-        logger.info(f"SSE endpoint: http://{host}:{port}/sse")
-        asyncio.run(run_sse(mcp_server, host=host, port=port))
-    elif transport == "streamable-http":
-        logger.info(f"HTTP endpoint: http://{host}:{port}/mcp")
-        valid_tokens = _collect_bearer_tokens(tokens_path)
-        asyncio.run(
-            run_streamable_http(
-                mcp_server,
-                host=host,
-                port=port,
-                valid_tokens=valid_tokens,
-                server_url=server_url,
+        if transport == "stdio":
+            asyncio.run(run_stdio(self._server))
+        elif transport == "sse":
+            logger.info(f"SSE endpoint: http://{host}:{port}/sse")
+            asyncio.run(run_sse(self._server, host=host, port=port))
+        elif transport == "streamable-http":
+            logger.info(f"HTTP endpoint: http://{host}:{port}/mcp")
+            valid_tokens = _collect_bearer_tokens(tokens_path)
+            asyncio.run(
+                run_streamable_http(
+                    self._server,
+                    host=host,
+                    port=port,
+                    valid_tokens=valid_tokens,
+                    server_url=server_url,
+                )
             )
-        )
-    else:
-        raise ValueError(f"Unknown transport type: {transport}")
+        else:
+            raise ValueError(f"Unknown transport type: {transport}")
 
 
 __all__ = [
-    "create_mcp_server",
+    "MCPAdapter",
     "route_table_to_mcp_server",
-    "run_mcp_server",
     "run_stdio",
     "run_sse",
     "run_streamable_http",
