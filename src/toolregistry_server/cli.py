@@ -38,15 +38,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 from ._vendor.structlog import get_logger
+from .banner import BANNER_ART as DEFAULT_BANNER_ART
 
 logger = get_logger()
-
-# Default ASCII art banner for ToolRegistry Server
-DEFAULT_BANNER_ART = """
-░▀█▀░█▀█░█▀█░█░░░█▀▄░█▀▀░█▀▀░▀█▀░█▀▀░▀█▀░█▀▄░█░█░░░░░█▀▀░█▀▀░█▀▄░█░█░█▀▀░█▀▄
-░░█░░█░█░█░█░█░░░█▀▄░█▀▀░█░█░░█░░▀▀█░░█░░█▀▄░░█░░▄▄▄░▀▀█░█▀▀░█▀▄░▀▄▀░█▀▀░█▀▄
-░░▀░░▀▀▀░▀▀▀░▀▀▀░▀░▀░▀▀▀░▀▀▀░▀▀▀░▀▀▀░░▀░░▀░▀░░▀░░░░░░▀▀▀░▀▀▀░▀░▀░░▀░░▀▀▀░▀░▀
-""".strip()
 
 
 def load_env_file(env_path: str | None = None, no_env: bool = False) -> None:
