@@ -163,10 +163,25 @@ class App:
 
 
 # ---------------------------------------------------------------------------
-# Module-level convenience functions (default App instance)
+# Module-level convenience functions (lazy-init default App)
 # ---------------------------------------------------------------------------
 
-_default_app = App()
+_default_app: App | None = None
 
-serve_openapi = _default_app.serve_openapi
-serve_mcp = _default_app.serve_mcp
+
+def _get_default_app() -> App:
+    """Return the shared default App, creating it on first use."""
+    global _default_app
+    if _default_app is None:
+        _default_app = App()
+    return _default_app
+
+
+def serve_openapi(**kwargs) -> None:
+    """Build registry and start an OpenAPI server."""
+    _get_default_app().serve_openapi(**kwargs)
+
+
+def serve_mcp(**kwargs) -> None:
+    """Build registry and start an MCP server."""
+    _get_default_app().serve_mcp(**kwargs)

@@ -13,10 +13,9 @@ Subclassing (e.g. Hub)::
         def __init__(self):
             super().__init__(app=HubApp(identity=hub_identity))
 
-        def create_parser(self):
-            parser = super().create_parser()
-            # add hub-specific args to each subparser
-            return parser
+        def configure_subparsers(self, subparsers):
+            for sp in subparsers.values():
+                sp.add_argument("--admin-port", type=int)
 
     HubCLI().main()
 """
@@ -113,7 +112,7 @@ class CLI:
 
     Subclass and override methods to customize:
 
-    - :meth:`create_parser` — add arguments
+    - :meth:`configure_subparsers` — add arguments to subparsers
     - :meth:`get_version_string` — version output
     - :meth:`print_banner` — startup banner
     - :meth:`dispatch` — command routing
@@ -131,8 +130,10 @@ class CLI:
     def create_parser(self) -> argparse.ArgumentParser:
         """Create the argument parser.
 
-        Override to add subcommands, change prog name, or add
-        extra arguments.
+        Builds the top-level parser and ``openapi`` / ``mcp``
+        subparsers, then calls :meth:`configure_subparsers` so
+        subclasses can add extra arguments without touching
+        argparse internals.
         """
         from .adapters.mcp import MCPAdapter
         from .adapters.openapi import OpenAPIAdapter
@@ -144,18 +145,37 @@ class CLI:
         parser.add_argument("--version", "-V", action="store_true", help="Show version")
         parser.add_argument("--no-banner", action="store_true", help="Disable banner")
 
-        subparsers = parser.add_subparsers(
+        sub = parser.add_subparsers(
             dest="command",
             metavar="{openapi,mcp}",
         )
 
-        openapi_parser = subparsers.add_parser("openapi", help="Start OpenAPI server")
+        openapi_parser = sub.add_parser("openapi", help="Start OpenAPI server")
         OpenAPIAdapter.add_cli_arguments(openapi_parser)
 
-        mcp_parser = subparsers.add_parser("mcp", help="Start MCP server")
+        mcp_parser = sub.add_parser("mcp", help="Start MCP server")
         MCPAdapter.add_cli_arguments(mcp_parser)
 
+        self.configure_subparsers({"openapi": openapi_parser, "mcp": mcp_parser})
+
         return parser
+
+    def configure_subparsers(
+        self, subparsers: dict[str, argparse.ArgumentParser]
+    ) -> None:
+        """Hook for subclasses to add arguments to subparsers.
+
+        Called by :meth:`create_parser` after all subparsers are
+        created.  Override to add extra CLI flags without accessing
+        argparse private API::
+
+            def configure_subparsers(self, subparsers):
+                for sp in subparsers.values():
+                    sp.add_argument("--admin-port", type=int)
+
+        Args:
+            subparsers: Mapping of command name to its sub-parser.
+        """
 
     def get_version_string(self) -> str:
         """Return version string for ``--version`` output."""
