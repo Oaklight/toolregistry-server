@@ -6,6 +6,9 @@ title: Adapters
 
 `toolregistry-server` provides protocol adapters that expose your custom tools as network services. Each adapter reads from the central `RouteTable` and translates tool definitions into protocol-specific endpoints.
 
+!!! tip "Recommended entry point"
+    For most use cases, start with the [`App`](../guides/extending.md) class rather than the adapter layer directly. `App` wires up `ToolRegistry → RouteTable → Adapter` for you and exposes `serve_openapi()` / `serve_mcp()` as one-liners. The adapter layer described here is what `App` delegates to internally.
+
 ## Available Adapters
 
 | Adapter | Protocol | Transport | Status |
@@ -16,16 +19,45 @@ title: Adapters
 
 ## How Adapters Work
 
-All adapters share the same flow:
+All adapters share the same flow, with `App` sitting above the adapter layer as the orchestration entry point:
 
 ```
-ToolRegistry → RouteTable → Adapter → Protocol-specific endpoints
+App → RouteTable → Adapter → Protocol-specific endpoints
+ ↑
+CLI (optional, sits above App)
 ```
 
 1. Tools are registered in a `ToolRegistry` instance
-2. A `RouteTable` generates `RouteEntry` objects from the registry
-3. The adapter reads `RouteEntry` objects and creates protocol-specific endpoints
-4. Clients interact with tools via the adapter's protocol
+2. `App` constructs a `RouteTable` from the registry and dispatches to the appropriate adapter
+3. A `RouteTable` generates `RouteEntry` objects from the registry
+4. The adapter reads `RouteEntry` objects and creates protocol-specific endpoints
+5. Clients interact with tools via the adapter's protocol
+
+## Using Adapters Directly
+
+When you need fine-grained control, you can bypass `App` and call the adapter layer directly via `Adapter.create_and_run()`:
+
+```python
+from toolregistry import ToolRegistry
+from toolregistry_server import RouteTable
+from toolregistry_server.openapi import OpenAPIAdapter
+
+registry = ToolRegistry()
+# ... register tools ...
+
+route_table = RouteTable(registry)
+
+# One-call static dispatch — equivalent to App().serve_openapi()
+OpenAPIAdapter.create_and_run(route_table, host="0.0.0.0", port=8000)
+```
+
+Similarly for MCP:
+
+```python
+from toolregistry_server.mcp import MCPAdapter
+
+MCPAdapter.create_and_run(route_table, transport="stdio")
+```
 
 ## Dynamic Behavior
 
