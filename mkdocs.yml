@@ -83,6 +83,7 @@ plugins:
           - guides/authentication.md
           - guides/openapi.md
           - guides/mcp.md
+          - guides/extending.md
         示例:
           - examples/index.md
         参考:
@@ -146,6 +147,7 @@ nav:
       - 认证: guides/authentication.md
       - OpenAPI 适配器: guides/openapi.md
       - MCP 适配器: guides/mcp.md
+      - 扩展: guides/extending.md
   - 示例:
       - examples/index.md
   - 参考:
