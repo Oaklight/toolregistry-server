@@ -8,9 +8,9 @@ hide:
 <section class="tr-hero" markdown>
 <p class="tr-kicker">Serve registries as APIs</p>
 
-# One route table, multiple protocols.
+# One app, multiple protocols.
 
-<p class="tr-hero__desc">Expose a normalized ToolRegistry as multiple API endpoints, with authentication, configuration, and deployment primitives built around a central RouteTable.</p>
+<p class="tr-hero__desc">Expose a normalized ToolRegistry as multiple API endpoints, with authentication, configuration, and deployment primitives built around a composable App orchestration layer.</p>
 
 <p class="tr-badges">
   <a href="https://pypi.org/project/toolregistry-server/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/toolregistry-server?labelColor=475569&color=166534"></a>
@@ -43,8 +43,7 @@ pip install toolregistry-server[all]
 
 ```python
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
+from toolregistry_server import App
 
 registry = ToolRegistry()
 
@@ -53,19 +52,19 @@ def greet(name: str) -> str:
     """Greet someone by name."""
     return f"Hello, {name}!"
 
-route_table = RouteTable(registry)
-app = create_openapi_app(route_table)
+App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
 ```
 
 [Installation →](get-started/installation.md) · [Quick Start →](get-started/quickstart.md) · [Examples →](examples/)
 
 ## Key Features
 
-- **Central Route Table** — unified routing layer bridging `ToolRegistry` and protocol adapters
+- **App orchestration layer** — canonical entry point that wires `ToolRegistry` → `RouteTable` → adapters in a single composable object; override `prepare_registry()` for custom registries
 - **OpenAPI Adapter** — RESTful HTTP endpoints with automatic schema generation
 - **MCP Adapter** — [Model Context Protocol](https://modelcontextprotocol.io/) for LLM integration
-- **Authentication** — built-in Bearer token support
-- **CLI** — run servers from config files without writing code
+- **Extensible CLI** — subclass `CLI` and override `configure_subparsers()` to add flags; use `ServerIdentity` for custom branding
+- **Authentication** — built-in Bearer token support via `auth.load_tokens()`
+- **Route Table** — internal routing layer (`RouteEntry` objects) bridging registry and adapters
 - **Dynamic Enable/Disable** — toggle tools at runtime without restart
 - **ETag Caching** — efficient HTTP caching via ETag headers
 
@@ -73,13 +72,17 @@ app = create_openapi_app(route_table)
 
 ```mermaid
 graph TD
-    TR[ToolRegistry<br/>tool definitions]
-    RT[RouteTable<br/>central routing layer<br/><i>RouteEntry · RouteEntry · ...</i>]
-    OA[OpenAPI Adapter<br/>FastAPI · REST]
-    MA[MCP Adapter<br/>MCP SDK · LLM integration]
+    CLI[CLI<br/><i>subclass · configure_subparsers</i>]
+    APP[App<br/><i>serve_openapi · serve_mcp · prepare_registry</i>]
+    RT[RouteTable<br/><i>internal routing layer<br/>RouteEntry · RouteEntry · ...</i>]
+    OA[OpenAPIAdapter<br/>FastAPI · REST]
+    MA[MCPAdapter<br/>MCP SDK · LLM integration]
     GA[gRPC Adapter<br/>future]
+    TR[ToolRegistry<br/>tool definitions]
 
-    TR --> RT
+    CLI --> APP
+    TR --> APP
+    APP --> RT
     RT --> OA
     RT --> MA
     RT -.-> GA
