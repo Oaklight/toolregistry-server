@@ -162,7 +162,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="Disable the startup banner",
     )
 
-    # Create subparsers for openapi and mcp commands
+    # Create subparsers — each adapter registers its own arguments
     subparsers = parser.add_subparsers(
         dest="command",
         title="commands",
@@ -170,136 +170,18 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="{openapi,mcp}",
     )
 
-    # OpenAPI subcommand
-    openapi_parser = subparsers.add_parser(
-        "openapi",
-        help="Start OpenAPI (REST) server",
-        description="Start an OpenAPI server exposing tools as REST endpoints",
-    )
-    add_openapi_arguments(openapi_parser)
+    from .adapters.mcp import MCPAdapter
+    from .adapters.openapi import OpenAPIAdapter
 
-    # MCP subcommand
-    mcp_parser = subparsers.add_parser(
-        "mcp",
-        help="Start MCP server",
-        description="Start an MCP server for LLM tool integration",
+    openapi_parser = subparsers.add_parser(
+        "openapi", help="Start OpenAPI (REST) server"
     )
-    add_mcp_arguments(mcp_parser)
+    OpenAPIAdapter.add_cli_arguments(openapi_parser)
+
+    mcp_parser = subparsers.add_parser("mcp", help="Start MCP server")
+    MCPAdapter.add_cli_arguments(mcp_parser)
 
     return parser
-
-
-def add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add common arguments shared by all subcommands.
-
-    Args:
-        parser: The ArgumentParser to add arguments to.
-    """
-    parser.add_argument(
-        "--env",
-        type=str,
-        default=None,
-        help="Path to .env file. Default: .env in current directory",
-    )
-    parser.add_argument(
-        "--no-env",
-        action="store_true",
-        help="Skip loading .env file",
-    )
-
-
-def add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add OpenAPI-specific arguments to the parser.
-
-    Args:
-        parser: The ArgumentParser to add arguments to.
-    """
-    add_common_arguments(parser)
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="0.0.0.0",
-        help="Host to bind the server to (default: 0.0.0.0)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to bind the server to (default: 8000)",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to a JSONC or YAML configuration file for tools",
-    )
-    parser.add_argument(
-        "--tokens",
-        type=str,
-        default=None,
-        help="Path to a file containing authentication tokens (one per line)",
-    )
-    parser.add_argument(
-        "--reload",
-        action="store_true",
-        help="Enable auto-reload for development mode",
-    )
-    parser.add_argument(
-        "--profile",
-        type=str,
-        default=None,
-        metavar="PROFILE",
-        help=(
-            "Deployment profile for tag-based tool filtering. "
-            "'remote' disables tools tagged file_system, destructive, or privileged. "
-            "'local' disables tools tagged network. (default: no filtering)"
-        ),
-    )
-
-
-def add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add MCP-specific arguments to the parser.
-
-    Args:
-        parser: The ArgumentParser to add arguments to.
-    """
-    add_common_arguments(parser)
-    parser.add_argument(
-        "--transport",
-        type=str,
-        choices=["stdio", "sse", "streamable-http", "http"],
-        default="stdio",
-        help="Transport type: stdio, sse, streamable-http (or http as alias) (default: stdio)",
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="Host for SSE/HTTP transport (default: 127.0.0.1)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port for SSE/HTTP transport (default: 8000)",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to a JSONC or YAML configuration file for tools",
-    )
-    parser.add_argument(
-        "--profile",
-        type=str,
-        default=None,
-        metavar="PROFILE",
-        help=(
-            "Deployment profile for tag-based tool filtering. "
-            "'remote' disables tools tagged file_system, destructive, or privileged. "
-            "'local' disables tools tagged network. (default: no filtering)"
-        ),
-    )
 
 
 def run_cli(
@@ -415,9 +297,6 @@ def main(args: list[str] | None = None) -> NoReturn | None:
 
 __all__ = [
     "DEFAULT_BANNER_ART",
-    "add_common_arguments",
-    "add_mcp_arguments",
-    "add_openapi_arguments",
     "create_parser",
     "load_env_file",
     "main",

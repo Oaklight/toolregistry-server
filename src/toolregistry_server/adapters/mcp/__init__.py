@@ -229,6 +229,30 @@ class MCPAdapter(Adapter):
         else:
             raise ValueError(f"Unknown transport type: {transport}")
 
+    @staticmethod
+    def add_cli_arguments(parser) -> None:
+        """Add MCP-specific CLI arguments."""
+        Adapter.add_cli_arguments(parser)
+        parser.add_argument(
+            "--transport",
+            type=str,
+            choices=["stdio", "sse", "streamable-http", "http"],
+            default="stdio",
+            help="Transport type: stdio, sse, streamable-http (or http) (default: stdio)",
+        )
+        parser.add_argument(
+            "--host",
+            type=str,
+            default="127.0.0.1",
+            help="Host for SSE/HTTP transport (default: 127.0.0.1)",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            default=8000,
+            help="Port for SSE/HTTP transport (default: 8000)",
+        )
+
     @classmethod
     def create_and_run(cls, route_table: "RouteTable", **kwargs) -> None:
         """Construct and run an MCP server in one step.

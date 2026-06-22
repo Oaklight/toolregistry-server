@@ -6,13 +6,49 @@ over different protocols:
 - ``openapi``: RESTful HTTP endpoints via FastAPI
 - ``mcp``: Model Context Protocol for LLM integration
 
-All adapters inherit from :class:`Adapter` and implement :meth:`run`.
-Each adapter also provides :meth:`create_and_run` as a class method
-that handles adapter-specific setup (tokens, names, etc.) from kwargs.
+Adding a new adapter
+--------------------
+
+1. Create ``adapters/myproto/__init__.py`` with a class that inherits
+   :class:`Adapter`.
+
+2. Implement two abstract methods:
+
+   - ``run(**kwargs)`` — start serving with typed kwargs.
+   - ``create_and_run(cls, route_table, **kwargs)`` — classmethod that
+     extracts constructor args from kwargs, builds the adapter, and
+     calls ``run()``.
+
+3. (Optional) Add a convenience wrapper on :class:`~toolregistry_server.app.App`::
+
+       def serve_myproto(self, **kwargs):
+           self.serve(MyProtoAdapter, **kwargs)
+
+4. (Optional) Add a module-level shortcut in ``__init__.py``::
+
+       serve_myproto = _default_app.serve_myproto
+
+``App.serve()`` is adapter-agnostic — it never needs to be modified.
+
+Example skeleton::
+
+    class GRPCAdapter(Adapter):
+        def __init__(self, route_table, *, reflection=True):
+            super().__init__(route_table)
+            self._reflection = reflection
+
+        def run(self, *, host="0.0.0.0", port=50051, **kwargs):
+            ...  # start gRPC server
+
+        @classmethod
+        def create_and_run(cls, route_table, **kwargs):
+            adapter = cls(route_table, reflection=kwargs.pop("reflection", True))
+            adapter.run(**kwargs)
 """
 
 from __future__ import annotations
 
+import argparse
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -70,6 +106,39 @@ class Adapter(ABC):
             route_table: The RouteTable to serve.
             **kwargs: Adapter-specific construction + run arguments.
         """
+
+    @staticmethod
+    def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
+        """Add adapter-specific CLI arguments to a parser.
+
+        Override in subclasses to declare protocol-specific flags
+        (e.g. ``--transport`` for MCP, ``--tokens`` for OpenAPI).
+
+        The default implementation adds common arguments shared by
+        all network-serving adapters (``--env``, ``--no-env``,
+        ``--host``, ``--port``, ``--config``, ``--profile``).
+        """
+        parser.add_argument("--env", type=str, default=None, help="Path to .env file")
+        parser.add_argument(
+            "--no-env", action="store_true", help="Skip loading .env file"
+        )
+        parser.add_argument(
+            "--config",
+            type=str,
+            default=None,
+            help="Path to a JSONC or YAML configuration file for tools",
+        )
+        parser.add_argument(
+            "--profile",
+            type=str,
+            default=None,
+            metavar="PROFILE",
+            help=(
+                "Deployment profile for tag-based tool filtering. "
+                "'remote' disables file_system/destructive/privileged. "
+                "'local' disables network. (default: no filtering)"
+            ),
+        )
 
     async def run_async(self, **kwargs) -> None:
         """Async version of :meth:`run`.
