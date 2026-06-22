@@ -15,11 +15,27 @@ The adapter automatically:
 
 ## Quick Start
 
+### Via `App` (recommended)
+
+```python
+from toolregistry_server.app import App
+
+# From a config file
+App().serve_openapi(config_path="tools.yaml", host="0.0.0.0", port=8000)
+
+# From a pre-built registry
+from toolregistry import ToolRegistry
+registry = ToolRegistry()
+# ... register tools ...
+App().serve_openapi(registry=registry, port=9000)
+```
+
+### Via `OpenAPIAdapter` directly
+
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
-import uvicorn
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
 
 registry = ToolRegistry()
 
@@ -29,9 +45,27 @@ def greet(name: str) -> str:
     return f"Hello, {name}!"
 
 route_table = RouteTable(registry)
-app = create_openapi_app(route_table, title="My Tool Server")
 
-uvicorn.run(app, host="0.0.0.0", port=8000)
+adapter = OpenAPIAdapter(
+    route_table,
+    title="My Tool Server",
+    version="1.0.0",
+    tokens=["secret-token"],   # optional Bearer auth
+)
+adapter.run(host="0.0.0.0", port=8000)
+```
+
+### One-shot classmethod
+
+```python
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+OpenAPIAdapter.create_and_run(
+    route_table,
+    host="0.0.0.0",
+    port=8000,
+    tokens_path="/etc/myapp/tokens.txt",
+)
 ```
 
 ## Endpoint Structure
@@ -60,20 +94,34 @@ curl -X POST http://localhost:8000/calculator/evaluate \
 
 ### Response Format
 
-Tool results are returned as JSON:
-
 ```json
-{
-  "result": 14
-}
+{"result": 14}
 ```
 
 ## Tools Metadata Endpoint
 
-`GET /tools` returns a list of all available tools with their schemas:
+`GET /tools` returns all available tools with their schemas:
 
 ```bash
 curl http://localhost:8000/tools
+```
+
+## Authentication
+
+Pass Bearer tokens via a file or `API_BEARER_TOKEN` env var:
+
+```python
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
+from toolregistry_server.auth import load_tokens
+
+tokens = load_tokens(tokens_path="/etc/myapp/tokens.txt")
+adapter = OpenAPIAdapter(route_table, tokens=tokens or None)
+adapter.run(host="0.0.0.0", port=8000)
+```
+
+```bash
+# CLI
+toolregistry-server openapi --config tools.yaml --tokens tokens.txt
 ```
 
 ## Disabled Tools
@@ -81,35 +129,19 @@ curl http://localhost:8000/tools
 When a tool is disabled at runtime, its endpoint returns `503 Service Unavailable`:
 
 ```json
-{
-  "detail": "Tool 'calculator_evaluate' is currently disabled"
-}
+{"detail": "Tool 'calculator_evaluate' is currently disabled"}
 ```
 
 Disabled tools are also excluded from the dynamic OpenAPI schema.
 
 ## ETag Caching
 
-The adapter includes an `ETagMiddleware` that provides HTTP caching for the `/tools` and `/openapi.json` endpoints:
+The adapter includes `ETagMiddleware` for HTTP caching on `/tools` and `/openapi.json`:
 
 - Each response includes an `ETag` header
 - Clients can send `If-None-Match` for conditional requests
-- The server returns `304 Not Modified` when the ETag matches
+- Returns `304 Not Modified` when ETag matches
 
 ## API Reference
-
-### `create_openapi_app`
-
-```python
-from toolregistry_server.openapi import create_openapi_app
-
-app = create_openapi_app(
-    route_table,
-    title="My Server",
-    version="1.0.0",
-    description="My tool server",
-    dependencies=[bearer_dep],  # optional auth
-)
-```
 
 See the [OpenAPI API Reference](../reference/api/openapi.md) for detailed documentation.

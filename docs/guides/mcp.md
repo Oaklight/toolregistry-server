@@ -6,21 +6,30 @@ The MCP adapter exposes `ToolRegistry` tools via the [Model Context Protocol](ht
 
 The adapter:
 
-- Registers `list_tools` and `call_tool` MCP handlers
-- Supports multiple transport mechanisms (stdio, SSE, Streamable HTTP)
-- Reads from `RouteTable` at request time for real-time sync
+- Registers `list_tools` and `call_tool` MCP handlers that read from `RouteTable` at request time
+- Supports stdio, SSE, and Streamable HTTP transports
 - Handles async and sync tools transparently
-- Serializes results to JSON-compatible strings
+- Provides both blocking (`run`) and async (`run_async`) entry points
 
 ## Quick Start
 
-### Streamable HTTP Transport (Recommended)
+### Via `App` (recommended)
+
+```python
+from toolregistry_server.app import App
+
+# From a config file
+App().serve_mcp(config_path="tools.yaml", transport="stdio")
+App().serve_mcp(config_path="tools.yaml", transport="sse", host="0.0.0.0", port=8000)
+App().serve_mcp(config_path="tools.yaml", transport="http", host="0.0.0.0", port=8000)
+```
+
+### Via `MCPAdapter` directly
 
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server, run_streamable_http
-import asyncio
+from toolregistry_server.adapters.mcp import MCPAdapter
 
 registry = ToolRegistry()
 
@@ -30,71 +39,90 @@ def greet(name: str) -> str:
     return f"Hello, {name}!"
 
 route_table = RouteTable(registry)
-server = create_mcp_server(route_table)
+adapter = MCPAdapter(route_table)
 
-asyncio.run(run_streamable_http(server, host="0.0.0.0", port=8000))
+# Blocking (suitable for scripts / CLI)
+adapter.run(transport="stdio")
+adapter.run(transport="sse", host="0.0.0.0", port=8000)
+adapter.run(transport="http", host="0.0.0.0", port=8000)
 ```
 
-### stdio Transport
+### Async entry point
 
-For subprocess-based communication (used by Claude Desktop, etc.):
+Use `run_async` when you're already inside an event loop:
 
 ```python
-from toolregistry_server.mcp import create_mcp_server, run_stdio
 import asyncio
+from toolregistry_server.adapters.mcp import MCPAdapter
 
-server = create_mcp_server(route_table)
+adapter = MCPAdapter(route_table)
+asyncio.run(adapter.run_async(transport="sse", host="0.0.0.0", port=8000))
+
+# or within an existing loop:
+await adapter.run_async(transport="stdio")
+```
+
+### Accessing the underlying MCP server
+
+```python
+from toolregistry_server.adapters.mcp import MCPAdapter, run_stdio
+
+adapter = MCPAdapter(route_table)
+server = adapter.server   # mcp.server.lowlevel.Server instance
 asyncio.run(run_stdio(server))
-```
-
-### SSE Transport
-
-For Server-Sent Events over HTTP:
-
-```python
-from toolregistry_server.mcp import create_mcp_server, run_sse
-import asyncio
-
-server = create_mcp_server(route_table)
-asyncio.run(run_sse(server, host="0.0.0.0", port=8000))
 ```
 
 ## Transport Comparison
 
-| Transport | Use Case | Protocol |
-|-----------|----------|----------|
-| **Streamable HTTP** | Production web deployments | HTTP |
-| **SSE** | Web-based clients needing real-time updates | HTTP + SSE |
-| **stdio** | Subprocess model (Claude Desktop, IDE plugins) | stdin/stdout |
+| Transport | Alias | Use Case |
+|-----------|-------|----------|
+| `stdio` | — | Subprocess model (Claude Desktop, IDE plugins) |
+| `sse` | — | SSE-based HTTP clients |
+| `streamable-http` | `http` | Production HTTP deployments |
+
+`http` is accepted as an alias for `streamable-http` and is normalized internally.
+
+## Authentication (Streamable HTTP)
+
+Pass a Bearer tokens file via `tokens_path`, or set the `API_BEARER_TOKEN` environment variable (comma-separated):
+
+```python
+adapter.run(
+    transport="http",
+    host="0.0.0.0",
+    port=8000,
+    tokens_path="/etc/myapp/tokens.txt",
+)
+```
+
+```bash
+# CLI equivalent
+toolregistry-server mcp --config tools.yaml --transport http --tokens tokens.txt
+```
 
 ## MCP Client Configuration
 
-### Claude Desktop
-
-Add to your Claude Desktop configuration:
+### Claude Desktop (stdio)
 
 ```json
 {
   "mcpServers": {
     "my-tools": {
       "command": "toolregistry-server",
-      "args": ["mcp", "--config", "config.json"]
+      "args": ["mcp", "--config", "/path/to/tools.yaml"]
     }
   }
 }
 ```
 
-### HTTP-based Clients
+### HTTP-based clients
 
-Connect to the server URL:
+Connect to:
 
 ```
-http://localhost:8000/mcp
+http://localhost:8000/mcp       # streamable-http
+http://localhost:8000/sse       # SSE
 ```
-
-## Error Handling
-
-Tool errors are returned as structured MCP error responses with appropriate error codes.
 
 ## API Reference
 
