@@ -172,7 +172,7 @@ class OpenAPIAdapter(Adapter):
         """The FastAPI application instance."""
         return self._app
 
-    def serve(self, *, host: str = "0.0.0.0", port: int = 8000, **kwargs) -> None:
+    def run(self, *, host: str = "0.0.0.0", port: int = 8000, **kwargs) -> None:
         """Start the OpenAPI server.
 
         Args:

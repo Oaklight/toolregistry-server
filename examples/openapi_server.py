@@ -27,4 +27,4 @@ route_table = RouteTable(registry)
 adapter = OpenAPIAdapter(route_table)
 
 if __name__ == "__main__":
-    adapter.serve(host="0.0.0.0", port=8000)
+    adapter.run(host="0.0.0.0", port=8000)
