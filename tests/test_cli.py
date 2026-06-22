@@ -118,6 +118,41 @@ class TestCreateParser:
             parser.parse_args(["mcp", "--transport", "invalid"])
 
 
+class TestConfigureSubparsers:
+    """Tests for configure_subparsers hook."""
+
+    def test_hook_receives_subparsers(self):
+        """configure_subparsers is called with the subparser dict."""
+        received = {}
+
+        class CustomCLI(CLI):
+            def configure_subparsers(self, subparsers):
+                received.update(subparsers)
+
+        CustomCLI().create_parser()
+        assert "openapi" in received
+        assert "mcp" in received
+        assert all(isinstance(sp, argparse.ArgumentParser) for sp in received.values())
+
+    def test_hook_adds_arguments(self):
+        """Arguments added in configure_subparsers are available."""
+
+        class CustomCLI(CLI):
+            def configure_subparsers(self, subparsers):
+                for sp in subparsers.values():
+                    sp.add_argument("--custom-flag", type=int, default=42)
+
+        parser = CustomCLI().create_parser()
+        args = parser.parse_args(["openapi", "--custom-flag", "99"])
+        assert args.custom_flag == 99
+
+    def test_base_hook_is_noop(self):
+        """Base CLI.configure_subparsers does nothing (no error)."""
+        parser = CLI().create_parser()
+        args = parser.parse_args(["openapi"])
+        assert args.command == "openapi"
+
+
 class TestMain:
     """Tests for main function."""
 
