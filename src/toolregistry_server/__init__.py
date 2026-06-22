@@ -26,7 +26,7 @@ Example:
 
 __version__ = "0.3.3"
 
-from .app import serve_mcp, serve_openapi
+from .app import App, serve_mcp, serve_openapi
 from .auth import load_tokens
 from .registry_builder import (
     PROFILE_DISABLE_TAGS,
@@ -42,6 +42,7 @@ from .route_table import RouteEntry, RouteTable
 from .session import SessionContext
 
 __all__ = [
+    "App",
     "__version__",
     "PROFILE_DISABLE_TAGS",
     "RouteEntry",

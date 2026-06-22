@@ -7,6 +7,8 @@ over different protocols:
 - ``mcp``: Model Context Protocol for LLM integration
 
 All adapters inherit from :class:`Adapter` and implement :meth:`run`.
+Each adapter also provides :meth:`create_and_run` as a class method
+that handles adapter-specific setup (tokens, names, etc.) from kwargs.
 """
 
 from __future__ import annotations
@@ -24,17 +26,20 @@ class Adapter(ABC):
     An adapter takes a :class:`~toolregistry_server.RouteTable` and
     exposes it over a specific protocol (OpenAPI, MCP, gRPC, CLI, etc.).
 
-    Subclasses must implement :meth:`run`.  Each adapter defines its
-    own keyword arguments — network adapters typically accept ``host``
-    and ``port``, while others (e.g. MCP stdio, CLI) may not.
+    Subclasses must implement:
+
+    - :meth:`run` — start serving with typed kwargs
+    - :meth:`create_and_run` — class method that constructs the adapter
+      from a route table + kwargs, then calls :meth:`run`
 
     Example::
 
-        adapter = OpenAPIAdapter(route_table)
+        # Low-level: construct + run
+        adapter = OpenAPIAdapter(route_table, tokens=["secret"])
         adapter.run(host="0.0.0.0", port=8000)
 
-        # or equivalently:
-        adapter(host="0.0.0.0", port=8000)
+        # High-level: one-shot from kwargs (used by App)
+        OpenAPIAdapter.create_and_run(route_table, host="0.0.0.0", port=8000)
     """
 
     def __init__(self, route_table: RouteTable) -> None:
@@ -49,11 +54,21 @@ class Adapter(ABC):
     def run(self, **kwargs) -> None:
         """Run the adapter.
 
-        Each subclass defines its own keyword arguments.  Typical
-        examples:
+        Each subclass defines its own keyword arguments.
+        """
 
-        - ``OpenAPIAdapter.run(host=, port=, reload=)``
-        - ``MCPAdapter.run(transport=, host=, port=)``
+    @classmethod
+    @abstractmethod
+    def create_and_run(cls, route_table: RouteTable, **kwargs) -> None:
+        """Construct the adapter and run it in one step.
+
+        Subclasses extract their constructor args (e.g. tokens, name)
+        from kwargs, build the adapter, and call :meth:`run` with
+        the remaining transport kwargs.
+
+        Args:
+            route_table: The RouteTable to serve.
+            **kwargs: Adapter-specific construction + run arguments.
         """
 
     async def run_async(self, **kwargs) -> None:
