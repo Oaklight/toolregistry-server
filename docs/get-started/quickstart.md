@@ -1,76 +1,57 @@
 # Quick Start
 
-This guide walks you through the basic usage of `toolregistry-server` to expose your tools as services.
+This guide walks you through the basic usage of `toolregistry-server` to expose your tools as services using the v0.4.0 API.
 
-## Using RouteTable
+## Programmatic Usage: OpenAPI Server
 
-The `RouteTable` is the central routing layer that bridges `ToolRegistry` with protocol adapters.
-
-```python
-from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-
-# Create a registry and register tools
-registry = ToolRegistry()
-
-@registry.register
-def greet(name: str) -> str:
-    """Greet someone by name."""
-    return f"Hello, {name}!"
-
-@registry.register
-def add(a: float, b: float) -> float:
-    """Add two numbers."""
-    return a + b
-
-# Create a route table
-route_table = RouteTable(registry)
-
-# List all routes
-for route in route_table.list_routes():
-    print(f"{route.path} -> {route.tool_name}")
-```
-
-## Creating an OpenAPI Server
-
-Expose your tools as RESTful HTTP endpoints using FastAPI:
+Use the `App` class to serve your tools as RESTful HTTP endpoints:
 
 ```python
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
+from toolregistry_server import App
 
-# Setup registry and route table
-registry = ToolRegistry()
+class MyApp(App):
+    def prepare_registry(self):
+        registry = ToolRegistry()
 
-@registry.register
-def greet(name: str) -> str:
-    """Greet someone by name."""
-    return f"Hello, {name}!"
+        @registry.register
+        def greet(name: str) -> str:
+            """Greet someone by name."""
+            return f"Hello, {name}!"
 
-route_table = RouteTable(registry)
+        @registry.register
+        def add(a: float, b: float) -> float:
+            """Add two numbers."""
+            return a + b
 
-# Create FastAPI app
-app = create_openapi_app(route_table)
+        self.registry = registry
 
-# Run with uvicorn
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    MyApp().serve_openapi(host="0.0.0.0", port=8000)
 ```
 
 Your tools are now accessible as POST endpoints at `http://localhost:8000/`.
 
-## Creating an MCP Server
-
-Expose your tools via the Model Context Protocol for LLM integration:
+For a one-liner without subclassing:
 
 ```python
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server, run_streamable_http
+from toolregistry_server import App
 
-# Setup registry and route table
+registry = ToolRegistry()
+registry.register(my_tool)
+
+App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
+```
+
+## Programmatic Usage: MCP Server
+
+Use `App.serve_mcp()` to expose your tools via the Model Context Protocol:
+
+```python
+from toolregistry import ToolRegistry
+from toolregistry_server import App
+
 registry = ToolRegistry()
 
 @registry.register
@@ -78,14 +59,20 @@ def greet(name: str) -> str:
     """Greet someone by name."""
     return f"Hello, {name}!"
 
-route_table = RouteTable(registry)
-
-# Create and run MCP server
-server = create_mcp_server(route_table)
-
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_streamable_http(server, host="0.0.0.0", port=8000))
+    # stdio transport (default, for Claude Desktop, etc.)
+    App(registry=registry).serve_mcp()
+
+    # Or streamable-http transport
+    # App(registry=registry).serve_mcp(transport="streamable-http", host="0.0.0.0", port=8000)
+```
+
+For a one-call shortcut using the low-level adapter:
+
+```python
+from toolregistry_server.adapters.mcp import MCPAdapter
+
+MCPAdapter.create_and_run(registry=registry, transport="stdio")
 ```
 
 ## Using the CLI
@@ -96,14 +83,20 @@ The quickest way to start a server without writing code:
 # Start OpenAPI server
 toolregistry-server openapi --config config.json --port 8000
 
-# Start MCP server (stdio transport)
+# Start MCP server (stdio transport, default)
 toolregistry-server mcp --config config.json
 
-# Start MCP server (streamable HTTP transport)
+# Start MCP server (streamable-http transport)
 toolregistry-server mcp --config config.json --transport streamable-http --port 8000
+
+# Start MCP server (SSE transport)
+toolregistry-server mcp --config config.json --transport sse --port 8000
+
+# With bearer token authentication
+toolregistry-server openapi --config config.json --tokens tokens.txt
 ```
 
-See the [CLI Reference](../reference/cli/) and [Configuration Guide](../guides/configuration.md) for details on the config file format.
+See the [CLI Reference](../reference/cli/) and [Configuration Guide](../guides/configuration.md) for details on config file format and all available flags.
 
 ## Next Steps
 
