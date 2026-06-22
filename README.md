@@ -10,11 +10,11 @@ Define custom tools and serve them via OpenAPI or MCP interfaces. Built on [Tool
 
 `toolregistry-server` lets you register Python functions as tools and expose them as services through multiple protocols. It provides:
 
-- **Central Route Table**: A unified routing layer that bridges `ToolRegistry` and protocol adapters
-- **OpenAPI Adapter**: Expose tools as RESTful HTTP endpoints with automatic OpenAPI schema generation
-- **MCP Adapter**: Expose tools via the [Model Context Protocol](https://modelcontextprotocol.io/) for LLM integration
-- **Authentication**: Built-in Bearer token authentication support
-- **CLI**: Command-line interface for running servers
+- **Registry Builder**: Protocol-agnostic config loading and source registration (`registry_builder`)
+- **Protocol Adapters**: `OpenAPIAdapter` (FastAPI/REST) and `MCPAdapter` (Model Context Protocol)
+- **App Orchestration**: `App` class for building registries and dispatching to any adapter; subclass `prepare_registry()` for custom registries
+- **Authentication**: Unified Bearer token support (`auth.load_tokens`)
+- **CLI**: `toolregistry-server openapi` / `toolregistry-server mcp` with `--config`, `--profile`, and more
 
 ## Ecosystem
 
@@ -34,39 +34,29 @@ toolregistry-hub (tool collection + server config)
 
 ## Installation
 
-### Basic Installation
-
 ```bash
+# Base (RouteTable, registry_builder, auth)
 pip install toolregistry-server
-```
 
-### With OpenAPI Support
-
-```bash
+# With OpenAPI support
 pip install toolregistry-server[openapi]
-```
 
-### With MCP Support
-
-```bash
+# With MCP support
 pip install toolregistry-server[mcp]
-```
 
-### Full Installation
-
-```bash
+# Full
 pip install toolregistry-server[all]
 ```
 
 ## Quick Start
 
-### Using RouteTable
+### Programmatic — OpenAPI server
 
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
 
-# Create a registry and register tools
 registry = ToolRegistry()
 
 @registry.register
@@ -74,104 +64,175 @@ def greet(name: str) -> str:
     """Greet someone by name."""
     return f"Hello, {name}!"
 
-# Create a route table
 route_table = RouteTable(registry)
-
-# List all routes
-for route in route_table.list_routes():
-    print(f"{route.path} -> {route.tool_name}")
+adapter = OpenAPIAdapter(route_table)
+adapter.run(host="0.0.0.0", port=8000)
 ```
 
-### Creating an OpenAPI Server
+### Programmatic — MCP server
 
 ```python
+import asyncio
 from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
+from toolregistry_server.adapters.mcp import MCPAdapter
 
-# Setup registry and route table
 registry = ToolRegistry()
 # ... register tools ...
 route_table = RouteTable(registry)
 
-# Create FastAPI app
-app = create_openapi_app(route_table)
-
-# Run with uvicorn
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+adapter = MCPAdapter(route_table)
+adapter.run(transport="stdio")                        # blocking
+# or: asyncio.run(adapter.run_async(transport="sse", host="0.0.0.0", port=8000))
 ```
 
-### Creating an MCP Server
+### High-level — `App` class
 
 ```python
-from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server
+from toolregistry_server.app import App
 
-# Setup registry and route table
+# From a config file
+App().serve_openapi(config_path="tools.yaml", host="0.0.0.0", port=8000)
+App().serve_mcp(config_path="tools.yaml", transport="stdio")
+
+# From a pre-built registry
+from toolregistry import ToolRegistry
 registry = ToolRegistry()
 # ... register tools ...
-route_table = RouteTable(registry)
-
-# Create MCP server
-server = create_mcp_server(route_table)
-
-# Run the server
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(server.run())
+App().serve_openapi(registry=registry, port=9000)
 ```
 
-### Using the CLI
+### Custom App subclass
+
+Override `prepare_registry` to add built-in tools, hooks, or metadata:
+
+```python
+from toolregistry_server.app import App
+
+class MyApp(App):
+    def prepare_registry(self, **kwargs):
+        from toolregistry import ToolRegistry
+        registry = ToolRegistry()
+        registry.register(my_builtin_tool)
+        # optionally apply user config on top
+        if kwargs.get("config_path"):
+            from toolregistry_server import apply_config, load_config
+            apply_config(registry, load_config(kwargs["config_path"]))
+        return registry
+
+MyApp().serve_openapi(host="0.0.0.0", port=8000)
+```
+
+### CLI
 
 ```bash
-# Start OpenAPI server
-toolregistry-server --mode openapi --port 8000
+# OpenAPI server from config file
+toolregistry-server openapi --config tools.yaml --port 8000
 
-# Start MCP server (stdio)
-toolregistry-server --mode mcp
+# MCP server (stdio)
+toolregistry-server mcp --config tools.yaml --transport stdio
 
-# With authentication
-toolregistry-server --mode openapi --auth-token "your-secret-token"
+# MCP server (SSE)
+toolregistry-server mcp --config tools.yaml --transport sse --port 8000
+
+# With deployment profile (disables network/filesystem tools)
+toolregistry-server openapi --config tools.yaml --profile remote
+
+# With Bearer token auth
+toolregistry-server openapi --config tools.yaml --tokens /path/to/tokens.txt
 ```
+
+## Config File
+
+JSONC and YAML are both supported. Three source types: `python`, `mcp`, `openapi`.
+
+```yaml
+mode: denylist     # or "allowlist"
+disabled: []       # namespaces to exclude (denylist mode)
+
+tools:
+  # Python module — all public functions
+  - type: python
+    module: my_package.tools
+    namespace: my_tools
+
+  # Python class
+  - type: python
+    class: my_package.Calculator
+    namespace: calculator
+
+  # MCP server (stdio subprocess)
+  - type: mcp
+    transport: stdio
+    command: ["python", "-m", "my_mcp_server"]
+    namespace: mcp_tools
+
+  # MCP server (SSE / streamable-http)
+  - type: mcp
+    transport: http
+    url: http://localhost:8080/mcp
+    namespace: remote_mcp
+
+  # OpenAPI endpoint
+  - type: openapi
+    url: https://api.example.com/openapi.json
+    namespace: external_api
+    auth:
+      type: bearer
+      token_env: EXTERNAL_API_TOKEN
+```
+
+See [`examples/config.yaml`](examples/config.yaml) and [`examples/config.jsonc`](examples/config.jsonc) for full examples.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      ToolRegistry                           │
-│                   (tool definitions)                        │
+│                    registry_builder                         │
+│   load_config · apply_config · register_*_source            │
+│   apply_profile · PROFILE_DISABLE_TAGS                      │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                       RouteTable                            │
 │              (central routing layer)                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │ RouteEntry  │  │ RouteEntry  │  │ RouteEntry  │  ...    │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
 └─────────────────────────┬───────────────────────────────────┘
                           │
           ┌───────────────┼───────────────┐
           ▼               ▼               ▼
 ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│ OpenAPI Adapter │ │   MCP Adapter   │ │  gRPC Adapter   │
-│   (FastAPI)     │ │   (MCP SDK)     │ │    (future)     │
+│  OpenAPIAdapter │ │   MCPAdapter    │ │  (your adapter) │
+│   (FastAPI)     │ │  stdio/sse/http │ │  Adapter ABC    │
 └─────────────────┘ └─────────────────┘ └─────────────────┘
-          │               │               │
-          ▼               ▼               ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│  HTTP Clients   │ │   MCP Clients   │ │  gRPC Clients   │
-└─────────────────┘ └─────────────────┘ └─────────────────┘
+          │               │
+          ▼               ▼
+┌─────────────────┐ ┌─────────────────┐
+│  HTTP Clients   │ │   MCP Clients   │
+└─────────────────┘ └─────────────────┘
 ```
+
+### Adding a New Adapter
+
+1. Subclass `Adapter` from `toolregistry_server.adapters`
+2. Implement `run(**kwargs)` and `create_and_run(cls, route_table, **kwargs)`
+3. Optionally implement `add_cli_arguments(parser)` for CLI integration
+4. Call `App().serve(MyAdapter, ...)` — no changes to `App` needed
+
+## Deployment Profiles
+
+`--profile` applies tag-based tool filtering at startup:
+
+| Profile | Disables |
+|---------|----------|
+| `remote` | `FILE_SYSTEM`, `DESTRUCTIVE`, `PRIVILEGED` tagged tools |
+| `local` | `NETWORK` tagged tools |
 
 ## Documentation
 
 - [Full Documentation](https://toolregistry-server.readthedocs.io)
-- [API Reference](https://toolregistry-server.readthedocs.io/api/)
-- [Examples](https://toolregistry-server.readthedocs.io/examples/)
+- [Configuration Guide](https://toolregistry-server.readthedocs.io/guides/configuration/)
+- [API Reference](https://toolregistry-server.readthedocs.io/reference/)
 
 ## Contributing
 
@@ -179,10 +240,10 @@ Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) 
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
 ## Related Projects
 
-- [ToolRegistry](https://github.com/Oaklight/ToolRegistry) - Core library
-- [toolregistry-hub](https://github.com/Oaklight/toolregistry-hub) - Built-in tool collection
-- [Model Context Protocol](https://modelcontextprotocol.io/) - MCP specification
+- [ToolRegistry](https://github.com/Oaklight/ToolRegistry) — Core library
+- [toolregistry-hub](https://github.com/Oaklight/toolregistry-hub) — Built-in tool collection
+- [Model Context Protocol](https://modelcontextprotocol.io/) — MCP specification
