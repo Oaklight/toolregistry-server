@@ -32,7 +32,10 @@ Example:
 import argparse
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from ._vendor.structlog import get_logger
 
@@ -299,28 +302,42 @@ def add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def main(args: list[str] | None = None) -> NoReturn | None:
-    """Main entry point for the CLI.
+def run_cli(
+    parsed: argparse.Namespace,
+    *,
+    version_string: str | None = None,
+    banner_fn: "Callable[[], None] | None" = None,
+    dispatch_fn: "Callable[[argparse.Namespace], None] | None" = None,
+) -> NoReturn | None:
+    """Reusable CLI main loop.
+
+    Handles version flag, no-command help, .env loading, banner,
+    and dispatch.  Downstream packages (e.g. Hub) can override
+    specific steps via keyword arguments.
 
     Args:
-        args: Command-line arguments. If None, uses sys.argv.
-
-    Returns:
-        None on success, or exits with error code.
+        parsed: Parsed argparse namespace.
+        version_string: Version string for ``--version`` output.
+            Defaults to ``"toolregistry-server <version>"``.
+        banner_fn: Callable to print the banner.  Defaults to
+            :func:`print_banner`.  Pass ``None`` to skip.
+        dispatch_fn: Callable that receives *parsed* and dispatches
+            to the appropriate serve function.  Defaults to the
+            built-in config-based dispatch.
     """
-    parser = create_parser()
-    parsed = parser.parse_args(args)
-
     # Handle version flag
     if parsed.version:
-        from toolregistry_server import __version__
+        if version_string is None:
+            from toolregistry_server import __version__
 
-        print(f"toolregistry-server {__version__}")
+            version_string = f"toolregistry-server {__version__}"
+        print(version_string)
         sys.exit(0)
 
     # If no command specified, show help
     if parsed.command is None:
-        parser.print_help()
+        # Re-create parser to print help (parsed doesn't carry it)
+        create_parser().print_help()
         sys.exit(0)
 
     # Load environment variables from .env file
@@ -329,39 +346,19 @@ def main(args: list[str] | None = None) -> NoReturn | None:
         no_env=getattr(parsed, "no_env", False),
     )
 
-    # Print banner unless disabled
+    # Print banner
     if not parsed.no_banner:
-        print_banner()
+        if banner_fn is not None:
+            banner_fn()
+        else:
+            print_banner()
 
-    # Validate config
-    config_path = getattr(parsed, "config", None)
-    if config_path is None:
-        logger.error("No config file specified. Use --config to provide one.")
-        sys.exit(1)
-
-    # Dispatch to app-level serve functions
+    # Dispatch
     try:
-        if parsed.command == "openapi":
-            from toolregistry_server.app import serve_openapi
-
-            serve_openapi(
-                config_path=config_path,
-                profile=getattr(parsed, "profile", None),
-                host=parsed.host,
-                port=parsed.port,
-                tokens_path=getattr(parsed, "tokens", None),
-                reload=getattr(parsed, "reload", False),
-            )
-        elif parsed.command == "mcp":
-            from toolregistry_server.app import serve_mcp
-
-            serve_mcp(
-                config_path=config_path,
-                profile=getattr(parsed, "profile", None),
-                host=parsed.host,
-                port=parsed.port,
-                transport=parsed.transport,
-            )
+        if dispatch_fn is not None:
+            dispatch_fn(parsed)
+        else:
+            _default_dispatch(parsed)
     except ImportError as e:
         logger.error(f"Server dependencies not installed: {e}")
         logger.info(
@@ -379,6 +376,43 @@ def main(args: list[str] | None = None) -> NoReturn | None:
     return None
 
 
+def _default_dispatch(parsed: argparse.Namespace) -> None:
+    """Default dispatch for standalone toolregistry-server CLI."""
+    config_path = getattr(parsed, "config", None)
+    if config_path is None:
+        logger.error("No config file specified. Use --config to provide one.")
+        sys.exit(1)
+
+    if parsed.command == "openapi":
+        from toolregistry_server.app import serve_openapi
+
+        serve_openapi(
+            config_path=config_path,
+            profile=getattr(parsed, "profile", None),
+            host=parsed.host,
+            port=parsed.port,
+            tokens_path=getattr(parsed, "tokens", None),
+            reload=getattr(parsed, "reload", False),
+        )
+    elif parsed.command == "mcp":
+        from toolregistry_server.app import serve_mcp
+
+        serve_mcp(
+            config_path=config_path,
+            profile=getattr(parsed, "profile", None),
+            host=parsed.host,
+            port=parsed.port,
+            transport=parsed.transport,
+        )
+
+
+def main(args: list[str] | None = None) -> NoReturn | None:
+    """Main entry point for the standalone toolregistry-server CLI."""
+    parser = create_parser()
+    parsed = parser.parse_args(args)
+    return run_cli(parsed)
+
+
 __all__ = [
     "DEFAULT_BANNER_ART",
     "add_common_arguments",
@@ -388,4 +422,5 @@ __all__ = [
     "load_env_file",
     "main",
     "print_banner",
+    "run_cli",
 ]
