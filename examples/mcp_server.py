@@ -13,7 +13,7 @@ from toolregistry import ToolRegistry
 from tools import add, greet, multiply
 
 from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server, run_stdio
+from toolregistry_server.adapters.mcp import MCPAdapter, run_stdio
 
 # 1. Create registry and register tools
 registry = ToolRegistry()
@@ -24,8 +24,8 @@ registry.register(multiply)
 # 2. Build route table
 route_table = RouteTable(registry)
 
-# 3. Create MCP server and run over stdio
-server = create_mcp_server(route_table)
+# 3. Create MCP adapter and run over stdio
+adapter = MCPAdapter(route_table)
 
 if __name__ == "__main__":
-    asyncio.run(run_stdio(server))
+    asyncio.run(run_stdio(adapter.server))

@@ -51,25 +51,22 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def load_config(config_path: str | None) -> "ToolConfig | None":
+def load_config(config_path: str) -> "ToolConfig":
     """Load configuration from a JSONC or YAML file.
 
     Delegates to ``toolregistry.config.load_config()`` for parsing and
     validation.
 
     Args:
-        config_path: Path to the configuration file, or ``None``.
+        config_path: Path to the configuration file.
 
     Returns:
-        Parsed ``ToolConfig``, or ``None`` if *config_path* is ``None``.
+        Parsed ``ToolConfig``.
 
     Raises:
         FileNotFoundError: If the config file does not exist.
         toolregistry.config.ConfigError: If the config is invalid.
     """
-    if config_path is None:
-        return None
-
     from toolregistry.config import load_config as _load_config
 
     return _load_config(config_path)
@@ -379,10 +376,6 @@ def registry_from_config(
 
     apply_config(registry, config)
     return registry
-
-
-# Backward-compatible alias
-create_registry_from_config = registry_from_config
 
 
 # ---------------------------------------------------------------------------

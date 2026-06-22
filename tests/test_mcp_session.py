@@ -13,7 +13,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteTable
-from toolregistry_server.mcp.adapter import route_table_to_mcp_server
+from toolregistry_server.adapters.mcp.adapter import route_table_to_mcp_server
 from toolregistry_server.session import SessionContext
 
 # ---------------------------------------------------------------------------

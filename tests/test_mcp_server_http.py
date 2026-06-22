@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
-from toolregistry_server.mcp.server import _make_http_exception_handlers
+from toolregistry_server.adapters.mcp.server import _make_http_exception_handlers
 
 # Paths that Claude Code probes for OAuth discovery
 OAUTH_PROBE_PATHS = [

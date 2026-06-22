@@ -12,7 +12,7 @@ from toolregistry import ToolRegistry
 from tools import add, greet, multiply
 
 from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
 
 # 1. Create registry and register tools
 registry = ToolRegistry()
@@ -23,10 +23,8 @@ registry.register(multiply)
 # 2. Build route table
 route_table = RouteTable(registry)
 
-# 3. Create FastAPI app
-app = create_openapi_app(route_table)
+# 3. Create OpenAPI adapter and serve
+adapter = OpenAPIAdapter(route_table)
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    adapter.serve(host="0.0.0.0", port=8000)

@@ -13,7 +13,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
-from toolregistry_server.mcp import create_mcp_server, route_table_to_mcp_server
+from toolregistry_server.adapters.mcp import route_table_to_mcp_server
 
 # ---------------------------------------------------------------------------
 # Test helper functions
@@ -179,13 +179,6 @@ class TestRouteTableToMcpServer:
     def test_returns_server_instance(self, route_table_with_tools: RouteTable) -> None:
         """Verify that route_table_to_mcp_server returns an mcp Server instance."""
         server = route_table_to_mcp_server(route_table_with_tools)
-        assert isinstance(server, Server)
-
-    def test_create_mcp_server_returns_server_instance(
-        self, route_table_with_tools: RouteTable
-    ) -> None:
-        """Verify that create_mcp_server also returns a Server."""
-        server = create_mcp_server(route_table_with_tools)
         assert isinstance(server, Server)
 
     def test_server_has_correct_name(self, route_table_with_tools: RouteTable) -> None:

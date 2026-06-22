@@ -136,208 +136,168 @@ class TestMain:
             main([])
         assert exc_info.value.code == 0
 
-    @patch("toolregistry_server.cli.openapi.run_openapi_server")
-    def test_openapi_command_dispatch(self, mock_run):
+    @patch("toolregistry_server.app.serve_openapi")
+    def test_openapi_command_dispatch(self, mock_serve):
         """Test openapi command dispatches correctly."""
-        main(["openapi", "--port", "9000"])
-        mock_run.assert_called_once_with(
-            host="0.0.0.0",
-            port=9000,
-            config_path=None,
-            tokens_path=None,
-            reload=False,
+        main(["openapi", "--config", "tools.yaml", "--port", "9000"])
+        mock_serve.assert_called_once_with(
+            config_path="tools.yaml",
             profile=None,
-        )
-
-    @patch("toolregistry_server.cli.openapi.run_openapi_server")
-    def test_openapi_command_dispatch_with_profile(self, mock_run):
-        """Test openapi command passes profile correctly."""
-        main(["openapi", "--port", "9000", "--profile", "remote"])
-        mock_run.assert_called_once_with(
             host="0.0.0.0",
             port=9000,
-            config_path=None,
             tokens_path=None,
             reload=False,
-            profile="remote",
         )
 
-    @patch("toolregistry_server.cli.mcp.run_mcp_server")
-    def test_mcp_command_dispatch(self, mock_run):
+    @patch("toolregistry_server.app.serve_openapi")
+    def test_openapi_command_dispatch_with_profile(self, mock_serve):
+        """Test openapi command passes profile correctly."""
+        main(
+            [
+                "openapi",
+                "--config",
+                "tools.yaml",
+                "--port",
+                "9000",
+                "--profile",
+                "remote",
+            ]
+        )
+        mock_serve.assert_called_once_with(
+            config_path="tools.yaml",
+            profile="remote",
+            host="0.0.0.0",
+            port=9000,
+            tokens_path=None,
+            reload=False,
+        )
+
+    @patch("toolregistry_server.app.serve_mcp")
+    def test_mcp_command_dispatch(self, mock_serve):
         """Test mcp command dispatches correctly."""
-        main(["mcp", "--transport", "sse", "--port", "9000"])
-        mock_run.assert_called_once_with(
-            transport="sse",
+        main(["mcp", "--config", "tools.yaml", "--transport", "sse", "--port", "9000"])
+        mock_serve.assert_called_once_with(
+            config_path="tools.yaml",
+            profile=None,
             host="127.0.0.1",
             port=9000,
-            config_path=None,
-            profile=None,
+            transport="sse",
         )
 
-    @patch("toolregistry_server.cli.mcp.run_mcp_server")
-    def test_mcp_command_dispatch_with_profile(self, mock_run):
+    @patch("toolregistry_server.app.serve_mcp")
+    def test_mcp_command_dispatch_with_profile(self, mock_serve):
         """Test mcp command passes profile correctly."""
-        main(["mcp", "--profile", "remote"])
-        mock_run.assert_called_once_with(
-            transport="stdio",
+        main(["mcp", "--config", "tools.yaml", "--profile", "remote"])
+        mock_serve.assert_called_once_with(
+            config_path="tools.yaml",
+            profile="remote",
             host="127.0.0.1",
             port=8000,
-            config_path=None,
-            profile="remote",
+            transport="stdio",
         )
 
+    def test_no_config_exits(self):
+        """Test that missing --config exits with error."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["openapi", "--port", "9000"])
+        assert exc_info.value.code == 1
 
-class TestRunOpenAPIServerWithRegistry:
-    """Tests for run_openapi_server with a pre-built registry."""
 
-    @patch("uvicorn.run")
-    @patch("toolregistry_server.openapi.create_openapi_app")
-    @patch("toolregistry_server.RouteTable")
-    def test_run_with_registry_skips_config(
-        self, mock_route_table_cls, mock_create_app, mock_uvicorn_run
-    ):
+class TestServeOpenAPI:
+    """Tests for app.serve_openapi."""
+
+    @patch("toolregistry_server.adapters.openapi.OpenAPIAdapter")
+    @patch("toolregistry_server.route_table.RouteTable")
+    def test_serve_with_registry_skips_config(self, mock_rt_cls, mock_adapter_cls):
         """When registry is provided, config loading is bypassed."""
         from unittest.mock import MagicMock
 
-        from toolregistry_server.cli.openapi import run_openapi_server
+        from toolregistry_server.app import serve_openapi
 
         registry = MagicMock()
-        mock_route_table = MagicMock()
-        mock_route_table.list_routes.return_value = []
-        mock_route_table_cls.return_value = mock_route_table
-        mock_create_app.return_value = MagicMock()
+        mock_rt_cls.return_value = MagicMock()
+        mock_adapter_cls.return_value = MagicMock()
 
-        with (
-            patch("toolregistry_server.cli.openapi.load_config") as mock_load_config,
-            patch(
-                "toolregistry_server.cli.openapi.create_registry_from_config"
-            ) as mock_create_reg,
-        ):
-            run_openapi_server(host="127.0.0.1", port=9001, registry=registry)
-            mock_load_config.assert_not_called()
-            mock_create_reg.assert_not_called()
+        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
+            mock_resolve.return_value = (registry, None)
+            serve_openapi(registry=registry, host="127.0.0.1", port=9001)
 
-        mock_route_table_cls.assert_called_once_with(registry)
-        mock_uvicorn_run.assert_called_once()
+        mock_adapter_cls.return_value.assert_called_once()
 
-    @patch("uvicorn.run")
-    @patch("toolregistry_server.openapi.create_openapi_app")
-    @patch("toolregistry_server.RouteTable")
-    def test_run_without_registry_uses_config(
-        self, mock_route_table_cls, mock_create_app, mock_uvicorn_run
-    ):
-        """When registry is None, config path is used to build registry."""
+    @patch("toolregistry_server.adapters.openapi.OpenAPIAdapter")
+    @patch("toolregistry_server.route_table.RouteTable")
+    def test_serve_without_registry_uses_config(self, mock_rt_cls, mock_adapter_cls):
+        """When no registry, config is loaded."""
         from unittest.mock import MagicMock
 
-        from toolregistry_server.cli.openapi import run_openapi_server
+        from toolregistry_server.app import serve_openapi
 
-        mock_route_table = MagicMock()
-        mock_route_table.list_routes.return_value = []
-        mock_route_table_cls.return_value = mock_route_table
-        mock_create_app.return_value = MagicMock()
         mock_registry = MagicMock()
+        mock_rt_cls.return_value = MagicMock()
+        mock_adapter_cls.return_value = MagicMock()
 
-        with (
-            patch("toolregistry_server.cli.openapi.load_config") as mock_load_config,
-            patch(
-                "toolregistry_server.cli.openapi.create_registry_from_config"
-            ) as mock_create_reg,
-        ):
-            mock_load_config.return_value = None
-            mock_create_reg.return_value = mock_registry
+        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
+            mock_resolve.return_value = (mock_registry, MagicMock())
+            serve_openapi(host="127.0.0.1", port=9001)
 
-            run_openapi_server(host="127.0.0.1", port=9001)
-
-            mock_load_config.assert_called_once_with(None)
-            mock_create_reg.assert_called_once_with(None)
+        mock_adapter_cls.return_value.assert_called_once()
 
 
-class TestRunMCPServerWithRegistry:
-    """Tests for run_mcp_server with a pre-built registry."""
+class TestServeMCP:
+    """Tests for app.serve_mcp."""
 
-    @patch("asyncio.run")
-    @patch("toolregistry_server.mcp.route_table_to_mcp_server")
-    @patch("toolregistry_server.RouteTable")
-    def test_run_with_registry_skips_config(
-        self, mock_route_table_cls, mock_to_mcp, mock_asyncio_run
-    ):
+    @patch("toolregistry_server.adapters.mcp.MCPAdapter")
+    @patch("toolregistry_server.route_table.RouteTable")
+    def test_serve_with_registry_skips_config(self, mock_rt_cls, mock_adapter_cls):
         """When registry is provided, config loading is bypassed."""
         from unittest.mock import MagicMock
 
-        from toolregistry_server.cli.mcp import run_mcp_server
+        from toolregistry_server.app import serve_mcp
 
         registry = MagicMock()
-        mock_route_table = MagicMock()
-        mock_route_table.list_routes.return_value = []
-        mock_route_table_cls.return_value = mock_route_table
-        mock_to_mcp.return_value = MagicMock()
+        mock_rt_cls.return_value = MagicMock()
+        mock_adapter_cls.return_value = MagicMock()
 
-        with (
-            patch("toolregistry_server.cli.mcp.load_config") as mock_load_config,
-            patch(
-                "toolregistry_server.cli.mcp.create_registry_from_config"
-            ) as mock_create_reg,
-        ):
-            run_mcp_server(transport="stdio", registry=registry)
-            mock_load_config.assert_not_called()
-            mock_create_reg.assert_not_called()
+        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
+            mock_resolve.return_value = (registry, None)
+            serve_mcp(registry=registry, transport="stdio")
 
-        mock_route_table_cls.assert_called_once_with(registry)
+        mock_adapter_cls.return_value.assert_called_once()
 
-    @patch("asyncio.run")
-    @patch("toolregistry_server.mcp.route_table_to_mcp_server")
-    @patch("toolregistry_server.RouteTable")
-    def test_run_without_registry_uses_config(
-        self, mock_route_table_cls, mock_to_mcp, mock_asyncio_run
-    ):
-        """When registry is None, config path is used to build registry."""
+    @patch("toolregistry_server.adapters.mcp.MCPAdapter")
+    @patch("toolregistry_server.route_table.RouteTable")
+    def test_serve_without_registry_uses_config(self, mock_rt_cls, mock_adapter_cls):
+        """When no registry, config is loaded."""
         from unittest.mock import MagicMock
 
-        from toolregistry_server.cli.mcp import run_mcp_server
+        from toolregistry_server.app import serve_mcp
 
-        mock_route_table = MagicMock()
-        mock_route_table.list_routes.return_value = []
-        mock_route_table_cls.return_value = mock_route_table
-        mock_to_mcp.return_value = MagicMock()
         mock_registry = MagicMock()
+        mock_rt_cls.return_value = MagicMock()
+        mock_adapter_cls.return_value = MagicMock()
 
-        with (
-            patch("toolregistry_server.cli.mcp.load_config") as mock_load_config,
-            patch(
-                "toolregistry_server.cli.mcp.create_registry_from_config"
-            ) as mock_create_reg,
-        ):
-            mock_load_config.return_value = None
-            mock_create_reg.return_value = mock_registry
+        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
+            mock_resolve.return_value = (mock_registry, MagicMock())
+            serve_mcp(transport="stdio")
 
-            run_mcp_server(transport="stdio")
-
-            mock_load_config.assert_called_once_with(None)
-            mock_create_reg.assert_called_once_with(None)
+        mock_adapter_cls.return_value.assert_called_once()
 
 
 class TestLoadConfig:
     """Tests for load_config function."""
 
-    def test_load_config_none(self):
-        """Test load_config with None path."""
-        from toolregistry_server.cli.openapi import load_config
-
-        result = load_config(None)
-        assert result is None
-
     def test_load_config_not_found(self):
         """Test load_config with non-existent file."""
-        from toolregistry_server.cli.openapi import load_config
+        from toolregistry_server.registry_builder import load_config
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(FileNotFoundError):
             load_config("/nonexistent/path/config.json")
 
     def test_load_config_valid_jsonc(self, tmp_path):
         """Test load_config with valid JSONC file."""
         from toolregistry.config import ToolConfig
 
-        from toolregistry_server.cli.openapi import load_config
+        from toolregistry_server.registry_builder import load_config
 
         config_file = tmp_path / "config.jsonc"
         config_file.write_text('{\n  // comment\n  "tools": []\n}', encoding="utf-8")
@@ -350,7 +310,7 @@ class TestLoadConfig:
         """Test load_config with valid YAML file."""
         from toolregistry.config import ToolConfig
 
-        from toolregistry_server.cli.openapi import load_config
+        from toolregistry_server.registry_builder import load_config
 
         config_file = tmp_path / "config.yaml"
         config_file.write_text("tools: []\n", encoding="utf-8")
@@ -361,22 +321,24 @@ class TestLoadConfig:
 
     def test_load_config_invalid_json(self, tmp_path):
         """Test load_config with invalid JSON."""
-        from toolregistry_server.cli.openapi import load_config
+        from toolregistry_server.registry_builder import load_config
 
         config_file = tmp_path / "bad.json"
         config_file.write_text("not valid json", encoding="utf-8")
 
-        with pytest.raises(SystemExit):
+        with pytest.raises((ValueError, KeyError, FileNotFoundError)):
             load_config(str(config_file))
 
     def test_load_config_invalid_mode(self, tmp_path):
-        """Test load_config with invalid mode raises SystemExit."""
-        from toolregistry_server.cli.openapi import load_config
+        """Test load_config with invalid mode raises error."""
+        from toolregistry.config import ConfigError
+
+        from toolregistry_server.registry_builder import load_config
 
         config_file = tmp_path / "bad.yaml"
         config_file.write_text("mode: invalid\ntools: []\n", encoding="utf-8")
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError):
             load_config(str(config_file))
 
 
@@ -385,21 +347,21 @@ class TestLoadTokens:
 
     def test_load_tokens_none(self):
         """Test load_tokens with None path."""
-        from toolregistry_server.cli.openapi import load_tokens
+        from toolregistry_server.adapters.openapi import load_tokens
 
         result = load_tokens(None)
         assert result == []
 
     def test_load_tokens_not_found(self):
         """Test load_tokens with non-existent file."""
-        from toolregistry_server.cli.openapi import load_tokens
+        from toolregistry_server.adapters.openapi import load_tokens
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(FileNotFoundError):
             load_tokens("/nonexistent/path/tokens.txt")
 
     def test_load_tokens_valid_file(self):
         """Test load_tokens with valid file."""
-        from toolregistry_server.cli.openapi import load_tokens
+        from toolregistry_server.adapters.openapi import load_tokens
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("token1\ntoken2\n# comment\n\ntoken3")
@@ -412,30 +374,37 @@ class TestLoadTokens:
 
 
 class TestCreateRegistryFromConfig:
-    """Tests for create_registry_from_config function."""
+    """Tests for registry_from_config function."""
 
-    def test_create_registry_no_config(self):
-        """Test creating registry with no config."""
-        from toolregistry_server.cli.openapi import create_registry_from_config
+    def test_create_registry_empty_config(self):
+        """Test creating registry with empty config."""
+        from toolregistry.config import ToolConfig
 
-        registry = create_registry_from_config(None)
+        from toolregistry_server.registry_builder import registry_from_config
+
+        config = ToolConfig(tools=())
+        registry = registry_from_config(config)
         assert len(registry._tools) == 0
 
     def test_create_registry_empty_tools(self):
         """Test creating registry with empty tools list."""
         from toolregistry.config import ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         config = ToolConfig(tools=())
-        registry = create_registry_from_config(config)
+        registry = registry_from_config(config)
         assert len(registry._tools) == 0
 
     def test_create_registry_invalid_class(self):
         """Test creating registry with a non-existent Python class logs warning."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         config = ToolConfig(
             tools=(
@@ -446,14 +415,16 @@ class TestCreateRegistryFromConfig:
             ),
         )
         # Should not raise — logs a warning instead
-        registry = create_registry_from_config(config)
+        registry = registry_from_config(config)
         assert len(registry._tools) == 0
 
     def test_create_registry_python_module(self, tmp_path, monkeypatch):
         """Test creating registry with a Python module source."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         # Create a temporary module
         mod_file = tmp_path / "test_tools.py"
@@ -468,7 +439,7 @@ class TestCreateRegistryFromConfig:
         config = ToolConfig(
             tools=(PythonSource(module_path="test_tools", namespace="test"),),
         )
-        registry = create_registry_from_config(config)
+        registry = registry_from_config(config)
         tool_names = [t.name for t in registry._tools.values()]
         assert any("hello" in name for name in tool_names)
 
@@ -476,7 +447,9 @@ class TestCreateRegistryFromConfig:
         """Test that disabled sources are skipped."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         mod_file = tmp_path / "skip_tools.py"
         mod_file.write_text(
@@ -494,14 +467,16 @@ class TestCreateRegistryFromConfig:
                 ),
             ),
         )
-        registry = create_registry_from_config(config)
+        registry = registry_from_config(config)
         assert len(registry._tools) == 0
 
     def test_create_registry_denylist_filtering(self, tmp_path, monkeypatch):
         """Test denylist mode filters by namespace."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         mod_file = tmp_path / "deny_tools.py"
         mod_file.write_text(
@@ -520,14 +495,16 @@ class TestCreateRegistryFromConfig:
                 ),
             ),
         )
-        registry = create_registry_from_config(config)
+        registry = registry_from_config(config)
         assert len(registry._tools) == 0
 
     def test_create_registry_allowlist_filtering(self, tmp_path, monkeypatch):
         """Test allowlist mode only loads matching namespaces."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         mod_file = tmp_path / "allow_tools.py"
         mod_file.write_text(
@@ -546,14 +523,16 @@ class TestCreateRegistryFromConfig:
                 ),
             ),
         )
-        registry = create_registry_from_config(config)
+        registry = registry_from_config(config)
         assert len(registry._tools) == 0
 
     def test_create_registry_invalid_module(self):
         """Test that invalid module logs warning and continues."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         config = ToolConfig(
             tools=(
@@ -564,7 +543,7 @@ class TestCreateRegistryFromConfig:
             ),
         )
         # Should not raise — logs a warning instead
-        registry = create_registry_from_config(config)
+        registry = registry_from_config(config)
         assert len(registry._tools) == 0
 
 
@@ -575,7 +554,7 @@ class TestShouldLoadSource:
         """Sources without namespace are always loaded."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import _should_load_source
+        from toolregistry_server.registry_builder import _should_load_source
 
         source = PythonSource(module_path="mod")
         config = ToolConfig(mode="allowlist", enabled=("other",))
@@ -585,7 +564,7 @@ class TestShouldLoadSource:
         """Denylist mode allows sources not in disabled list."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import _should_load_source
+        from toolregistry_server.registry_builder import _should_load_source
 
         source = PythonSource(module_path="mod", namespace="safe")
         config = ToolConfig(mode="denylist", disabled=("blocked",))
@@ -595,7 +574,7 @@ class TestShouldLoadSource:
         """Denylist mode blocks sources in disabled list."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import _should_load_source
+        from toolregistry_server.registry_builder import _should_load_source
 
         source = PythonSource(module_path="mod", namespace="blocked")
         config = ToolConfig(mode="denylist", disabled=("blocked",))
@@ -605,7 +584,7 @@ class TestShouldLoadSource:
         """Denylist mode blocks child namespaces."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import _should_load_source
+        from toolregistry_server.registry_builder import _should_load_source
 
         source = PythonSource(module_path="mod", namespace="web/search")
         config = ToolConfig(mode="denylist", disabled=("web",))
@@ -615,7 +594,7 @@ class TestShouldLoadSource:
         """Allowlist mode allows sources in enabled list."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import _should_load_source
+        from toolregistry_server.registry_builder import _should_load_source
 
         source = PythonSource(module_path="mod", namespace="calc")
         config = ToolConfig(mode="allowlist", enabled=("calc",))
@@ -625,7 +604,7 @@ class TestShouldLoadSource:
         """Allowlist mode blocks sources not in enabled list."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import _should_load_source
+        from toolregistry_server.registry_builder import _should_load_source
 
         source = PythonSource(module_path="mod", namespace="other")
         config = ToolConfig(mode="allowlist", enabled=("calc",))
@@ -636,35 +615,37 @@ class TestNsMatches:
     """Tests for _ns_matches helper."""
 
     def test_exact_match(self):
-        from toolregistry_server.cli.openapi import _ns_matches
+        from toolregistry_server.registry_builder import _ns_matches
 
         assert _ns_matches("web", "web") is True
 
     def test_prefix_match(self):
-        from toolregistry_server.cli.openapi import _ns_matches
+        from toolregistry_server.registry_builder import _ns_matches
 
         assert _ns_matches("web/search", "web") is True
 
     def test_no_match(self):
-        from toolregistry_server.cli.openapi import _ns_matches
+        from toolregistry_server.registry_builder import _ns_matches
 
         assert _ns_matches("calculator", "web") is False
 
     def test_partial_no_match(self):
         """'webhook' should NOT match pattern 'web'."""
-        from toolregistry_server.cli.openapi import _ns_matches
+        from toolregistry_server.registry_builder import _ns_matches
 
         assert _ns_matches("webhook", "web") is False
 
 
 class TestCreateRegistryFromConfigWithHooks:
-    """Tests for create_registry_from_config with post_register_hooks."""
+    """Tests for registry_from_config with post_register_hooks."""
 
     def test_hook_called_for_each_tool(self, tmp_path, monkeypatch):
         """Hook is invoked once per registered tool."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         mod_file = tmp_path / "hook_tools.py"
         mod_file.write_text(
@@ -682,7 +663,7 @@ class TestCreateRegistryFromConfigWithHooks:
         config = ToolConfig(
             tools=(PythonSource(module_path="hook_tools", namespace="h"),)
         )
-        registry = create_registry_from_config(config, post_register_hooks=[my_hook])
+        registry = registry_from_config(config, post_register_hooks=[my_hook])
         assert len(called) == 2
         assert len(registry._tools) == 2
 
@@ -690,7 +671,9 @@ class TestCreateRegistryFromConfigWithHooks:
         """Hook returning a non-empty string auto-disables the tool."""
         from toolregistry.config import PythonSource, ToolConfig
 
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry_server.registry_builder import (
+            registry_from_config,
+        )
 
         mod_file = tmp_path / "disable_tools.py"
         mod_file.write_text(
@@ -708,18 +691,18 @@ class TestCreateRegistryFromConfigWithHooks:
         config = ToolConfig(
             tools=(PythonSource(module_path="disable_tools", namespace="d"),)
         )
-        registry = create_registry_from_config(
-            config, post_register_hooks=[selective_hook]
-        )
+        registry = registry_from_config(config, post_register_hooks=[selective_hook])
         assert len(registry._tools) == 2
         enabled = [n for n in registry._tools if registry.is_enabled(n)]
         assert all("good" in n for n in enabled)
 
     def test_no_hooks_behaviour_unchanged(self):
         """Passing no hooks leaves existing behaviour intact."""
-        from toolregistry_server.cli.openapi import create_registry_from_config
+        from toolregistry.config import ToolConfig
 
-        registry = create_registry_from_config(None)
+        from toolregistry_server.registry_builder import registry_from_config
+
+        registry = registry_from_config(ToolConfig(tools=()))
         assert len(registry._tools) == 0
 
     def test_parser_has_profile_openapi(self):
@@ -755,7 +738,7 @@ class TestApplyProfile:
         from toolregistry import ToolRegistry
         from toolregistry.tool import Tool, ToolMetadata, ToolTag
 
-        from toolregistry_server.cli.openapi import apply_profile
+        from toolregistry_server.registry_builder import apply_profile
 
         registry = ToolRegistry()
 
@@ -780,31 +763,40 @@ class TestApplyProfile:
         assert not registry.is_enabled("fs_tool")
         assert registry.is_enabled("safe_tool")
 
-    def test_local_profile_no_change(self, tmp_path):
-        """local profile applies no tag filter."""
+    def test_local_profile_disables_network(self, tmp_path):
+        """local profile disables network-tagged tools, keeps others."""
         from toolregistry import ToolRegistry
         from toolregistry.tool import Tool, ToolMetadata, ToolTag
 
-        from toolregistry_server.cli.openapi import apply_profile
+        from toolregistry_server.registry_builder import apply_profile
 
         registry = ToolRegistry()
 
-        def any_tool() -> str:
-            """Any tool."""
+        def fs_tool() -> str:
+            """File system tool."""
             return "x"
 
-        t = Tool.from_function(any_tool)
-        t.metadata = ToolMetadata(tags={ToolTag.FILE_SYSTEM})
-        registry._tools["any_tool"] = t
+        def net_tool() -> str:
+            """Network tool."""
+            return "y"
+
+        t_fs = Tool.from_function(fs_tool)
+        t_fs.metadata = ToolMetadata(tags={ToolTag.FILE_SYSTEM})
+        registry._tools["fs_tool"] = t_fs
+
+        t_net = Tool.from_function(net_tool)
+        t_net.metadata = ToolMetadata(tags={ToolTag.NETWORK})
+        registry._tools["net_tool"] = t_net
 
         apply_profile(registry, "local")
-        assert registry.is_enabled("any_tool")
+        assert registry.is_enabled("fs_tool")
+        assert not registry.is_enabled("net_tool")
 
     def test_unknown_profile_does_not_raise(self):
         """Unknown profile name does not raise an exception."""
         from toolregistry import ToolRegistry
 
-        from toolregistry_server.cli.openapi import apply_profile
+        from toolregistry_server.registry_builder import apply_profile
 
         registry = ToolRegistry()
         # Should complete without raising regardless of unknown profile

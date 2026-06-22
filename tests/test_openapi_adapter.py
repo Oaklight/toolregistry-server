@@ -4,15 +4,15 @@ import pytest
 from toolregistry import ToolRegistry
 
 from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
-from toolregistry_server.openapi.adapter import (
+from toolregistry_server.adapters.openapi import create_openapi_app
+from toolregistry_server.adapters.openapi.adapter import (
     _resolve_type,
     _schema_to_pydantic,
     add_tools_endpoint,
     route_table_to_router,
     setup_dynamic_openapi,
 )
-from toolregistry_server.openapi.middleware import add_etag_middleware
+from toolregistry_server.adapters.openapi.middleware import add_etag_middleware
 
 # ============== Fixtures ==============
 
@@ -278,7 +278,7 @@ class TestDynamicOpenAPI:
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        from toolregistry_server.openapi.adapter import route_table_to_router
+        from toolregistry_server.adapters.openapi.adapter import route_table_to_router
 
         app = FastAPI()
         router = route_table_to_router(route_table)
