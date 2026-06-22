@@ -26,12 +26,11 @@ def multiply(a: float, b: float) -> float:
 
 ## Programmatic — OpenAPI Server
 
-Create a FastAPI app and run it with Uvicorn:
+Use `App.serve_openapi()` to start the server in one call:
 
 ```python title="examples/openapi_server.py"
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
+from toolregistry_server import App
 from tools import add, greet, multiply
 
 registry = ToolRegistry()
@@ -39,12 +38,8 @@ registry.register(add)
 registry.register(greet)
 registry.register(multiply)
 
-route_table = RouteTable(registry)
-app = create_openapi_app(route_table)
-
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
 ```
 
 ```bash
@@ -59,10 +54,8 @@ python openapi_server.py
 Expose the same tools via stdio for MCP-compatible clients:
 
 ```python title="examples/mcp_server.py"
-import asyncio
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server, run_stdio
+from toolregistry_server import App
 from tools import add, greet, multiply
 
 registry = ToolRegistry()
@@ -70,11 +63,29 @@ registry.register(add)
 registry.register(greet)
 registry.register(multiply)
 
-route_table = RouteTable(registry)
-server = create_mcp_server(route_table)
+if __name__ == "__main__":
+    App(registry=registry).serve_mcp(transport="stdio")
+```
+
+## Custom App Subclass
+
+Override `prepare_registry()` to inject a fully customised registry:
+
+```python title="examples/custom_app.py"
+from toolregistry import ToolRegistry
+from toolregistry_server import App
+from tools import add, greet, multiply
+
+class MyApp(App):
+    def prepare_registry(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(add)
+        registry.register(greet)
+        registry.register(multiply)
+        return registry
 
 if __name__ == "__main__":
-    asyncio.run(run_stdio(server))
+    MyApp().serve_openapi(host="0.0.0.0", port=8000)
 ```
 
 ## CLI with Config File
