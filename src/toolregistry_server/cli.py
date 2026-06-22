@@ -173,7 +173,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="Start OpenAPI (REST) server",
         description="Start an OpenAPI server exposing tools as REST endpoints",
     )
-    _add_openapi_arguments(openapi_parser)
+    add_openapi_arguments(openapi_parser)
 
     # MCP subcommand
     mcp_parser = subparsers.add_parser(
@@ -181,12 +181,12 @@ def create_parser() -> argparse.ArgumentParser:
         help="Start MCP server",
         description="Start an MCP server for LLM tool integration",
     )
-    _add_mcp_arguments(mcp_parser)
+    add_mcp_arguments(mcp_parser)
 
     return parser
 
 
-def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
+def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     """Add common arguments shared by all subcommands.
 
     Args:
@@ -205,13 +205,13 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
+def add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
     """Add OpenAPI-specific arguments to the parser.
 
     Args:
         parser: The ArgumentParser to add arguments to.
     """
-    _add_common_arguments(parser)
+    add_common_arguments(parser)
     parser.add_argument(
         "--host",
         type=str,
@@ -254,13 +254,13 @@ def _add_openapi_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
+def add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
     """Add MCP-specific arguments to the parser.
 
     Args:
         parser: The ArgumentParser to add arguments to.
     """
-    _add_common_arguments(parser)
+    add_common_arguments(parser)
     parser.add_argument(
         "--transport",
         type=str,
@@ -380,9 +380,12 @@ def main(args: list[str] | None = None) -> NoReturn | None:
 
 
 __all__ = [
-    "main",
-    "create_parser",
-    "print_banner",
-    "load_env_file",
     "DEFAULT_BANNER_ART",
+    "add_common_arguments",
+    "add_mcp_arguments",
+    "add_openapi_arguments",
+    "create_parser",
+    "load_env_file",
+    "main",
+    "print_banner",
 ]
