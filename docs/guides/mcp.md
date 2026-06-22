@@ -6,21 +6,30 @@ MCP 适配器通过 [模型上下文协议](https://modelcontextprotocol.io/) �
 
 适配器：
 
-- 注册 `list_tools` 和 `call_tool` MCP 处理程序
-- 支持多种传输机制（stdio、SSE、可流式 HTTP）
-- 在请求时从 `RouteTable` 读取数据，实现实时同步
+- 注册 `list_tools` 和 `call_tool` MCP 处理程序，在请求时从 `RouteTable` 读取，保持实时同步
+- 支持 stdio、SSE、Streamable HTTP 多种传输方式
 - 透明处理异步和同步工具
-- 将结果序列化为 JSON 兼容字符串
+- 提供阻塞式 (`run`) 和异步 (`run_async`) 两种入口
 
 ## 快速开始
 
-### 可流式 HTTP 传输（推荐）
+### 通过 `App`（推荐）
+
+```python
+from toolregistry_server.app import App
+
+# 从配置文件启动
+App().serve_mcp(config_path="tools.yaml", transport="stdio")
+App().serve_mcp(config_path="tools.yaml", transport="sse", host="0.0.0.0", port=8000)
+App().serve_mcp(config_path="tools.yaml", transport="http", host="0.0.0.0", port=8000)
+```
+
+### 直接使用 `MCPAdapter`
 
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server, run_streamable_http
-import asyncio
+from toolregistry_server.adapters.mcp import MCPAdapter
 
 registry = ToolRegistry()
 
@@ -30,55 +39,77 @@ def greet(name: str) -> str:
     return f"Hello, {name}!"
 
 route_table = RouteTable(registry)
-server = create_mcp_server(route_table)
+adapter = MCPAdapter(route_table)
 
-asyncio.run(run_streamable_http(server, host="0.0.0.0", port=8000))
+# 阻塞式运行（适合脚本 / CLI）
+adapter.run(transport="stdio")
+adapter.run(transport="sse", host="0.0.0.0", port=8000)
+adapter.run(transport="http", host="0.0.0.0", port=8000)
 ```
 
-### stdio 传输
+### 异步入口
 
-用于基于子进程的通信（Claude Desktop 等使用）：
+已在事件循环内时使用 `run_async`：
 
 ```python
-from toolregistry_server.mcp import create_mcp_server, run_stdio
 import asyncio
+from toolregistry_server.adapters.mcp import MCPAdapter
 
-server = create_mcp_server(route_table)
+adapter = MCPAdapter(route_table)
+asyncio.run(adapter.run_async(transport="sse", host="0.0.0.0", port=8000))
+
+# 或在已有事件循环中：
+await adapter.run_async(transport="stdio")
+```
+
+### 访问底层 MCP Server 实例
+
+```python
+from toolregistry_server.adapters.mcp import MCPAdapter, run_stdio
+
+adapter = MCPAdapter(route_table)
+server = adapter.server   # mcp.server.lowlevel.Server 实例
 asyncio.run(run_stdio(server))
-```
-
-### SSE 传输
-
-用于基于 HTTP 的 Server-Sent Events：
-
-```python
-from toolregistry_server.mcp import create_mcp_server, run_sse
-import asyncio
-
-server = create_mcp_server(route_table)
-asyncio.run(run_sse(server, host="0.0.0.0", port=8000))
 ```
 
 ## 传输方式比较
 
-| 传输方式 | 使用场景 | 协议 |
-|----------|----------|------|
-| **可流式 HTTP** | 生产环境 Web 部署 | HTTP |
-| **SSE** | 需要实时更新的 Web 客户端 | HTTP + SSE |
-| **stdio** | 子进程模型（Claude Desktop、IDE 插件） | stdin/stdout |
+| 传输方式 | 别名 | 使用场景 |
+|----------|------|----------|
+| `stdio` | — | 子进程模型（Claude Desktop、IDE 插件） |
+| `sse` | — | 基于 SSE 的 HTTP 客户端 |
+| `streamable-http` | `http` | 生产环境 HTTP 部署 |
+
+`http` 是 `streamable-http` 的别名，内部会自动归一化。
+
+## 认证（Streamable HTTP）
+
+通过 `tokens_path` 指定 Bearer token 文件，或设置 `API_BEARER_TOKEN` 环境变量（逗号分隔）：
+
+```python
+adapter.run(
+    transport="http",
+    host="0.0.0.0",
+    port=8000,
+    tokens_path="/etc/myapp/tokens.txt",
+)
+```
+
+```bash
+# CLI 等效写法
+toolregistry-server mcp --config tools.yaml --transport http --tokens tokens.txt
+```
 
 ## MCP 客户端配置
 
-### Claude Desktop
-
-添加到 Claude Desktop 配置中：
+### Claude Desktop（stdio）
 
 ```json
 {
   "mcpServers": {
     "my-tools": {
       "command": "toolregistry-server",
-      "args": ["mcp", "--config", "config.json"]
+      "args": ["mcp", "--config", "/path/to/tools.yaml"]
     }
   }
 }
@@ -86,15 +117,12 @@ asyncio.run(run_sse(server, host="0.0.0.0", port=8000))
 
 ### 基于 HTTP 的客户端
 
-连接到服务器 URL：
+连接到：
 
 ```
-http://localhost:8000/mcp
+http://localhost:8000/mcp       # streamable-http
+http://localhost:8000/sse       # SSE
 ```
-
-## 错误处理
-
-工具错误作为结构化 MCP 错误响应返回，包含适当的错误代码。
 
 ## API 参考
 
