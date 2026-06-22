@@ -93,7 +93,8 @@ def serve_openapi(
         tokens_path: Path to Bearer token file.
         reload: Enable uvicorn auto-reload.
     """
-    from .adapters.openapi import OpenAPIAdapter, load_tokens
+    from .adapters.openapi import OpenAPIAdapter
+    from .auth import load_tokens
     from .route_table import RouteTable
 
     registry, _ = _resolve_registry(config_path, registry, profile)

@@ -45,9 +45,12 @@ class Adapter(ABC):
         """Start the server.
 
         Args:
-            host: Host address to bind to.
-            port: Port number to bind to.
-            **kwargs: Protocol-specific options.
+            host: Host address to bind to.  Ignored by transports that
+                don't bind a network socket (e.g. MCP stdio).
+            port: Port number to bind to.  Ignored by transports that
+                don't bind a network socket (e.g. MCP stdio).
+            **kwargs: Protocol-specific options (e.g. ``transport``,
+                ``reload``).
         """
 
     def __call__(self, *, host: str = "127.0.0.1", port: int = 8000, **kwargs) -> None:

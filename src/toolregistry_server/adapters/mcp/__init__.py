@@ -26,7 +26,6 @@ Note:
 """
 
 import asyncio
-import os
 from typing import TYPE_CHECKING
 
 from ..._vendor.structlog import get_logger
@@ -131,43 +130,6 @@ async def run_streamable_http(
 
 
 # ---------------------------------------------------------------------------
-# Token collection
-# ---------------------------------------------------------------------------
-
-
-def _collect_bearer_tokens(tokens_path: str | None = None) -> set[str] | None:
-    """Collect Bearer tokens from env var and/or file.
-
-    Reads tokens from:
-    1. ``API_BEARER_TOKEN`` env var (single or comma-separated)
-    2. ``tokens_path`` file (one token per line)
-
-    Args:
-        tokens_path: Optional path to a tokens file.
-
-    Returns:
-        Set of tokens, or None if no tokens configured.
-    """
-    tokens: set[str] = set()
-
-    env_val = os.environ.get("API_BEARER_TOKEN", "").strip()
-    if env_val:
-        tokens.update(t.strip() for t in env_val.split(",") if t.strip())
-
-    if tokens_path:
-        try:
-            with open(tokens_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        tokens.add(line)
-        except OSError as e:
-            logger.error(f"Failed to read tokens file {tokens_path}: {e}")
-
-    return tokens if tokens else None
-
-
-# ---------------------------------------------------------------------------
 # Adapter class
 # ---------------------------------------------------------------------------
 
@@ -222,7 +184,9 @@ class MCPAdapter(Adapter):
             asyncio.run(run_sse(self._server, host=host, port=port))
         elif transport == "streamable-http":
             logger.info(f"HTTP endpoint: http://{host}:{port}/mcp")
-            valid_tokens = _collect_bearer_tokens(tokens_path)
+            from ...auth import load_tokens
+
+            valid_tokens = set(load_tokens(tokens_path)) or None
             asyncio.run(
                 run_streamable_http(
                     self._server,

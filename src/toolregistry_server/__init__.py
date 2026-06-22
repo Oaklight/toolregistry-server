@@ -27,6 +27,7 @@ Example:
 __version__ = "0.3.3"
 
 from .app import serve_mcp, serve_openapi
+from .auth import load_tokens
 from .registry_builder import (
     PROFILE_DISABLE_TAGS,
     apply_config,
@@ -49,6 +50,7 @@ __all__ = [
     "apply_config",
     "apply_profile",
     "load_config",
+    "load_tokens",
     "register_mcp_source",
     "register_openapi_source",
     "register_python_source",

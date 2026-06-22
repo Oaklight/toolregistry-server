@@ -347,21 +347,21 @@ class TestLoadTokens:
 
     def test_load_tokens_none(self):
         """Test load_tokens with None path."""
-        from toolregistry_server.adapters.openapi import load_tokens
+        from toolregistry_server.auth import load_tokens
 
         result = load_tokens(None)
         assert result == []
 
     def test_load_tokens_not_found(self):
         """Test load_tokens with non-existent file."""
-        from toolregistry_server.adapters.openapi import load_tokens
+        from toolregistry_server.auth import load_tokens
 
         with pytest.raises(FileNotFoundError):
             load_tokens("/nonexistent/path/tokens.txt")
 
     def test_load_tokens_valid_file(self):
         """Test load_tokens with valid file."""
-        from toolregistry_server.adapters.openapi import load_tokens
+        from toolregistry_server.auth import load_tokens
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("token1\ntoken2\n# comment\n\ntoken3")
