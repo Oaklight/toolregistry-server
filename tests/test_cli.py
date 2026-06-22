@@ -203,84 +203,48 @@ class TestMain:
         assert exc_info.value.code == 1
 
 
-class TestServeOpenAPI:
-    """Tests for app.serve_openapi."""
+class TestAppServe:
+    """Tests for App.serve / serve_openapi / serve_mcp."""
 
-    @patch("toolregistry_server.adapters.openapi.OpenAPIAdapter")
-    @patch("toolregistry_server.route_table.RouteTable")
-    def test_serve_with_registry_skips_config(self, mock_rt_cls, mock_adapter_cls):
-        """When registry is provided, config loading is bypassed."""
+    def test_serve_openapi_calls_adapter(self):
+        """serve_openapi calls OpenAPIAdapter.create_and_run."""
         from unittest.mock import MagicMock
 
-        from toolregistry_server.app import serve_openapi
+        from toolregistry_server.app import App
 
-        registry = MagicMock()
-        mock_rt_cls.return_value = MagicMock()
-        mock_adapter_cls.return_value = MagicMock()
-
-        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
-            mock_resolve.return_value = (registry, None)
-            serve_openapi(registry=registry, host="127.0.0.1", port=9001)
-
-        mock_adapter_cls.return_value.assert_called_once()
-
-    @patch("toolregistry_server.adapters.openapi.OpenAPIAdapter")
-    @patch("toolregistry_server.route_table.RouteTable")
-    def test_serve_without_registry_uses_config(self, mock_rt_cls, mock_adapter_cls):
-        """When no registry, config is loaded."""
-        from unittest.mock import MagicMock
-
-        from toolregistry_server.app import serve_openapi
-
+        app = App()
         mock_registry = MagicMock()
-        mock_rt_cls.return_value = MagicMock()
-        mock_adapter_cls.return_value = MagicMock()
+        app.prepare_registry = MagicMock(return_value=mock_registry)
 
-        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
-            mock_resolve.return_value = (mock_registry, MagicMock())
-            serve_openapi(host="127.0.0.1", port=9001)
+        with patch(
+            "toolregistry_server.adapters.openapi.OpenAPIAdapter.create_and_run"
+        ) as mock_run:
+            app.serve_openapi(host="127.0.0.1", port=9001, registry=mock_registry)
+            mock_run.assert_called_once()
 
-        mock_adapter_cls.return_value.assert_called_once()
-
-
-class TestServeMCP:
-    """Tests for app.serve_mcp."""
-
-    @patch("toolregistry_server.adapters.mcp.MCPAdapter")
-    @patch("toolregistry_server.route_table.RouteTable")
-    def test_serve_with_registry_skips_config(self, mock_rt_cls, mock_adapter_cls):
-        """When registry is provided, config loading is bypassed."""
+    def test_serve_mcp_calls_adapter(self):
+        """serve_mcp calls MCPAdapter.create_and_run."""
         from unittest.mock import MagicMock
 
-        from toolregistry_server.app import serve_mcp
+        from toolregistry_server.app import App
 
-        registry = MagicMock()
-        mock_rt_cls.return_value = MagicMock()
-        mock_adapter_cls.return_value = MagicMock()
-
-        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
-            mock_resolve.return_value = (registry, None)
-            serve_mcp(registry=registry, transport="stdio")
-
-        mock_adapter_cls.return_value.assert_called_once()
-
-    @patch("toolregistry_server.adapters.mcp.MCPAdapter")
-    @patch("toolregistry_server.route_table.RouteTable")
-    def test_serve_without_registry_uses_config(self, mock_rt_cls, mock_adapter_cls):
-        """When no registry, config is loaded."""
-        from unittest.mock import MagicMock
-
-        from toolregistry_server.app import serve_mcp
-
+        app = App()
         mock_registry = MagicMock()
-        mock_rt_cls.return_value = MagicMock()
-        mock_adapter_cls.return_value = MagicMock()
+        app.prepare_registry = MagicMock(return_value=mock_registry)
 
-        with patch("toolregistry_server.app._resolve_registry") as mock_resolve:
-            mock_resolve.return_value = (mock_registry, MagicMock())
-            serve_mcp(transport="stdio")
+        with patch(
+            "toolregistry_server.adapters.mcp.MCPAdapter.create_and_run"
+        ) as mock_run:
+            app.serve_mcp(transport="stdio", registry=mock_registry)
+            mock_run.assert_called_once()
 
-        mock_adapter_cls.return_value.assert_called_once()
+    def test_prepare_registry_requires_config_or_registry(self):
+        """prepare_registry raises ValueError without config_path or registry."""
+        from toolregistry_server.app import App
+
+        app = App()
+        with pytest.raises(ValueError, match="config_path.*registry"):
+            app.prepare_registry()
 
 
 class TestLoadConfig:

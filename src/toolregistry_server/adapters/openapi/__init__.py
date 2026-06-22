@@ -192,6 +192,28 @@ class OpenAPIAdapter(Adapter):
         logger.info(f"Registered {len(self._route_table.list_routes())} tool(s)")
         uvicorn.run(self._app, host=host, port=port, reload=reload)
 
+    @classmethod
+    def create_and_run(cls, route_table: RouteTable, **kwargs) -> None:
+        """Construct and run an OpenAPI server in one step.
+
+        Extracts ``tokens_path``, ``title``, ``version``, ``description``
+        from kwargs for adapter construction; passes ``host``, ``port``,
+        ``reload`` to :meth:`run`.
+        """
+        from ...auth import load_tokens
+
+        tokens = load_tokens(kwargs.pop("tokens_path", None))
+        adapter = cls(
+            route_table,
+            tokens=tokens or None,
+            title=kwargs.pop("title", "ToolRegistry Server"),
+            version=kwargs.pop("version", "1.0.0"),
+            description=kwargs.pop(
+                "description", "OpenAPI server for ToolRegistry tools"
+            ),
+        )
+        adapter.run(**kwargs)
+
 
 __all__ = [
     "OpenAPIAdapter",

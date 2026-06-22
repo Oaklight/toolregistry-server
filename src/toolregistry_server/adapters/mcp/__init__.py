@@ -229,6 +229,17 @@ class MCPAdapter(Adapter):
         else:
             raise ValueError(f"Unknown transport type: {transport}")
 
+    @classmethod
+    def create_and_run(cls, route_table: "RouteTable", **kwargs) -> None:
+        """Construct and run an MCP server in one step.
+
+        Extracts ``name`` from kwargs for adapter construction; passes
+        ``transport``, ``host``, ``port``, etc. to :meth:`run`.
+        """
+        name = kwargs.pop("name", "ToolRegistry-Server")
+        adapter = cls(route_table, name=name)
+        adapter.run(**kwargs)
+
 
 __all__ = [
     "MCPAdapter",
