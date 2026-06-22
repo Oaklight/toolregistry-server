@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), with project-specific grouping where useful.
 
+## [0.4.0] - 2026-06-22
+
+### Added
+
+- **`ServerIdentity` + `CLI` class**: downstream packages can now subclass `CLI` to build a fully-branded, customised command-line entry point without reimplementing argument parsing ([#39](https://github.com/Oaklight/toolregistry-server/pull/39)).
+- **`configure_subparsers()` hook**: `CLI.create_parser()` calls `configure_subparsers(subparsers)` after building the `openapi`/`mcp` subparsers, giving subclasses a clean way to add arguments without touching argparse private API ([#47](https://github.com/Oaklight/toolregistry-server/pull/47)).
+- **`run_cli()` reusable main loop**: a standalone `run_cli()` helper encapsulates the full parse-dispatch lifecycle so downstream can embed the CLI loop without subclassing.
+- **CLI argument builders as public API**: `OpenAPIAdapter.add_cli_arguments()` and `MCPAdapter.add_cli_arguments()` are now part of the public surface, enabling downstream CLIs to reuse the standard argument sets.
+- **Bearer token auth for Streamable HTTP transport**: the MCP adapter now enforces Bearer token authentication on the `streamable-http` transport, consistent with the existing SSE auth support.
+
+### Changed
+
+- **`App` class + `Adapter.create_and_run()`**: the `App` class is now the canonical entry point for programmatic use; `Adapter.create_and_run()` provides a single-call path for generic dispatch ([#42](https://github.com/Oaklight/toolregistry-server/pull/42)).
+- **Lazy-init default `App`**: module-level `serve_openapi` / `serve_mcp` convenience functions now create the default `App` instance on first call instead of at import time, avoiding a redundant instance when the CLI path is used ([#47](https://github.com/Oaklight/toolregistry-server/pull/47)).
+- **Refactored adapter and CLI internals**: banner logic extracted, CLI arguments moved into adapters, and `cli`/`auth` modules flattened for a cleaner package layout ([#42](https://github.com/Oaklight/toolregistry-server/pull/42)).
+
+### Fixed
+
+- Explicit list-to-set conversion for token collections, preventing silent de-duplication issues with ordered iterables.
+
 ## [0.3.3] - 2026-05-31
 
 ### Fixed
