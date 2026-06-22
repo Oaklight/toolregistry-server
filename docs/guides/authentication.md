@@ -1,54 +1,80 @@
 # Authentication
 
-`toolregistry-server` provides built-in Bearer token authentication for securing your OpenAPI endpoints.
+`toolregistry-server` provides built-in Bearer token authentication for both OpenAPI and MCP Streamable-HTTP endpoints.
 
 ## Overview
 
-The authentication module uses HTTP Bearer token authentication via FastAPI's dependency injection system. It supports:
+The authentication module supports:
 
-- Multiple tokens
-- Runtime token management (add/remove tokens)
-- Dynamic enable/disable without server restart
+- Multiple tokens loaded from a file
+- Bearer token validation on all incoming requests
+- Runtime token management (add/remove tokens without restart)
+- Dynamic enable/disable
 
 ## Setting Up Authentication
 
-### Via Code
+### Via Code — `App`-based (recommended)
+
+Load tokens from a file using `auth.load_tokens()` and pass them to `App`:
 
 ```python
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
-from toolregistry_server.auth import BearerTokenAuth, create_bearer_dependency
+from toolregistry_server import App
+from toolregistry_server.auth import load_tokens
 
-# Setup registry and route table
 registry = ToolRegistry()
-route_table = RouteTable(registry)
+registry.register(my_tool)
 
-# Create auth with tokens
-auth = BearerTokenAuth(tokens=["my-secret-token", "another-token"])
-bearer_dep = create_bearer_dependency(auth)
-
-# Create app with authentication
-app = create_openapi_app(route_table, dependencies=[bearer_dep])
+tokens = load_tokens("tokens.txt")   # one token per line, # comments ignored
+App(registry=registry, tokens=tokens).serve_openapi(host="0.0.0.0", port=8000)
 ```
 
-### Via CLI
+The same pattern works for MCP Streamable-HTTP:
+
+```python
+App(registry=registry, tokens=tokens).serve_mcp(
+    transport="streamable-http", host="0.0.0.0", port=8000
+)
+```
+
+Pass tokens inline without a file:
+
+```python
+App(registry=registry, tokens=["token-one", "token-two"]).serve_openapi()
+```
+
+### Via CLI — `--tokens` flag
 
 ```bash
-# Single token
-toolregistry-server openapi --config config.json --auth-token "your-secret-token"
+# OpenAPI server with token file
+toolregistry-server openapi --config config.json --tokens tokens.txt
 
-# Token file (one token per line)
-toolregistry-server openapi --config config.json --auth-tokens-file tokens.txt
+# MCP streamable-http server with token file
+toolregistry-server mcp --config config.json --transport streamable-http --tokens tokens.txt
 ```
 
-Token file format:
+Token file format (one token per line; lines starting with `#` are ignored):
 
 ```
+# My API tokens
 token-one
 token-two
 token-three
 ```
+
+## MCP Streamable-HTTP Bearer Auth (new in v0.4.0)
+
+Bearer token authentication is now supported for the MCP Streamable-HTTP transport, in addition to OpenAPI. Use the same `--tokens` flag or `App(tokens=...)` API — no extra configuration required.
+
+```bash
+toolregistry-server mcp \
+  --config config.json \
+  --transport streamable-http \
+  --port 8000 \
+  --tokens tokens.txt
+```
+
+Clients connect with a standard `Authorization: Bearer <token>` header.
 
 ## Making Authenticated Requests
 
@@ -61,11 +87,13 @@ curl -X POST http://localhost:8000/calculator/evaluate \
   -d '{"expression": "2 + 3"}'
 ```
 
-## Runtime Token Management
+## Runtime Token Management (Advanced)
 
-The `BearerTokenAuth` class supports runtime token management:
+The underlying `BearerTokenAuth` class supports runtime token management without restarting the server. This is useful for advanced scenarios where tokens need to be rotated dynamically:
 
 ```python
+from toolregistry_server.auth import BearerTokenAuth
+
 auth = BearerTokenAuth(tokens=["initial-token"])
 
 # Add a new token
