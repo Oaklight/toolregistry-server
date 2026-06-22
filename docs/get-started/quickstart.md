@@ -1,114 +1,107 @@
-# 快速开始
+# 快速入门
 
-本指南将引导您使用 `toolregistry-server` 将工具暴露为服务的基本用法。
+本指南带您了解使用 `toolregistry-server` v0.4.0 API 将工具发布为服务的基本用法。
 
-## 使用 RouteTable
+## 编程方式：OpenAPI 服务器
 
-`RouteTable` 是中央路由层，桥接 `ToolRegistry` 和协议适配器。
-
-```python
-from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-
-# 创建注册表并注册工具
-registry = ToolRegistry()
-
-@registry.register
-def greet(name: str) -> str:
-    """按名称问候某人。"""
-    return f"Hello, {name}!"
-
-@registry.register
-def add(a: float, b: float) -> float:
-    """两数相加。"""
-    return a + b
-
-# 创建路由表
-route_table = RouteTable(registry)
-
-# 列出所有路由
-for route in route_table.list_routes():
-    print(f"{route.path} -> {route.tool_name}")
-```
-
-## 创建 OpenAPI 服务器
-
-使用 FastAPI 将工具暴露为 RESTful HTTP 端点：
+使用 `App` 类将工具以 RESTful HTTP 端点的形式发布：
 
 ```python
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
+from toolregistry_server import App
 
-# 设置注册表和路由表
-registry = ToolRegistry()
+class MyApp(App):
+    def prepare_registry(self):
+        registry = ToolRegistry()
 
-@registry.register
-def greet(name: str) -> str:
-    """按名称问候某人。"""
-    return f"Hello, {name}!"
+        @registry.register
+        def greet(name: str) -> str:
+            """按名字问候某人。"""
+            return f"你好，{name}！"
 
-route_table = RouteTable(registry)
+        @registry.register
+        def add(a: float, b: float) -> float:
+            """将两个数字相加。"""
+            return a + b
 
-# 创建 FastAPI 应用
-app = create_openapi_app(route_table)
+        self.registry = registry
 
-# 使用 uvicorn 运行
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    MyApp().serve_openapi(host="0.0.0.0", port=8000)
 ```
 
 您的工具现在可以通过 `http://localhost:8000/` 的 POST 端点访问。
 
-## 创建 MCP 服务器
-
-通过模型上下文协议暴露工具，用于 LLM 集成：
+无需继承子类的简洁写法：
 
 ```python
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server, run_streamable_http
+from toolregistry_server import App
 
-# 设置注册表和路由表
+registry = ToolRegistry()
+registry.register(my_tool)
+
+App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
+```
+
+## 编程方式：MCP 服务器
+
+使用 `App.serve_mcp()` 通过模型上下文协议（MCP）发布工具：
+
+```python
+from toolregistry import ToolRegistry
+from toolregistry_server import App
+
 registry = ToolRegistry()
 
 @registry.register
 def greet(name: str) -> str:
-    """按名称问候某人。"""
-    return f"Hello, {name}!"
-
-route_table = RouteTable(registry)
-
-# 创建并运行 MCP 服务器
-server = create_mcp_server(route_table)
+    """按名字问候某人。"""
+    return f"你好，{name}！"
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_streamable_http(server, host="0.0.0.0", port=8000))
+    # stdio 传输（默认，适用于 Claude Desktop 等）
+    App(registry=registry).serve_mcp()
+
+    # 或使用 streamable-http 传输
+    # App(registry=registry).serve_mcp(transport="streamable-http", host="0.0.0.0", port=8000)
+```
+
+使用底层适配器的一步调用方式：
+
+```python
+from toolregistry_server.adapters.mcp import MCPAdapter
+
+MCPAdapter.create_and_run(registry=registry, transport="stdio")
 ```
 
 ## 使用命令行工具
 
-无需编写代码即可启动服务器的最快方式：
+无需编写代码即可快速启动服务器：
 
 ```bash
 # 启动 OpenAPI 服务器
 toolregistry-server openapi --config config.json --port 8000
 
-# 启动 MCP 服务器（stdio 传输）
+# 启动 MCP 服务器（stdio 传输，默认）
 toolregistry-server mcp --config config.json
 
-# 启动 MCP 服务器（可流式 HTTP 传输）
+# 启动 MCP 服务器（streamable-http 传输）
 toolregistry-server mcp --config config.json --transport streamable-http --port 8000
+
+# 启动 MCP 服务器（SSE 传输）
+toolregistry-server mcp --config config.json --transport sse --port 8000
+
+# 带 Bearer Token 认证
+toolregistry-server openapi --config config.json --tokens tokens.txt
 ```
 
-参见 [命令行工具参考](../reference/cli/) 和 [配置指南](../guides/configuration.md) 了解配置文件格式的详细信息。
+有关配置文件格式和所有可用参数的详细说明，请参阅 [CLI 参考](../reference/cli/) 和 [配置指南](../guides/configuration.md)。
 
-## 下一步
+## 后续步骤
 
-- [示例](../examples/) - 可运行的脚本和配置片段
-- [配置](../guides/configuration.md) - 了解 JSON/JSONC 配置文件
-- [认证](../guides/authentication.md) - 设置 Bearer 令牌认证
-- [OpenAPI 适配器](../guides/openapi.md) - 深入了解 REST API 适配器
-- [MCP 适配器](../guides/mcp.md) - 深入了解 MCP 适配器
+- [示例](../examples/) — 可运行的脚本和配置片段
+- [配置](../guides/configuration.md) — 了解 JSON/JSONC 配置文件
+- [认证](../guides/authentication.md) — 配置 Bearer Token 认证
+- [OpenAPI 适配器](../guides/openapi.md) — REST API 适配器深度解析
+- [MCP 适配器](../guides/mcp.md) — MCP 适配器深度解析
