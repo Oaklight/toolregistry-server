@@ -26,12 +26,11 @@ def multiply(a: float, b: float) -> float:
 
 ## 编程方式 — OpenAPI 服务器
 
-创建 FastAPI 应用并通过 Uvicorn 运行：
+使用 `App.serve_openapi()` 一行启动服务器：
 
 ```python title="examples/openapi_server.py"
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.openapi import create_openapi_app
+from toolregistry_server import App
 from tools import add, greet, multiply
 
 registry = ToolRegistry()
@@ -39,12 +38,8 @@ registry.register(add)
 registry.register(greet)
 registry.register(multiply)
 
-route_table = RouteTable(registry)
-app = create_openapi_app(route_table)
-
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
 ```
 
 ```bash
@@ -59,10 +54,8 @@ python openapi_server.py
 通过 stdio 暴露相同的工具，供 MCP 兼容客户端使用：
 
 ```python title="examples/mcp_server.py"
-import asyncio
 from toolregistry import ToolRegistry
-from toolregistry_server import RouteTable
-from toolregistry_server.mcp import create_mcp_server, run_stdio
+from toolregistry_server import App
 from tools import add, greet, multiply
 
 registry = ToolRegistry()
@@ -70,11 +63,29 @@ registry.register(add)
 registry.register(greet)
 registry.register(multiply)
 
-route_table = RouteTable(registry)
-server = create_mcp_server(route_table)
+if __name__ == "__main__":
+    App(registry=registry).serve_mcp(transport="stdio")
+```
+
+## 自定义 App 子类
+
+重写 `prepare_registry()` 以注入完全自定义的注册表：
+
+```python title="examples/custom_app.py"
+from toolregistry import ToolRegistry
+from toolregistry_server import App
+from tools import add, greet, multiply
+
+class MyApp(App):
+    def prepare_registry(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(add)
+        registry.register(greet)
+        registry.register(multiply)
+        return registry
 
 if __name__ == "__main__":
-    asyncio.run(run_stdio(server))
+    MyApp().serve_openapi(host="0.0.0.0", port=8000)
 ```
 
 ## CLI 配置文件方式
