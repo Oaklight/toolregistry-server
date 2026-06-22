@@ -4,6 +4,26 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并在需要时保留项目自身的分类方式。
 
+## [0.4.0] - 2026-06-22
+
+### 新增
+
+- **`ServerIdentity` + `CLI` 类**：下游包现可通过子类化 `CLI` 构建完全自定义的命令行入口，无需重新实现参数解析逻辑（[#39](https://github.com/Oaklight/toolregistry-server/pull/39)）。
+- **`configure_subparsers()` 钩子**：`CLI.create_parser()` 在构建 `openapi`/`mcp` 子命令后调用 `configure_subparsers(subparsers)`，为子类提供干净的扩展点，无需访问 argparse 私有 API（[#47](https://github.com/Oaklight/toolregistry-server/pull/47)）。
+- **`run_cli()` 可复用主循环**：独立的 `run_cli()` 辅助函数封装了完整的解析-分发生命周期，下游可直接嵌入 CLI 循环而无需子类化。
+- **CLI 参数构建器作为公开 API**：`OpenAPIAdapter.add_cli_arguments()` 和 `MCPAdapter.add_cli_arguments()` 现已纳入公开接口，下游 CLI 可直接复用标准参数集。
+- **Streamable HTTP 传输的 Bearer 令牌认证**：MCP 适配器现对 `streamable-http` 传输强制执行 Bearer 令牌认证，与既有的 SSE 认证行为保持一致。
+
+### 变更
+
+- **`App` 类 + `Adapter.create_and_run()`**：`App` 类现为编程使用的标准入口；`Adapter.create_and_run()` 提供单次调用的通用分发路径（[#42](https://github.com/Oaklight/toolregistry-server/pull/42)）。
+- **默认 `App` 延迟初始化**：模块级 `serve_openapi` / `serve_mcp` 便捷函数现在首次调用时才创建默认 `App` 实例，避免仅使用 CLI 路径时产生冗余实例（[#47](https://github.com/Oaklight/toolregistry-server/pull/47)）。
+- **适配器与 CLI 内部重构**：Banner 逻辑已提取，CLI 参数移入各适配器，`cli`/`auth` 模块结构扁平化，包布局更整洁（[#42](https://github.com/Oaklight/toolregistry-server/pull/42)）。
+
+### 修复
+
+- 对令牌集合进行显式的 list-to-set 转换，避免有序可迭代对象静默去重导致的问题。
+
 ## [0.3.3] - 2026-05-31
 
 ### 修复
