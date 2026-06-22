@@ -4,18 +4,50 @@ Provides :class:`App` — the programmatic entry point for running
 servers.  Downstream packages subclass it to customize registry
 construction.
 
-Example — standalone::
+Design
+------
 
+``App`` is intentionally adapter-agnostic.  The core method is
+``serve(adapter_cls, **kwargs)`` which:
+
+1. Calls ``self.prepare_registry(**kwargs)`` to build a registry
+2. Wraps it in a ``RouteTable``
+3. Delegates to ``adapter_cls.create_and_run(route_table, **kwargs)``
+
+``serve_openapi`` / ``serve_mcp`` are convenience wrappers that
+bind a specific adapter class.  They exist so that end users don't
+need to import adapter classes for the common case::
+
+    # Quick start — no adapter import needed:
     from toolregistry_server import serve_openapi
-    serve_openapi(config_path="tools.yaml", host="0.0.0.0", port=8000)
+    serve_openapi(config_path="tools.yaml")
 
-Example — subclass (e.g. Hub)::
-
+    # Equivalent explicit form:
     from toolregistry_server.app import App
+    from toolregistry_server.adapters.openapi import OpenAPIAdapter
+    App().serve(OpenAPIAdapter, config_path="tools.yaml")
+
+Adding a new adapter
+~~~~~~~~~~~~~~~~~~~~
+
+When adding a new adapter (e.g. gRPC), no changes are needed in
+``App`` — just implement the adapter with ``create_and_run`` and
+call ``app.serve(GRPCAdapter, ...)``.  Optionally add a
+``serve_grpc`` convenience wrapper on ``App`` and a module-level
+shortcut.
+
+Subclassing
+~~~~~~~~~~~
+
+Override ``prepare_registry`` to customize how the registry is
+built (e.g. built-in tools, hooks, admin panel)::
 
     class HubApp(App):
         def prepare_registry(self, **kwargs):
-            return build_hub_registry(...)
+            registry = build_hub_registry(...)
+            if kwargs.get("admin_port"):
+                registry.enable_admin(port=kwargs["admin_port"])
+            return registry
 
     app = HubApp()
     app.serve_mcp(transport="stdio")

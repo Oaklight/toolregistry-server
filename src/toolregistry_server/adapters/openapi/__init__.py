@@ -192,6 +192,34 @@ class OpenAPIAdapter(Adapter):
         logger.info(f"Registered {len(self._route_table.list_routes())} tool(s)")
         uvicorn.run(self._app, host=host, port=port, reload=reload)
 
+    @staticmethod
+    def add_cli_arguments(parser) -> None:
+        """Add OpenAPI-specific CLI arguments."""
+        Adapter.add_cli_arguments(parser)
+        parser.add_argument(
+            "--host",
+            type=str,
+            default="0.0.0.0",
+            help="Host to bind the server to (default: 0.0.0.0)",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            default=8000,
+            help="Port to bind the server to (default: 8000)",
+        )
+        parser.add_argument(
+            "--tokens",
+            type=str,
+            default=None,
+            help="Path to a file containing authentication tokens (one per line)",
+        )
+        parser.add_argument(
+            "--reload",
+            action="store_true",
+            help="Enable auto-reload for development mode",
+        )
+
     @classmethod
     def create_and_run(cls, route_table: RouteTable, **kwargs) -> None:
         """Construct and run an OpenAPI server in one step.
