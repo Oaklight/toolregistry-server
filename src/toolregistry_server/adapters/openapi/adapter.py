@@ -187,6 +187,13 @@ def _add_route_from_entry(
     """
     from fastapi import HTTPException
 
+    def _wrap_tool_error(tname: str, e: Exception) -> HTTPException:
+        """Convert an unhandled tool exception into a structured HTTP 500."""
+        return HTTPException(
+            status_code=500,
+            detail=f"Tool '{tname}' execution failed: {e}",
+        )
+
     # Determine request model from parameters schema
     model_name = f"{route.tool_name.replace('-', '_').title().replace('_', '')}Request"
     request_model = _schema_to_pydantic(model_name, route.parameters_schema)
@@ -222,7 +229,12 @@ def _add_route_from_entry(
                         detail=f"Tool '{tname}' is currently disabled",
                     )
                 arguments = _coerce_arguments(data.model_dump(), current_route)
-                return await h(**arguments)
+                try:
+                    return await h(**arguments)
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    raise _wrap_tool_error(tname, e) from e
 
             # Patch annotations so FastAPI/Pydantic sees the concrete model
             _endpoint.__annotations__["data"] = model
@@ -252,7 +264,12 @@ def _add_route_from_entry(
                         detail=f"Tool '{tname}' is currently disabled",
                     )
                 arguments = _coerce_arguments(data.model_dump(), current_route)
-                return h(**arguments)
+                try:
+                    return h(**arguments)
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    raise _wrap_tool_error(tname, e) from e
 
             # Patch annotations so FastAPI/Pydantic sees the concrete model
             _endpoint.__annotations__["data"] = model

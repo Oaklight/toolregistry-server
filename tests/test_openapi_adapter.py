@@ -515,6 +515,44 @@ class TestAddToolsEndpoint:
         assert "tools" in response.json()
 
 
+class TestToolExecutionErrorHandling:
+    """Tests for tool execution error handling in OpenAPI endpoints."""
+
+    def test_sync_tool_exception_returns_500(self, route_table: RouteTable):
+        """Sync tool that raises should return structured 500."""
+        from fastapi.testclient import TestClient
+
+        def fail_sync() -> str:
+            raise RuntimeError("boom")
+
+        route_table._registry.register(fail_sync, name="fail_sync")
+        route_table._rebuild()
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.post("/tools/default/fail_sync", json={})
+        assert response.status_code == 500
+        assert "boom" in response.json()["detail"]
+
+    def test_async_tool_exception_returns_500(self, route_table: RouteTable):
+        """Async tool that raises should return structured 500."""
+        from fastapi.testclient import TestClient
+
+        async def fail_async() -> str:
+            raise ValueError("async boom")
+
+        route_table._registry.register(fail_async, name="fail_async")
+        route_table._rebuild()
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.post("/tools/default/fail_async", json={})
+        assert response.status_code == 500
+        assert "async boom" in response.json()["detail"]
+
+
 class TestAddETagMiddleware:
     """Tests for add_etag_middleware function."""
 
