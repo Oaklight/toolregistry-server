@@ -261,7 +261,7 @@ async def run_streamable_http(
         # Starlette middleware: extract Bearer token from every request
         middleware = [
             Middleware(
-                AuthenticationMiddleware,  # ty: ignore[invalid-argument-type]
+                AuthenticationMiddleware,
                 backend=BearerAuthBackend(token_verifier),
             ),
         ]

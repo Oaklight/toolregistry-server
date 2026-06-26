@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies for ty
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[all,dev]"
 
       - name: Run pre-commit checks
         uses: pre-commit/action@v3.0.1
