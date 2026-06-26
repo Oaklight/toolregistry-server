@@ -43,9 +43,9 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "httpx>=0.24.0",
-    "ruff>=0.1.0",
-    "ty>=0.0.21",
-    "complexipy>=4.2.0",
+    "ruff==0.15.20",
+    "ty==0.0.54",
+    "complexipy==5.6.1",
     "build>=1.2.0",
     "twine>=6.1.0",
 ]
