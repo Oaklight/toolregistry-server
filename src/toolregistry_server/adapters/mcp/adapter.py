@@ -5,6 +5,7 @@ ensuring tool enable/disable state is always read directly from the route table
 at request time (no drift).
 """
 
+import inspect
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -143,10 +144,16 @@ async def _execute_tool(
     if session_ctx and should_inject_session(handler):
         arguments = {**arguments, "_session": session_ctx}
 
-    # Execute the tool handler
+    # Execute the tool handler.
+    # Always check for awaitable results: _FunctionToolWrapper.__call__
+    # returns a coroutine when a running event loop is detected, even for
+    # sync functions (is_async=False).
     if route.is_async:
         return await handler(**arguments)
-    return handler(**arguments)
+    result = handler(**arguments)
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 def route_table_to_mcp_server(

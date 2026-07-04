@@ -111,6 +111,11 @@ def should_inject_session(fn: Callable) -> bool:
     present it must be (or contain the string) ``SessionContext``; an
     untyped ``_session`` parameter also matches.
 
+    When *fn* is a ``BaseToolWrapper`` (e.g. ``_FunctionToolWrapper``),
+    the check is performed against the underlying function (``fn.fn``)
+    so that the wrapper's generic ``(*args, **kwargs)`` signature does
+    not hide the real parameter list.
+
     Args:
         fn: The callable to inspect.
 
@@ -118,8 +123,10 @@ def should_inject_session(fn: Callable) -> bool:
         ``True`` if the function accepts a ``_session`` parameter
         compatible with :class:`SessionContext`.
     """
+    # Unwrap BaseToolWrapper to inspect the real function signature.
+    target: Callable = getattr(fn, "fn", fn)
     try:
-        sig = inspect.signature(fn)
+        sig = inspect.signature(target)
         if "_session" not in sig.parameters:
             return False
         param = sig.parameters["_session"]
