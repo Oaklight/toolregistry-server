@@ -1,13 +1,17 @@
 # MCP 模块
 
+## MCPAdapter
+
+::: toolregistry_server.adapters.mcp.MCPAdapter
+
 ## 服务器工厂
 
-::: toolregistry_server.mcp.create_mcp_server
-
-## 适配器
-
-::: toolregistry_server.mcp.adapter
+::: toolregistry_server.adapters.mcp.route_table_to_mcp_server
 
 ## 传输运行器
 
-::: toolregistry_server.mcp.server
+::: toolregistry_server.adapters.mcp.run_stdio
+
+::: toolregistry_server.adapters.mcp.run_sse
+
+::: toolregistry_server.adapters.mcp.run_streamable_http

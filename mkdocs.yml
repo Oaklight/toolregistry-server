@@ -90,6 +90,9 @@ plugins:
           - reference/cli/index.md
           - reference/adapters.md
           - reference/api/index.md
+          - reference/api/app.md
+          - reference/api/cli.md
+          - reference/api/server_identity.md
           - reference/api/core/route_table.md
           - reference/api/openapi.md
           - reference/api/mcp.md
@@ -147,6 +150,9 @@ nav:
       - 协议适配器: reference/adapters.md
       - API 参考:
           - reference/api/index.md
+          - App: reference/api/app.md
+          - CLI: reference/api/cli.md
+          - ServerIdentity: reference/api/server_identity.md
           - RouteTable & RouteEntry: reference/api/core/route_table.md
           - OpenAPI 模块: reference/api/openapi.md
           - MCP 模块: reference/api/mcp.md
