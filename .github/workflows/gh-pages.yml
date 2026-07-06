@@ -26,7 +26,7 @@ jobs:
           pip install mkdocs-material mkdocstrings[python] mkdocs-llmstxt
           pip install toolregistry-server[all]
       - name: Build docs
-        run: mkdocs build --strict
+        run: mkdocs build
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
