@@ -1,7 +1,7 @@
 site_name: ToolRegistry Server
 site_description: 通过 OpenAPI 和 MCP 为函数调用 LLM 提供自定义工具服务
 site_author: Peng Ding
-site_url: https://toolregistry-server.readthedocs.io/zh-cn/latest
+site_url: https://oaklight.github.io/toolregistry-server/
 repo_name: Oaklight/toolregistry-server
 repo_url: https://github.com/Oaklight/toolregistry-server
 copyright: Copyright &copy; 2026 Peng Ding
@@ -75,7 +75,7 @@ plugins:
       sections:
         首页:
           - index.md
-        快速上手:
+        快速开始:
           - get-started/installation.md
           - get-started/quickstart.md
         指南:
@@ -129,19 +129,11 @@ extra:
       link: https://github.com/Oaklight/toolregistry-server
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/toolregistry-server/
-  alternate:
-    - name: English
-      link: /en/latest/
-      lang: en
-    - name: 中文
-      link: /zh-cn/latest/
-      lang: zh
-
 nav:
   - 首页: index.md
-  - 快速上手:
+  - 快速开始:
       - 安装: get-started/installation.md
-      - 快速开始: get-started/quickstart.md
+      - 快速入门: get-started/quickstart.md
   - 指南:
       - 配置: guides/configuration.md
       - 认证: guides/authentication.md
