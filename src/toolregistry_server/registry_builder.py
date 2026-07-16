@@ -175,6 +175,7 @@ def register_mcp_source(
         transport,
         namespace=ns,
         persistent=source.persistent,
+        headers=source.headers,
     )
     logger.info(f"Loaded MCP tools from {source.url or ' '.join(source.command or [])}")
 
