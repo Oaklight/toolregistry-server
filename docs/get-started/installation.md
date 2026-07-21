@@ -12,6 +12,9 @@ pip install toolregistry-server
 
 ## 协议支持
 
+!!! tip
+    **zsh 用户**（macOS 默认 shell）：需要用引号包裹包名，例如 `pip install 'toolregistry-server[openapi]'` — zsh 会将 `[]` 解释为通配符。
+
 ### OpenAPI 支持
 
 将工具暴露为使用 FastAPI 的 RESTful HTTP 端点：
