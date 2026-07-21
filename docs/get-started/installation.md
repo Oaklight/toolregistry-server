@@ -12,6 +12,9 @@ This installs the core routing layer (`RouteTable`, `RouteEntry`) without any pr
 
 ## With Protocol Support
 
+!!! tip
+    **zsh users** (default on macOS): wrap the package name in quotes, e.g. `pip install 'toolregistry-server[openapi]'` — zsh treats `[]` as glob patterns.
+
 ### OpenAPI Support
 
 For exposing tools as RESTful HTTP endpoints with FastAPI:
