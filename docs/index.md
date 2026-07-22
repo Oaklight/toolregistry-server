@@ -25,15 +25,43 @@ hide:
 </div>
 </section>
 
-## What is toolregistry-server?
+## Pick Your Path
 
-`toolregistry-server` is the **serving layer** in the [ToolRegistry ecosystem](ecosystem.md). It takes a `ToolRegistry` full of Python functions and exposes them as network services — REST APIs via OpenAPI, or LLM tool interfaces via the Model Context Protocol (MCP).
+<div class="grid cards" markdown>
 
-```
-toolregistry (core)         → define & manage tools
-toolregistry-server (this)  → serve tools over OpenAPI & MCP
-toolregistry-hub (extras)   → curated, ready-to-use tools
-```
+-   :material-api:{ .lg .middle } **OpenAPI Adapter**
+
+    ---
+
+    Serve tools as RESTful HTTP endpoints with automatic schema generation.
+
+    [:octicons-arrow-right-24: OpenAPI Guide](guides/openapi.md)
+
+-   :material-robot:{ .lg .middle } **MCP Adapter**
+
+    ---
+
+    Expose tools via the Model Context Protocol for LLM integration.
+
+    [:octicons-arrow-right-24: MCP Guide](guides/mcp.md)
+
+-   :material-cog:{ .lg .middle } **Configuration**
+
+    ---
+
+    Authentication, routing, and runtime options for production deployments.
+
+    [:octicons-arrow-right-24: Configuration](guides/configuration.md)
+
+-   :material-puzzle-edit:{ .lg .middle } **Extend & Customize**
+
+    ---
+
+    Subclass `App` and `CLI` to build your own branded tool server.
+
+    [:octicons-arrow-right-24: Extending](guides/extending.md)
+
+</div>
 
 ## Quick Start
 
