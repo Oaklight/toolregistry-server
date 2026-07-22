@@ -25,15 +25,43 @@ hide:
 </div>
 </section>
 
-## toolregistry-server 是什么？
+## 选择你的路径
 
-`toolregistry-server` 是 [ToolRegistry 生态系统](ecosystem.md)中的**服务层**。它将包含 Python 函数的 `ToolRegistry` 暴露为网络服务——通过 OpenAPI 提供 REST API，或通过 Model Context Protocol (MCP) 提供 LLM 工具接口。
+<div class="grid cards" markdown>
 
-```
-toolregistry（核心）          → 定义和管理工具
-toolregistry-server（本项目） → 通过 OpenAPI 和 MCP 提供工具服务
-toolregistry-hub（扩展）      → 精选的即用型工具集合
-```
+-   :material-api:{ .lg .middle } **OpenAPI 适配器**
+
+    ---
+
+    将工具作为 RESTful HTTP 端点提供服务，自动生成 schema。
+
+    [:octicons-arrow-right-24: OpenAPI 指南](guides/openapi.md)
+
+-   :material-robot:{ .lg .middle } **MCP 适配器**
+
+    ---
+
+    通过 Model Context Protocol 暴露工具，用于 LLM 集成。
+
+    [:octicons-arrow-right-24: MCP 指南](guides/mcp.md)
+
+-   :material-cog:{ .lg .middle } **配置**
+
+    ---
+
+    认证、路由和生产部署的运行时选项。
+
+    [:octicons-arrow-right-24: 配置指南](guides/configuration.md)
+
+-   :material-puzzle-edit:{ .lg .middle } **扩展与自定义**
+
+    ---
+
+    子类化 `App` 和 `CLI`，构建你自己的品牌工具服务器。
+
+    [:octicons-arrow-right-24: 扩展指南](guides/extending.md)
+
+</div>
 
 ## 快速开始
 
