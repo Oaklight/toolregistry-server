@@ -164,11 +164,15 @@ def _create_server_v2(
     from mcp.server.lowlevel import Server
     from mcp.types import CallToolResult, ListToolsResult
 
+    # list_tools does not set _v2_request_ctx because list_tools
+    # handlers don't need session context.
     async def on_list_tools(ctx: Any, params: Any) -> Any:
         tools = await list_tools_handler()
         return ListToolsResult(tools=tools)
 
     async def on_call_tool(ctx: Any, params: Any) -> Any:
+        from mcp.types import TextContent
+
         token = _v2_request_ctx.set(ctx)
         try:
             tool_name = params.name
@@ -177,9 +181,9 @@ def _create_server_v2(
             return CallToolResult(content=content, is_error=False)  # type: ignore[call-arg]
         except McpErrorClass:
             raise
-        except Exception:
+        except Exception as e:
             return CallToolResult(  # type: ignore[call-arg]
-                content=[],
+                content=[TextContent(type="text", text=str(e))],
                 is_error=True,
             )
         finally:
@@ -197,13 +201,17 @@ def _create_server_v2(
 # ---------------------------------------------------------------------------
 
 
+_MISSING = object()
+
+
 def get_field(obj: Any, snake_name: str, camel_name: str, default: Any = None) -> Any:
     """Access a field that may be snake_case (v2) or camelCase (v1).
 
-    Tries snake_case first (v2 attribute access), then camelCase (v1).
+    Uses a sentinel so that legitimate ``None`` values (e.g. optional
+    ``mime_type``) are not confused with "attribute missing".
     """
-    val = getattr(obj, snake_name, None)
-    if val is not None:
+    val = getattr(obj, snake_name, _MISSING)
+    if val is not _MISSING:
         return val
     return getattr(obj, camel_name, default)
 
