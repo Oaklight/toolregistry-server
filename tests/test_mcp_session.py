@@ -12,7 +12,11 @@ import pytest
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteTable
-from toolregistry_server.adapters.mcp._compat import create_test_client, get_field
+from toolregistry_server.adapters.mcp._compat import (
+    MCP_VERSION,
+    create_test_client,
+    get_field,
+)
 from toolregistry_server.adapters.mcp.adapter import route_table_to_mcp_server
 from toolregistry_server.session import SessionContext
 
@@ -206,6 +210,10 @@ class TestSessionStability:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    MCP_VERSION >= 2,
+    reason="v2 direct/in-memory transport has no per-client session identity",
+)
 class TestSessionIsolation:
     """Different MCP sessions should get independent SessionContexts."""
 

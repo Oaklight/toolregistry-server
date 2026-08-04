@@ -42,14 +42,13 @@ def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None
         A :class:`SessionContext`, or ``None`` when called outside an
         MCP request context (should not happen in practice).
     """
-    from ._compat import get_mcp_session_info
+    from ._compat import _STDIO_SESSION_KEY, get_mcp_session_info
 
     info = get_mcp_session_info()
     if info is None:
         return None
 
-    mcp_session, request = info
-    session_key = id(mcp_session)
+    mcp_session, request, session_key = info
 
     def _factory() -> SessionContext:
         if request is None:
@@ -64,7 +63,12 @@ def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None
         )
 
     ctx = session_mgr.get_or_create(session_key, _factory)
-    session_mgr.register_finalizer(mcp_session, session_key)
+
+    # In v2 direct/stdio transport, ctx.session is a new object per call,
+    # so a weak-ref finalizer would GC the session between calls. Only
+    # register when the session object is stable (v1, or v2 HTTP).
+    if session_key is not _STDIO_SESSION_KEY:
+        session_mgr.register_finalizer(mcp_session, session_key)
 
     return ctx
 
@@ -170,9 +174,13 @@ def route_table_to_mcp_server(
     """
     try:
         from mcp.types import INTERNAL_ERROR, TextContent
-        from mcp.types import Tool as MCPTool
 
-        from ._compat import McpErrorClass, create_mcp_server, make_mcp_error
+        from ._compat import (
+            McpErrorClass,
+            create_mcp_server,
+            make_mcp_error,
+            make_mcp_tool,
+        )
     except ImportError as e:
         raise ImportError(
             "MCP SDK is required for MCP support. "
@@ -181,19 +189,19 @@ def route_table_to_mcp_server(
 
     session_mgr = SessionManager()
 
-    async def handle_list_tools() -> list[MCPTool]:
+    async def handle_list_tools() -> list:
         """Return MCP tool definitions for non-deferred enabled tools.
 
         Deferred tools are excluded from the initial listing so that LLMs
         discover them via discover_tools.
         """
-        tools: list[MCPTool] = []
+        tools: list = []
         for route in route_table.list_routes(enabled_only=True, include_deferred=False):
             tools.append(
-                MCPTool(
+                make_mcp_tool(
                     name=route.tool_name,
                     description=route.description or "",
-                    inputSchema=normalize_parameters_schema(route.parameters_schema),
+                    schema=normalize_parameters_schema(route.parameters_schema),
                 )
             )
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
