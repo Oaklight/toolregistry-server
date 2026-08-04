@@ -70,34 +70,6 @@ plugins:
             merge_init_into_class: true
             separate_signature: true
             show_signature_annotations: true
-  - llmstxt:
-      full_output: llms-full.txt
-      sections:
-        Home:
-          - index.md
-        Get Started:
-          - get-started/installation.md
-          - get-started/quickstart.md
-        Guides:
-          - guides/configuration.md
-          - guides/authentication.md
-          - guides/openapi.md
-          - guides/mcp.md
-          - guides/extending.md
-        Examples:
-          - examples/index.md
-        Reference:
-          - reference/cli/index.md
-          - reference/adapters.md
-          - reference/api/index.md
-          - reference/api/core/route_table.md
-          - reference/api/openapi.md
-          - reference/api/mcp.md
-          - reference/api/auth.md
-        Ecosystem:
-          - ecosystem.md
-        Changelog:
-          - changelog.md
 
 markdown_extensions:
   - admonition
