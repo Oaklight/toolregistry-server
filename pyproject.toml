@@ -37,7 +37,7 @@ dependencies = ["toolregistry>=0.14.0,<1.0.0"]
 
 [project.optional-dependencies]
 openapi = ["fastapi>=0.119.0", "uvicorn[standard]>=0.24.0"]
-mcp = ["mcp>=1.17.0"]
+mcp = ["mcp>=1.17.0,<2"]
 all = ["toolregistry-server[openapi]", "toolregistry-server[mcp]"]
 dev = [
     "pytest>=7.0.0",
