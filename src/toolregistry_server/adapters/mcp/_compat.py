@@ -70,15 +70,22 @@ _v2_request_ctx: contextvars.ContextVar[Any] = contextvars.ContextVar(
 )
 
 
-def get_mcp_session_info() -> tuple[Any, Any | None] | None:
-    """Return ``(mcp_session, starlette_request | None)`` for the current request.
+_STDIO_SESSION_KEY = "stdio-singleton"
 
-    Works transparently with both v1 (reads ``request_ctx`` contextvar)
-    and v2 (reads the ctx we stashed from the handler parameter).
+
+def get_mcp_session_info() -> tuple[Any, Any | None, Any] | None:
+    """Return ``(mcp_session, request, session_key)`` for the current request.
+
+    Works transparently with both v1 and v2.  The *session_key* is a
+    hashable value suitable for deduplicating session contexts:
+
+    - v1: ``id(session)`` (the same ``ServerSession`` object is reused)
+    - v2 with HTTP request: ``mcp-session-id`` header value
+    - v2 without request (stdio/direct): a module-level constant
+      (single logical session)
 
     Returns:
-        A tuple of (session, request) or ``None`` when called outside
-        an MCP request context.
+        A 3-tuple or ``None`` when called outside an MCP request context.
     """
     if MCP_VERSION >= 2:
         ctx = _v2_request_ctx.get(None)
@@ -86,7 +93,12 @@ def get_mcp_session_info() -> tuple[Any, Any | None] | None:
             return None
         session = ctx.session
         request = getattr(ctx, "request", None)
-        return session, request
+        if request is not None:
+            headers = getattr(request, "headers", {})
+            session_key = headers.get("mcp-session-id", id(session))
+        else:
+            session_key = _STDIO_SESSION_KEY
+        return session, request, session_key
     else:
         try:
             from mcp.server.lowlevel.server import request_ctx
@@ -97,7 +109,7 @@ def get_mcp_session_info() -> tuple[Any, Any | None] | None:
             return None
         session = mcp_ctx.session
         request = getattr(mcp_ctx, "request", None)
-        return session, request
+        return session, request, id(session)
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +191,11 @@ def _create_server_v2(
             arguments = params.arguments or {}
             content = await call_tool_handler(tool_name, arguments)
             return CallToolResult(content=content, is_error=False)  # type: ignore[call-arg]
-        except McpErrorClass:
-            raise
         except Exception as e:
+            # In v2, MCPError raised from on_call_tool becomes a JSON-RPC
+            # protocol error (client raises instead of getting is_error=True).
+            # Catch everything and return as is_error=True to preserve v1
+            # behavior where errors are LLM-visible tool results.
             return CallToolResult(  # type: ignore[call-arg]
                 content=[TextContent(type="text", text=str(e))],
                 is_error=True,
@@ -199,6 +213,16 @@ def _create_server_v2(
 # ---------------------------------------------------------------------------
 # Field accessor
 # ---------------------------------------------------------------------------
+
+
+def make_mcp_tool(name: str, description: str, schema: dict) -> Any:
+    """Create an MCP Tool with the correct field name for the version."""
+    from mcp.types import Tool
+
+    if MCP_VERSION >= 2:
+        return Tool(name=name, description=description, input_schema=schema)
+    else:
+        return Tool(name=name, description=description, inputSchema=schema)
 
 
 _MISSING = object()
