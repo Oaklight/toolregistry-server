@@ -31,9 +31,9 @@ logger = get_logger()
 def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None:
     """Extract or create a SessionContext from the current MCP request.
 
-    Reads the MCP SDK's ``request_ctx`` contextvar to obtain the active
-    ``ServerSession`` and optional Starlette ``Request``, then delegates
-    to *session_mgr* for deduplication and lifecycle management.
+    Uses the compat layer to read the active MCP request context
+    (works with both mcp v1 and v2), then delegates to *session_mgr*
+    for deduplication and lifecycle management.
 
     Args:
         session_mgr: The SessionManager that owns session state.
@@ -42,25 +42,19 @@ def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None
         A :class:`SessionContext`, or ``None`` when called outside an
         MCP request context (should not happen in practice).
     """
-    try:
-        from mcp.server.lowlevel.server import request_ctx
-    except ImportError:
+    from ._compat import get_mcp_session_info
+
+    info = get_mcp_session_info()
+    if info is None:
         return None
 
-    mcp_ctx = request_ctx.get(None)
-    if mcp_ctx is None:
-        return None
-
-    mcp_session = mcp_ctx.session
+    mcp_session, request = info
     session_key = id(mcp_session)
 
     def _factory() -> SessionContext:
-        # Determine transport type from the request object
-        request = getattr(mcp_ctx, "request", None)
         if request is None:
             transport = "stdio"
         else:
-            # Starlette Request — check for streamable-http header
             headers = getattr(request, "headers", {})
             transport = "streamable-http" if headers.get("mcp-session-id") else "sse"
 
@@ -70,8 +64,6 @@ def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None
         )
 
     ctx = session_mgr.get_or_create(session_key, _factory)
-
-    # Register weak-reference finalizer for automatic cleanup
     session_mgr.register_finalizer(mcp_session, session_key)
 
     return ctx
@@ -177,20 +169,18 @@ def route_table_to_mcp_server(
         ImportError: If MCP SDK is not installed.
     """
     try:
-        from mcp.server.lowlevel import Server
-        from mcp.shared.exceptions import McpError
-        from mcp.types import INTERNAL_ERROR, ErrorData, TextContent
+        from mcp.types import INTERNAL_ERROR, TextContent
         from mcp.types import Tool as MCPTool
+
+        from ._compat import McpErrorClass, create_mcp_server, make_mcp_error
     except ImportError as e:
         raise ImportError(
             "MCP SDK is required for MCP support. "
             "Install with: pip install toolregistry-server[mcp]"
         ) from e
 
-    server = Server(name)
     session_mgr = SessionManager()
 
-    @server.list_tools()
     async def handle_list_tools() -> list[MCPTool]:
         """Return MCP tool definitions for non-deferred enabled tools.
 
@@ -209,40 +199,28 @@ def route_table_to_mcp_server(
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
         return tools
 
-    @server.call_tool(validate_input=False)
-    async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
+    async def handle_call_tool(tool_name: str, arguments: dict) -> list[TextContent]:
         """Execute a tool by name with the given arguments.
 
         Args:
-            name: The tool name to invoke.
+            tool_name: The tool name to invoke.
             arguments: The input arguments for the tool.
 
         Returns:
             A list containing a single TextContent with the result.
 
         Raises:
-            McpError: If the tool is disabled or not found.
+            McpErrorClass: If the tool is disabled or not found.
         """
-        # Get the route entry
-        route = route_table.get_route(name)
+        route = route_table.get_route(tool_name)
 
-        # Check if tool exists
         if route is None:
-            raise McpError(
-                ErrorData(
-                    code=INTERNAL_ERROR,
-                    message=f"Tool '{name}' not found",
-                )
-            )
+            raise make_mcp_error(INTERNAL_ERROR, f"Tool '{tool_name}' not found")
 
-        # Check if tool is disabled
         if not route.enabled:
             reason = route.disable_reason or "unknown reason"
-            raise McpError(
-                ErrorData(
-                    code=INTERNAL_ERROR,
-                    message=f"Tool '{name}' is disabled: {reason}",
-                )
+            raise make_mcp_error(
+                INTERNAL_ERROR, f"Tool '{tool_name}' is disabled: {reason}"
             )
 
         # --- Session context ---
@@ -254,22 +232,23 @@ def route_table_to_mcp_server(
         try:
             result = await _execute_tool(route, arguments, session_ctx, session_mgr)
             text = _serialize_result(result)
-            logger.debug(f"call_tool '{name}': success")
+            logger.debug(f"call_tool '{tool_name}': success")
             return [TextContent(type="text", text=text)]
 
-        except McpError:
+        except McpErrorClass:
             raise
         except Exception as e:
-            logger.warning(f"call_tool '{name}': error - {e}")
-            raise McpError(
-                ErrorData(
-                    code=INTERNAL_ERROR,
-                    message=str(e),
-                )
-            ) from e
+            logger.warning(f"call_tool '{tool_name}': error - {e}")
+            raise make_mcp_error(INTERNAL_ERROR, str(e)) from e
         finally:
             if token is not None:
                 session_context_var.reset(token)
+
+    server = create_mcp_server(
+        name,
+        list_tools_handler=handle_list_tools,
+        call_tool_handler=handle_call_tool,
+    )
 
     logger.info(
         f"MCP server '{name}' created with {len(route_table.list_routes())} "

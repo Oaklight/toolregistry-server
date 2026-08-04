@@ -86,7 +86,10 @@ python-version = "3.10"
 
 [tool.ty.src]
 include = ["src", "tests"]
-exclude = ["src/toolregistry_server/_vendor"]
+exclude = [
+    "src/toolregistry_server/_vendor",
+    "src/toolregistry_server/adapters/mcp/_compat.py",
+]
 
 [tool.ty.rules]
 unresolved-import = "ignore"
