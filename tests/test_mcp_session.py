@@ -9,10 +9,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from mcp.shared.memory import create_connected_server_and_client_session
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteTable
+from toolregistry_server.adapters.mcp._compat import create_test_client, get_field
 from toolregistry_server.adapters.mcp.adapter import route_table_to_mcp_server
 from toolregistry_server.session import SessionContext
 
@@ -106,9 +106,9 @@ class TestBackwardCompatibility:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("plain_add", {"a": 3, "b": 4})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "7"
 
 
@@ -129,9 +129,9 @@ class TestSessionInjection:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("session_echo", {"x": 42})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             text = result.content[0].text
             assert "x=42" in text
             assert "session=" in text
@@ -148,9 +148,9 @@ class TestSessionInjection:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("async_session_echo", {"x": 7})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             text = result.content[0].text
             assert "async x=7" in text
             assert "session=" in text
@@ -173,7 +173,7 @@ class TestSessionStability:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             r1 = await client.call_tool("session_echo", {"x": 1})
             r2 = await client.call_tool("session_echo", {"x": 2})
 
@@ -190,7 +190,7 @@ class TestSessionStability:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             r1 = await client.call_tool("session_counter", {})
             assert r1.content[0].text == "count=1"
 
@@ -220,11 +220,11 @@ class TestSessionIsolation:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client1:
+        async with create_test_client(server) as client1:
             r1 = await client1.call_tool("session_echo", {"x": 1})
             sid1 = r1.content[0].text.split("session=")[1]
 
-        async with create_connected_server_and_client_session(server) as client2:
+        async with create_test_client(server) as client2:
             r2 = await client2.call_tool("session_echo", {"x": 2})
             sid2 = r2.content[0].text.split("session=")[1]
 
@@ -240,13 +240,13 @@ class TestSessionIsolation:
         server = route_table_to_mcp_server(route_table)
 
         # First session counts to 2
-        async with create_connected_server_and_client_session(server) as client1:
+        async with create_test_client(server) as client1:
             await client1.call_tool("session_counter", {})
             r = await client1.call_tool("session_counter", {})
             assert r.content[0].text == "count=2"
 
         # Second session starts fresh at 1
-        async with create_connected_server_and_client_session(server) as client2:
+        async with create_test_client(server) as client2:
             r = await client2.call_tool("session_counter", {})
             assert r.content[0].text == "count=1"
 
@@ -272,14 +272,14 @@ class TestMixedTools:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             # Plain tool works
             r1 = await client.call_tool("plain_add", {"a": 5, "b": 3})
-            assert r1.isError is False
+            assert get_field(r1, "is_error", "isError") is False
             assert r1.content[0].text == "8"
 
             # Session tool works
             r2 = await client.call_tool("session_echo", {"x": 10})
-            assert r2.isError is False
+            assert get_field(r2, "is_error", "isError") is False
             assert "x=10" in r2.content[0].text
             assert "session=" in r2.content[0].text

@@ -1,6 +1,6 @@
 """Tests for the MCP adapter that bridges RouteTable to MCP Server.
 
-Uses the MCP SDK's in-memory transport (create_connected_server_and_client_session)
+Uses the MCP SDK's in-memory transport (create_test_client)
 for end-to-end testing of list_tools and call_tool handlers.
 """
 
@@ -9,11 +9,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from mcp.server.lowlevel import Server
-from mcp.shared.memory import create_connected_server_and_client_session
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
 from toolregistry_server.adapters.mcp import route_table_to_mcp_server
+from toolregistry_server.adapters.mcp._compat import create_test_client, get_field
 
 # ---------------------------------------------------------------------------
 # Test helper functions
@@ -206,7 +206,7 @@ class TestListTools:
     ) -> None:
         """Verify list_tools returns all enabled tools from the route table."""
         server = route_table_to_mcp_server(route_table_with_tools)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.list_tools()
             tool_names = {t.name for t in result.tools}
             assert tool_names == {"add", "multiply"}
@@ -217,7 +217,7 @@ class TestListTools:
     ) -> None:
         """Verify tool name and description are correctly mapped."""
         server = route_table_to_mcp_server(route_table_with_tools)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.list_tools()
             tools_by_name = {t.name: t for t in result.tools}
 
@@ -233,11 +233,11 @@ class TestListTools:
     ) -> None:
         """Verify inputSchema contains correct parameter definitions."""
         server = route_table_to_mcp_server(route_table_with_tools)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.list_tools()
             tools_by_name = {t.name: t for t in result.tools}
 
-            schema = tools_by_name["add"].inputSchema
+            schema = get_field(tools_by_name["add"], "input_schema", "inputSchema")
             assert schema["type"] == "object"
             assert "a" in schema["properties"]
             assert "b" in schema["properties"]
@@ -264,9 +264,12 @@ class TestListTools:
 
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.list_tools()
-            assert result.tools[0].inputSchema == {"type": "object", "properties": {}}
+            assert get_field(result.tools[0], "input_schema", "inputSchema") == {
+                "type": "object",
+                "properties": {},
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +314,7 @@ class TestEnableDisable:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             # Initially both tools are listed
             result = await client.list_tools()
             assert {t.name for t in result.tools} == {"add", "multiply"}
@@ -354,7 +357,7 @@ class TestEnableDisable:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             # Disable then re-enable
             route = route_table.get_route("add")
             assert route is not None
@@ -406,9 +409,9 @@ class TestCallTool:
     async def test_call_enabled_tool(self, route_table_with_tools: RouteTable) -> None:
         """Calling an enabled tool should return the correct result."""
         server = route_table_to_mcp_server(route_table_with_tools)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("add", {"a": 3, "b": 4})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert len(result.content) == 1
             assert result.content[0].text == "7"
 
@@ -433,9 +436,9 @@ class TestCallTool:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("add", {"a": 1, "b": 2})
-            assert result.isError is True
+            assert get_field(result, "is_error", "isError") is True
             assert "disabled" in result.content[0].text.lower()
             assert "maintenance" in result.content[0].text
 
@@ -445,9 +448,9 @@ class TestCallTool:
     ) -> None:
         """Calling a non-existent tool should return isError=True."""
         server = route_table_to_mcp_server(route_table_with_tools)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("nonexistent", {})
-            assert result.isError is True
+            assert get_field(result, "is_error", "isError") is True
             assert "not found" in result.content[0].text.lower()
 
 
@@ -476,9 +479,9 @@ class TestSyncAsyncTools:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("add", {"a": 10, "b": 20})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "30"
 
     @pytest.mark.asyncio
@@ -498,9 +501,9 @@ class TestSyncAsyncTools:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("async_add", {"a": 5, "b": 7})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "12"
 
     @pytest.mark.asyncio
@@ -531,7 +534,7 @@ class TestSyncAsyncTools:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             # Verify both are listed
             tools_result = await client.list_tools()
             tool_names = {t.name for t in tools_result.tools}
@@ -571,9 +574,9 @@ class TestResultSerialization:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("get_info", {})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             parsed = json.loads(result.content[0].text)
             assert parsed == {"status": "ok", "count": 42}
 
@@ -594,9 +597,9 @@ class TestResultSerialization:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("greet", {"name": "World"})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "Hello, World!"
 
     @pytest.mark.asyncio
@@ -616,9 +619,9 @@ class TestResultSerialization:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("get_answer", {})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "42"
 
     @pytest.mark.asyncio
@@ -638,9 +641,9 @@ class TestResultSerialization:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("get_pi", {})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "3.14159"
 
     @pytest.mark.asyncio
@@ -665,9 +668,9 @@ class TestResultSerialization:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("get_items", {})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             parsed = json.loads(result.content[0].text)
             assert parsed == [1, "two", 3.0]
 
@@ -699,9 +702,9 @@ class TestExceptionHandling:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("failing_tool", {})
-            assert result.isError is True
+            assert get_field(result, "is_error", "isError") is True
             assert "intentional error for testing" in result.content[0].text
 
 
@@ -747,9 +750,9 @@ class TestParameterValidation:
     ) -> None:
         """String arguments should be coerced to int when parameters_model is present."""
         server = route_table_to_mcp_server(route_table_with_validated_tool)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("add", {"a": "3", "b": "4"})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "7"
 
     @pytest.mark.asyncio
@@ -758,12 +761,12 @@ class TestParameterValidation:
     ) -> None:
         """String values for optional int/float params should be coerced."""
         server = route_table_to_mcp_server(route_table_with_search_tool)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool(
                 "search",
                 {"query": "test", "max_results": "8", "timeout": "15.5"},
             )
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             text = result.content[0].text
             assert "max_results=8(int)" in text
             assert "timeout=15.5(float)" in text
@@ -774,9 +777,9 @@ class TestParameterValidation:
     ) -> None:
         """Default values should be used when optional params are omitted."""
         server = route_table_to_mcp_server(route_table_with_search_tool)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("search", {"query": "hello"})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             text = result.content[0].text
             assert "max_results=5(int)" in text
             assert "timeout=10.0(float)" in text
@@ -787,9 +790,9 @@ class TestParameterValidation:
     ) -> None:
         """Correctly typed arguments should pass through without issue."""
         server = route_table_to_mcp_server(route_table_with_validated_tool)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("add", {"a": 10, "b": 20})
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "30"
 
     @pytest.mark.asyncio
@@ -798,12 +801,12 @@ class TestParameterValidation:
     ) -> None:
         """All params as strings (Codex-like behavior) should be coerced."""
         server = route_table_to_mcp_server(route_table_with_search_tool)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool(
                 "search",
                 {"query": "test query", "max_results": "3", "timeout": "5.0"},
             )
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             text = result.content[0].text
             assert "query=test query" in text
             assert "max_results=3(int)" in text
@@ -815,9 +818,9 @@ class TestParameterValidation:
     ) -> None:
         """Non-numeric string for int param should return an error."""
         server = route_table_to_mcp_server(route_table_with_validated_tool)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool("add", {"a": "abc", "b": "4"})
-            assert result.isError is True
+            assert get_field(result, "is_error", "isError") is True
 
     @pytest.mark.asyncio
     async def test_bool_param_coerced_from_string(
@@ -842,9 +845,9 @@ class TestParameterValidation:
         route_table = RouteTable(mock_registry)
 
         server = route_table_to_mcp_server(route_table)
-        async with create_connected_server_and_client_session(server) as client:
+        async with create_test_client(server) as client:
             result = await client.call_tool(
                 "check", {"query": "test", "verbose": "true"}
             )
-            assert result.isError is False
+            assert get_field(result, "is_error", "isError") is False
             assert "verbose=True(bool)" in result.content[0].text
