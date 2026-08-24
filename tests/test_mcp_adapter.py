@@ -674,6 +674,119 @@ class TestResultSerialization:
             parsed = json.loads(result.content[0].text)
             assert parsed == [1, "two", 3.0]
 
+    @pytest.mark.asyncio
+    async def test_content_block_list_returns_image_content(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """A content block list with an image should return MCP ImageContent."""
+        from mcp.types import ImageContent
+
+        def read_image() -> list:
+            """Return a mock content block list with text and image."""
+            return [
+                {"type": "text", "text": "[Image: test.png (image/png, 100 bytes)]"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgoAAAANSUhEUg==",
+                    },
+                },
+            ]
+
+        img_tool = MagicMock()
+        img_tool.name = "read_image"
+        img_tool.namespace = "default"
+        img_tool.method_name = "read_image"
+        img_tool.description = "Read an image file."
+        img_tool.parameters = {"type": "object", "properties": {}}
+        img_tool.callable = read_image
+        img_tool.is_async = False
+
+        mock_registry._tools = {"read_image": img_tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with create_test_client(server) as client:
+            result = await client.call_tool("read_image", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert len(result.content) == 2
+            assert result.content[0].type == "text"
+            assert "test.png" in result.content[0].text
+            assert isinstance(result.content[1], ImageContent)
+            assert result.content[1].type == "image"
+            assert result.content[1].data == "iVBORw0KGgoAAAANSUhEUg=="
+            assert get_field(result.content[1], "mime_type", "mimeType") == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_text_only_content_blocks_returns_text_content(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """A content block list with only text blocks should return TextContent."""
+        from mcp.types import TextContent
+
+        def text_blocks() -> list:
+            """Return text-only content blocks."""
+            return [
+                {"type": "text", "text": "Line one"},
+                {"type": "text", "text": "Line two"},
+            ]
+
+        tool = MagicMock()
+        tool.name = "text_blocks"
+        tool.namespace = "default"
+        tool.method_name = "text_blocks"
+        tool.description = "Return text blocks."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = text_blocks
+        tool.is_async = False
+
+        mock_registry._tools = {"text_blocks": tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with create_test_client(server) as client:
+            result = await client.call_tool("text_blocks", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert len(result.content) == 2
+            assert all(isinstance(c, TextContent) for c in result.content)
+            assert result.content[0].text == "Line one"
+            assert result.content[1].text == "Line two"
+
+    @pytest.mark.asyncio
+    async def test_plain_list_not_content_blocks_json_serialized(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """A plain list (not content blocks) should still be JSON-serialized."""
+
+        def get_numbers() -> list:
+            """Return a plain list of numbers."""
+            return [1, 2, 3]
+
+        tool = MagicMock()
+        tool.name = "get_numbers"
+        tool.namespace = "default"
+        tool.method_name = "get_numbers"
+        tool.description = "Return numbers."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = get_numbers
+        tool.is_async = False
+
+        mock_registry._tools = {"get_numbers": tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with create_test_client(server) as client:
+            result = await client.call_tool("get_numbers", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert len(result.content) == 1
+            parsed = json.loads(result.content[0].text)
+            assert parsed == [1, 2, 3]
+
 
 # ---------------------------------------------------------------------------
 # 7. Exception handling tests
