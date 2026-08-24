@@ -153,6 +153,17 @@ def _result_to_mcp_content(result: Any) -> list:
                         **{"mimeType": source["media_type"]},
                     )
                 )
+            else:
+                logger.warning(
+                    f"Unhandled content block type '{block['type']}', "
+                    "falling back to text"
+                )
+                content.append(
+                    TextContent(
+                        type="text",
+                        text=json.dumps(block, ensure_ascii=False, default=str),
+                    )
+                )
         if content:
             return content
 
