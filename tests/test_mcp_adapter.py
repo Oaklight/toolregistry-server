@@ -757,6 +757,63 @@ class TestResultSerialization:
             assert result.content[1].text == "Line two"
 
     @pytest.mark.asyncio
+    async def test_unknown_block_type_degrades_to_text(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Unknown content block types should degrade to JSON TextContent."""
+        from unittest.mock import patch
+
+        from mcp.types import ImageContent, TextContent
+
+        def mixed_blocks() -> list:
+            """Return content blocks including a future unknown type."""
+            return [
+                {"type": "text", "text": "Known text"},
+                {"type": "audio", "data": "base64audio", "format": "wav"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo=",
+                    },
+                },
+            ]
+
+        tool = MagicMock()
+        tool.name = "mixed_blocks"
+        tool.namespace = "default"
+        tool.method_name = "mixed_blocks"
+        tool.description = "Return mixed blocks."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = mixed_blocks
+        tool.is_async = False
+
+        mock_registry._tools = {"mixed_blocks": tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+
+        # Simulate core library recognizing "audio" before adapter does
+        with patch(
+            "toolregistry.llm.content_blocks.is_content_block_list",
+            return_value=True,
+        ):
+            async with create_test_client(server) as client:
+                result = await client.call_tool("mixed_blocks", {})
+                assert get_field(result, "is_error", "isError") is False
+                assert len(result.content) == 3
+                # Known text block
+                assert isinstance(result.content[0], TextContent)
+                assert result.content[0].text == "Known text"
+                # Unknown "audio" block degraded to TextContent (JSON)
+                assert isinstance(result.content[1], TextContent)
+                degraded = json.loads(result.content[1].text)
+                assert degraded["type"] == "audio"
+                # Known image block
+                assert isinstance(result.content[2], ImageContent)
+
+    @pytest.mark.asyncio
     async def test_plain_list_not_content_blocks_json_serialized(
         self, mock_registry: MagicMock
     ) -> None:
