@@ -103,6 +103,60 @@ def _serialize_result(result: Any) -> str:
         return str(result)
 
 
+def _result_to_mcp_content(result: Any) -> list:
+    """Convert a tool result to MCP content blocks.
+
+    If the result is a multimodal content block list (containing image
+    blocks), each block is converted to the corresponding MCP content
+    type.  Otherwise the result is serialized as a single TextContent.
+
+    Args:
+        result: The raw tool execution result.
+
+    Returns:
+        A list of MCP content objects (TextContent and/or ImageContent).
+    """
+    from mcp.types import TextContent
+
+    try:
+        from mcp.types import ImageContent
+
+        _has_image_content = True
+    except ImportError:
+        _has_image_content = False
+
+    try:
+        from toolregistry.llm.content_blocks import is_content_block_list
+
+        _has_content_blocks = True
+    except ImportError:
+        _has_content_blocks = False
+
+    if (
+        _has_content_blocks
+        and _has_image_content
+        and isinstance(result, list)
+        and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
+    ):
+        content: list = []
+        for block in result:
+            if block["type"] == "text":
+                content.append(TextContent(type="text", text=block["text"]))
+            elif block["type"] == "image":
+                source = block["source"]
+                content.append(
+                    ImageContent(
+                        type="image",
+                        data=source["data"],
+                        mimeType=source["media_type"],
+                    )
+                )
+        if content:
+            return content
+
+    return [TextContent(type="text", text=_serialize_result(result))]
+
+
 async def _execute_tool(
     route: Any,
     arguments: dict,
@@ -173,7 +227,7 @@ def route_table_to_mcp_server(
         ImportError: If MCP SDK is not installed.
     """
     try:
-        from mcp.types import INTERNAL_ERROR, TextContent
+        from mcp.types import INTERNAL_ERROR
 
         from ._compat import (
             McpErrorClass,
@@ -207,7 +261,7 @@ def route_table_to_mcp_server(
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
         return tools
 
-    async def handle_call_tool(tool_name: str, arguments: dict) -> list[TextContent]:
+    async def handle_call_tool(tool_name: str, arguments: dict) -> list:
         """Execute a tool by name with the given arguments.
 
         Args:
@@ -215,7 +269,7 @@ def route_table_to_mcp_server(
             arguments: The input arguments for the tool.
 
         Returns:
-            A list containing a single TextContent with the result.
+            A list of MCP content blocks (TextContent and/or ImageContent).
 
         Raises:
             McpErrorClass: If the tool is disabled or not found.
@@ -239,9 +293,9 @@ def route_table_to_mcp_server(
 
         try:
             result = await _execute_tool(route, arguments, session_ctx, session_mgr)
-            text = _serialize_result(result)
+            content = _result_to_mcp_content(result)
             logger.debug(f"call_tool '{tool_name}': success")
-            return [TextContent(type="text", text=text)]
+            return content
 
         except McpErrorClass:
             raise
