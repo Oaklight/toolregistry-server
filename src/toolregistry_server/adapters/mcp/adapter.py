@@ -144,11 +144,13 @@ def _result_to_mcp_content(result: Any) -> list:
                 content.append(TextContent(type="text", text=block["text"]))
             elif block["type"] == "image":
                 source = block["source"]
+                # Field name is mimeType (v1 camelCase) or mime_type
+                # (v2 snake_case); use **kwargs to satisfy both ty and runtime.
                 content.append(
-                    ImageContent(
+                    ImageContent(  # type: ignore[call-arg]
                         type="image",
                         data=source["data"],
-                        mimeType=source["media_type"],
+                        **{"mimeType": source["media_type"]},
                     )
                 )
         if content:
