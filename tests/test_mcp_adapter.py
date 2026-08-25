@@ -794,9 +794,10 @@ class TestResultSerialization:
         route_table = RouteTable(mock_registry)
         server = route_table_to_mcp_server(route_table)
 
-        # Simulate core library recognizing "audio" before adapter does
+        # Simulate core library recognizing "audio" before adapter does.
+        # Patch on the adapter module where it was imported at module level.
         with patch(
-            "toolregistry.llm.content_blocks.is_content_block_list",
+            "toolregistry_server.adapters.mcp.adapter.is_content_block_list",
             return_value=True,
         ):
             async with create_test_client(server) as client:
