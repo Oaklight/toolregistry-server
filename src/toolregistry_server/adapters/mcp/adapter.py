@@ -7,7 +7,7 @@ at request time (no drift).
 
 import inspect
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
@@ -225,6 +225,9 @@ async def _execute_tool(
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
+    *,
+    list_tools_ttl_ms: int | None = None,
+    list_tools_cache_scope: Literal["public", "private"] | None = None,
 ) -> "Server":
     """Create an MCP low-level Server from a RouteTable.
 
@@ -235,6 +238,10 @@ def route_table_to_mcp_server(
     Args:
         route_table: The RouteTable instance to expose as MCP tools.
         name: Server name for MCP identification.
+        list_tools_ttl_ms: Optional ``tools/list`` cache lifetime in
+            milliseconds (MCP spec 2026-07-28). Only effective on SDK v2.
+        list_tools_cache_scope: Optional ``"public"`` or ``"private"``
+            cache scope for ``tools/list``. Only effective on SDK v2.
 
     Returns:
         A configured mcp.server.lowlevel.Server instance.
@@ -328,6 +335,8 @@ def route_table_to_mcp_server(
         name,
         list_tools_handler=handle_list_tools,
         call_tool_handler=handle_call_tool,
+        list_tools_ttl_ms=list_tools_ttl_ms,
+        list_tools_cache_scope=list_tools_cache_scope,
     )
 
     logger.info(

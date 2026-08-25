@@ -26,7 +26,7 @@ Note:
 """
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from ..._vendor.structlog import get_logger
 from .. import Adapter
@@ -47,6 +47,9 @@ if TYPE_CHECKING:
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
+    *,
+    list_tools_ttl_ms: int | None = None,
+    list_tools_cache_scope: Literal["public", "private"] | None = None,
 ) -> "Server":
     """Create an MCP low-level server from a RouteTable.
 
@@ -57,6 +60,9 @@ def route_table_to_mcp_server(
     Args:
         route_table: The RouteTable to convert.
         name: Server name for MCP identification.
+        list_tools_ttl_ms: Optional ``ttlMs`` cache hint for ``tools/list``.
+        list_tools_cache_scope: Optional ``cacheScope`` hint for
+            ``tools/list``.
 
     Returns:
         A configured MCP Server instance.
@@ -66,7 +72,12 @@ def route_table_to_mcp_server(
     """
     from .adapter import route_table_to_mcp_server as _route_table_to_mcp_server
 
-    return _route_table_to_mcp_server(route_table, name)
+    return _route_table_to_mcp_server(
+        route_table,
+        name,
+        list_tools_ttl_ms=list_tools_ttl_ms,
+        list_tools_cache_scope=list_tools_cache_scope,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +151,9 @@ class MCPAdapter(Adapter):
     Args:
         route_table: The RouteTable to expose.
         name: Server name for MCP identification.
+        list_tools_ttl_ms: Optional ``ttlMs`` cache hint for ``tools/list``.
+        list_tools_cache_scope: Optional ``cacheScope`` hint for
+            ``tools/list``.
     """
 
     def __init__(
@@ -147,9 +161,16 @@ class MCPAdapter(Adapter):
         route_table: "RouteTable",
         *,
         name: str = "ToolRegistry-Server",
+        list_tools_ttl_ms: int | None = None,
+        list_tools_cache_scope: Literal["public", "private"] | None = None,
     ) -> None:
         super().__init__(route_table)
-        self._server = route_table_to_mcp_server(route_table, name)
+        self._server = route_table_to_mcp_server(
+            route_table,
+            name,
+            list_tools_ttl_ms=list_tools_ttl_ms,
+            list_tools_cache_scope=list_tools_cache_scope,
+        )
 
     @property
     def server(self) -> "Server":
