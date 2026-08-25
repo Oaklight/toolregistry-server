@@ -122,6 +122,104 @@ def _serialize_result(result: Any) -> str:
         return str(result)
 
 
+def _is_content_block(obj: Any) -> bool:
+    """Whether a value is already an MCP content block.
+
+    Tools are allowed to return content blocks directly -- that is how a
+    tool hands back an image, an audio clip, or an embedded resource
+    rather than a JSON body. Such a value is already in the wire shape and
+    must be passed through untouched.
+    """
+    return getattr(obj, "type", None) in {
+        "text",
+        "image",
+        "audio",
+        "resource",
+        "resource_link",
+    }
+
+
+def _as_content_blocks(result: Any) -> list[Any] | None:
+    """Return *result* as content blocks when it already is some.
+
+    Accepts either a single block or a list of them. Returns ``None`` for
+    anything else, which is the ordinary case of a tool returning data to
+    be serialized.
+    """
+    if _is_content_block(result):
+        return [result]
+    if isinstance(result, (list, tuple)) and result:
+        blocks = list(result)
+        if all(_is_content_block(b) for b in blocks):
+            return blocks
+    return None
+
+
+def _extract_resource_links(result: Any) -> tuple[Any, list[Any]]:
+    """Split ``_resource_links`` out of a dict result into content blocks.
+
+    Tools opt in by returning a ``_resource_links`` key holding a list of
+    dicts with at least ``uri`` and ``name``. Each becomes a ``resource_link``
+    content block, letting large or out-of-band payloads (artifacts,
+    provenance records, generated files) be referenced by URI instead of
+    inlined into the text result. The key is removed from the returned data.
+
+    Args:
+        result: The raw tool result.
+
+    Returns:
+        A ``(result, links)`` pair. *result* is unchanged when the tool did
+        not opt in.
+    """
+    if not isinstance(result, dict) or "_resource_links" not in result:
+        return result, []
+
+    raw = result.get("_resource_links")
+    if not isinstance(raw, list):
+        return result, []
+
+    from ._compat import make_resource_link
+
+    links: list[Any] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        uri = item.get("uri")
+        name = item.get("name")
+        if not uri or not name:
+            continue
+        optional = {
+            key: item[key]
+            for key in ("title", "description", "mime_type", "size")
+            if item.get(key) is not None
+        }
+        try:
+            links.append(make_resource_link(uri=str(uri), name=str(name), **optional))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"skipping invalid resource_link {item!r}: {exc}")
+
+    remaining = {k: v for k, v in result.items() if k != "_resource_links"}
+    return remaining, links
+
+
+def _structured_content(route: Any, result: Any) -> Any:
+    """Return the value to send as ``structuredContent``, or ``None``.
+
+    Only a route declaring an ``outputSchema`` populates the field, and only
+    a dict or list can be validated against one. A multimodal content-block
+    list is excluded: those blocks are the wire representation, not data the
+    schema describes.
+    """
+    if not route.output_schema or not isinstance(result, (dict, list)):
+        return None
+    is_multimodal = (
+        _HAS_CONTENT_BLOCKS
+        and isinstance(result, list)
+        and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
+    )
+    return None if is_multimodal else result
+
+
 def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     """Convert a tool result to MCP content blocks.
 
@@ -295,8 +393,11 @@ def route_table_to_mcp_server(
             arguments: The input arguments for the tool.
 
         Returns:
-            A ``(content, structured)`` pair. *structured* is the raw
-            result when the tool declares an ``outputSchema``, else None.
+            A ``(content, structured)`` pair. *content* holds the converted
+            result plus any ``resource_link`` blocks the tool emitted, or the
+            tool's own content blocks passed through unchanged. *structured*
+            is the raw result when the tool declares an ``outputSchema``,
+            else None.
 
         Raises:
             McpErrorClass: If the tool is disabled or not found.
@@ -320,21 +421,24 @@ def route_table_to_mcp_server(
 
         try:
             result = await _execute_tool(route, arguments, session_ctx, session_mgr)
+
+            # A tool that already returned MCP content blocks (an image, an
+            # embedded resource) is emitting the wire shape itself. Passing
+            # it through the converter below would stringify the Pydantic
+            # models into a JSON array of reprs, turning a real image block
+            # into unusable text, so hand those straight back. This only
+            # fires on constructed blocks; plain dict blocks have no ``type``
+            # attribute and fall through to _result_to_mcp_content.
+            passthrough = _as_content_blocks(result)
+            if passthrough is not None:
+                logger.debug(f"call_tool '{tool_name}': success (content blocks)")
+                return passthrough, None
+
+            result, links = _extract_resource_links(result)
             content = _result_to_mcp_content(result)
-            is_multimodal = (
-                _HAS_CONTENT_BLOCKS
-                and isinstance(result, list)
-                and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
-            )
-            structured = (
-                result
-                if route.output_schema
-                and isinstance(result, (dict, list))
-                and not is_multimodal
-                else None
-            )
+            content.extend(links)
             logger.debug(f"call_tool '{tool_name}': success")
-            return content, structured
+            return content, _structured_content(route, result)
 
         except McpErrorClass:
             raise

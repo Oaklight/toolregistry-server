@@ -1151,3 +1151,151 @@ class TestOutputSchema:
             result = await client.call_tool("stats", {})
             assert get_field(result, "structured_content", "structuredContent") is None
             assert json.loads(result.content[0].text) == {"count": 2}
+
+
+# ---------------------------------------------------------------------------
+# 11. resource_link and content-block passthrough
+# ---------------------------------------------------------------------------
+
+
+def with_links() -> dict:
+    """Return a result carrying a resource link.
+
+    Returns:
+        A dict with a _resource_links key.
+    """
+    return {
+        "ok": True,
+        "_resource_links": [
+            {
+                "uri": "file:///tmp/report.json",
+                "name": "report.json",
+                "mime_type": "application/json",
+                "description": "Full run record.",
+            }
+        ],
+    }
+
+
+def bad_links() -> dict:
+    """Return malformed resource links that must be skipped.
+
+    Returns:
+        A dict with an invalid _resource_links payload.
+    """
+    return {"ok": True, "_resource_links": [{"name": "missing-uri"}, "nonsense"]}
+
+
+def image_and_text() -> list:
+    """Return content blocks directly, as an image tool does.
+
+    Returns:
+        A list of MCP content blocks.
+    """
+    from mcp.types import ImageContent, TextContent
+
+    return [
+        ImageContent(type="image", data="aGk=", mimeType="image/png"),
+        TextContent(type="text", text='{"n_face": 8}'),
+    ]
+
+
+def single_block() -> object:
+    """Return one content block, not wrapped in a list.
+
+    Returns:
+        A single MCP content block.
+    """
+    from mcp.types import TextContent
+
+    return TextContent(type="text", text="hello")
+
+
+class TestContentBlockPassthrough:
+    """A tool may return content blocks; they must survive untouched."""
+
+    @pytest.mark.asyncio
+    async def test_image_block_is_not_stringified(self) -> None:
+        # Serializing these would emit a JSON array of Pydantic reprs, so
+        # the caller receives text like "type='image' data='...'" and never
+        # an image it can render.
+        server = route_table_to_mcp_server(
+            _route_table_with_output_schema(image_and_text, "img")
+        )
+        async with create_test_client(server) as client:
+            result = await client.call_tool("img", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert [c.type for c in result.content] == ["image", "text"]
+            assert result.content[0].data == "aGk="
+            assert json.loads(result.content[1].text) == {"n_face": 8}
+
+    @pytest.mark.asyncio
+    async def test_single_block_is_accepted(self) -> None:
+        server = route_table_to_mcp_server(
+            _route_table_with_output_schema(single_block, "one")
+        )
+        async with create_test_client(server) as client:
+            result = await client.call_tool("one", {})
+            assert [c.type for c in result.content] == ["text"]
+            assert result.content[0].text == "hello"
+
+    @pytest.mark.asyncio
+    async def test_ordinary_results_still_serialized(self) -> None:
+        # The passthrough must not swallow plain data results.
+        server = route_table_to_mcp_server(
+            _route_table_with_output_schema(stats, "stats")
+        )
+        async with create_test_client(server) as client:
+            result = await client.call_tool("stats", {})
+            assert [c.type for c in result.content] == ["text"]
+            assert json.loads(result.content[0].text)
+
+
+class TestResourceLinks:
+    """_resource_links promotion into resource_link content blocks."""
+
+    @pytest.mark.asyncio
+    async def test_resource_link_emitted_as_content_block(self) -> None:
+        server = route_table_to_mcp_server(
+            _route_table_with_output_schema(with_links, "with_links")
+        )
+        async with create_test_client(server) as client:
+            result = await client.call_tool("with_links", {})
+            assert get_field(result, "is_error", "isError") is False
+            links = [c for c in result.content if c.type == "resource_link"]
+            assert len(links) == 1
+            assert str(links[0].uri) == "file:///tmp/report.json"
+            assert links[0].name == "report.json"
+            assert get_field(links[0], "mime_type", "mimeType") == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_marker_key_stripped_from_text_payload(self) -> None:
+        server = route_table_to_mcp_server(
+            _route_table_with_output_schema(with_links, "with_links")
+        )
+        async with create_test_client(server) as client:
+            result = await client.call_tool("with_links", {})
+            payload = json.loads(result.content[0].text)
+            assert payload == {"ok": True}
+            assert "_resource_links" not in payload
+
+    @pytest.mark.asyncio
+    async def test_malformed_links_are_skipped(self) -> None:
+        server = route_table_to_mcp_server(
+            _route_table_with_output_schema(bad_links, "bad_links")
+        )
+        async with create_test_client(server) as client:
+            result = await client.call_tool("bad_links", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert [c for c in result.content if c.type == "resource_link"] == []
+            assert json.loads(result.content[0].text) == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_plain_results_are_untouched(self) -> None:
+        server = route_table_to_mcp_server(
+            _route_table_with_output_schema(stats, "stats")
+        )
+        async with create_test_client(server) as client:
+            result = await client.call_tool("stats", {})
+            assert len(result.content) == 1
+            assert result.content[0].type == "text"

@@ -262,6 +262,20 @@ def make_mcp_tool(
     return Tool(name=name, description=description, **kwargs)
 
 
+def make_resource_link(uri: str, name: str, **kwargs: Any) -> Any:
+    """Build a ``ResourceLink`` content block with version-correct fields.
+
+    ``mime_type`` is the v2 field name and ``mimeType`` the v1 alias; callers
+    pass ``mime_type`` and this normalizes it.
+    """
+    from mcp.types import ResourceLink
+
+    mime_type = kwargs.pop("mime_type", None)
+    if mime_type is not None:
+        kwargs["mime_type" if MCP_VERSION >= 2 else "mimeType"] = mime_type
+    return ResourceLink(type="resource_link", uri=uri, name=name, **kwargs)
+
+
 def supports_list_tools_cache() -> bool:
     """Return True when the SDK's ``ListToolsResult`` supports cache hints.
 
