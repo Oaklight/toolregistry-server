@@ -1,0 +1,95 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Xquik Read API",
+    "version": "1.0",
+    "description": "Minimal Xquik fixture for authenticated X read operations."
+  },
+  "servers": [
+    {
+      "url": "https://xquik.com"
+    }
+  ],
+  "security": [
+    {
+      "XApiKey": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "XApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key"
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/x/tweets/search": {
+      "get": {
+        "operationId": "searchTweets",
+        "summary": "Search tweets by query, Tweet ID, X status URL, or account date window",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Search query, Tweet ID, or X status URL."
+          },
+          {
+            "name": "queryType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["Latest", "Top"],
+              "default": "Latest"
+            },
+            "description": "Sort order."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "description": "Maximum number of tweets to return."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tweet search results."
+          }
+        }
+      }
+    },
+    "/api/v1/x/users/{id}": {
+      "get": {
+        "operationId": "getUser",
+        "summary": "Get user profile with follower counts and verification",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "X username without @ or user ID."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User profile."
+          }
+        }
+      }
+    }
+  }
+}
