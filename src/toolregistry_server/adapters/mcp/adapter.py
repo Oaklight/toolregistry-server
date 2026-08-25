@@ -321,9 +321,16 @@ def route_table_to_mcp_server(
         try:
             result = await _execute_tool(route, arguments, session_ctx, session_mgr)
             content = _result_to_mcp_content(result)
+            is_multimodal = (
+                _HAS_CONTENT_BLOCKS
+                and isinstance(result, list)
+                and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
+            )
             structured = (
                 result
-                if route.output_schema and isinstance(result, (dict, list))
+                if route.output_schema
+                and isinstance(result, (dict, list))
+                and not is_multimodal
                 else None
             )
             logger.debug(f"call_tool '{tool_name}': success")
