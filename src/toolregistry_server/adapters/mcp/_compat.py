@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
+    from mcp.types import ContentBlock as MCPContentBlock
     from mcp.types import Tool as MCPTool
 
 # ---------------------------------------------------------------------------
@@ -117,7 +118,9 @@ def get_mcp_session_info() -> tuple[Any, Any | None, Any] | None:
 
 # Handler type aliases (our uniform internal signatures)
 ListToolsHandler = Callable[[], Coroutine[Any, Any, "list[MCPTool]"]]
-CallToolHandler = Callable[[str, dict[str, Any]], Coroutine[Any, Any, list[Any]]]
+CallToolHandler = Callable[
+    [str, dict[str, Any]], Coroutine[Any, Any, "list[MCPContentBlock]"]
+]
 
 
 def create_mcp_server(
