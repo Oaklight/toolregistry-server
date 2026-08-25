@@ -30,14 +30,13 @@ logger = get_logger()
 
 # --- Multimodal content support (module-level capability probes) -----------
 
-from mcp.types import TextContent  # noqa: E402
-
-try:
-    from mcp.types import ImageContent  # noqa: E402
-
-    _HAS_IMAGE_CONTENT = True
-except ImportError:
-    _HAS_IMAGE_CONTENT = False
+from mcp.types import (  # noqa: E402
+    AudioContent,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+)
 
 try:
     from toolregistry.llm.content_blocks import is_content_block_list  # noqa: E402
@@ -137,18 +136,16 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     """
     if (
         _HAS_CONTENT_BLOCKS
-        and _HAS_IMAGE_CONTENT
         and isinstance(result, list)
         and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
     ):
         content: list = []
         for block in result:
-            if block["type"] == "text":
+            btype = block["type"]
+            if btype == "text":
                 content.append(TextContent(type="text", text=block["text"]))
-            elif block["type"] == "image":
+            elif btype == "image":
                 source = block["source"]
-                # Field name is mimeType (v1 camelCase) or mime_type
-                # (v2 snake_case); use **kwargs to satisfy both ty and runtime.
                 content.append(
                     ImageContent(  # type: ignore[call-arg]
                         type="image",
@@ -156,10 +153,39 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
                         **{"mimeType": source["media_type"]},
                     )
                 )
+            elif btype == "audio":
+                content.append(
+                    AudioContent(  # type: ignore[call-arg]
+                        type="audio",
+                        data=block["data"],
+                        **{
+                            "mimeType": block.get(
+                                "mimeType", block.get("media_type", "audio/wav")
+                            )
+                        },
+                    )
+                )
+            elif btype == "resource_link":
+                content.append(
+                    ResourceLink(  # type: ignore[call-arg]
+                        type="resource_link",
+                        uri=block["uri"],
+                        name=block["name"],
+                        **{"mimeType": block["mimeType"]}
+                        if "mimeType" in block
+                        else {},
+                    )
+                )
+            elif btype == "resource":
+                content.append(
+                    EmbeddedResource(  # type: ignore[call-arg]
+                        type="resource",
+                        resource=block["resource"],
+                    )
+                )
             else:
                 logger.warning(
-                    f"Unhandled content block type '{block['type']}', "
-                    "falling back to text"
+                    f"Unhandled content block type '{btype}', falling back to text"
                 )
                 content.append(
                     TextContent(
