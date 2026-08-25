@@ -1061,3 +1061,93 @@ class TestListToolsCacheHints:
             result = await client.list_tools()
             assert len(result.tools) > 0
             assert get_field(result, "ttl_ms", "ttlMs") in (None, 0)
+
+
+# ---------------------------------------------------------------------------
+# 10. outputSchema / structuredContent (MCP spec 2026-07-28)
+# ---------------------------------------------------------------------------
+
+_STATS_SCHEMA = {
+    "type": "object",
+    "properties": {"count": {"type": "integer"}},
+    "required": ["count"],
+}
+
+
+def _route_table_with_output_schema(
+    func, tool_name: str, output_schema: dict | None = None
+) -> RouteTable:
+    """Build a RouteTable from a real Tool, optionally with output_schema."""
+    tool = Tool.from_function(func, name=tool_name)
+    if output_schema is not None:
+        tool.metadata.extra["output_schema"] = output_schema
+    registry = MagicMock()
+    registry._tools = {tool_name: tool}
+    registry.is_enabled = MagicMock(return_value=True)
+    registry.get_disable_reason = MagicMock(return_value=None)
+    return RouteTable(registry)
+
+
+def stats() -> dict:
+    """Return a small stats object.
+
+    Returns:
+        A dict with a count.
+    """
+    return {"count": 2}
+
+
+class TestOutputSchema:
+    """outputSchema advertisement and structuredContent emission."""
+
+    def test_route_entry_picks_up_output_schema(self) -> None:
+        """metadata.extra['output_schema'] should populate RouteEntry."""
+        rt = _route_table_with_output_schema(stats, "stats", _STATS_SCHEMA)
+        assert rt.get_route("stats").output_schema == _STATS_SCHEMA
+
+    def test_route_entry_defaults_to_none(self) -> None:
+        """No output_schema in extra should default to None."""
+        rt = _route_table_with_output_schema(stats, "stats")
+        assert rt.get_route("stats").output_schema is None
+
+    @pytest.mark.asyncio
+    async def test_list_tools_advertises_output_schema(self) -> None:
+        """tools/list should include outputSchema when declared."""
+        rt = _route_table_with_output_schema(stats, "stats", _STATS_SCHEMA)
+        server = route_table_to_mcp_server(rt)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            tool = result.tools[0]
+            assert get_field(tool, "output_schema", "outputSchema") == _STATS_SCHEMA
+
+    @pytest.mark.asyncio
+    async def test_list_tools_omits_output_schema_when_absent(self) -> None:
+        """tools/list should not include outputSchema when not declared."""
+        rt = _route_table_with_output_schema(stats, "stats")
+        server = route_table_to_mcp_server(rt)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            tool = result.tools[0]
+            assert get_field(tool, "output_schema", "outputSchema") is None
+
+    @pytest.mark.asyncio
+    async def test_call_tool_returns_structured_content(self) -> None:
+        """tools/call should return structuredContent when outputSchema is declared."""
+        rt = _route_table_with_output_schema(stats, "stats", _STATS_SCHEMA)
+        server = route_table_to_mcp_server(rt)
+        async with create_test_client(server) as client:
+            result = await client.call_tool("stats", {})
+            assert get_field(result, "is_error", "isError") is False
+            structured = get_field(result, "structured_content", "structuredContent")
+            assert structured == {"count": 2}
+            assert json.loads(result.content[0].text) == {"count": 2}
+
+    @pytest.mark.asyncio
+    async def test_no_structured_content_without_output_schema(self) -> None:
+        """tools/call should not return structuredContent without outputSchema."""
+        rt = _route_table_with_output_schema(stats, "stats")
+        server = route_table_to_mcp_server(rt)
+        async with create_test_client(server) as client:
+            result = await client.call_tool("stats", {})
+            assert get_field(result, "structured_content", "structuredContent") is None
+            assert json.loads(result.content[0].text) == {"count": 2}

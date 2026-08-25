@@ -119,7 +119,8 @@ def get_mcp_session_info() -> tuple[Any, Any | None, Any] | None:
 # Handler type aliases (our uniform internal signatures)
 ListToolsHandler = Callable[[], Coroutine[Any, Any, "list[MCPTool]"]]
 CallToolHandler = Callable[
-    [str, dict[str, Any]], Coroutine[Any, Any, "list[MCPContentBlock]"]
+    [str, dict[str, Any]],
+    Coroutine[Any, Any, "tuple[list[MCPContentBlock], Any]"],
 ]
 
 
@@ -173,8 +174,11 @@ def _create_server_v1(
         return await list_tools_handler()
 
     @server.call_tool(validate_input=False)
-    async def _call_tool(tool_name: str, arguments: dict) -> list:
-        return await call_tool_handler(tool_name, arguments)
+    async def _call_tool(tool_name: str, arguments: dict) -> Any:
+        content, structured = await call_tool_handler(tool_name, arguments)
+        if structured is not None:
+            return content, structured
+        return content
 
     return server
 
@@ -209,8 +213,11 @@ def _create_server_v2(
         try:
             tool_name = params.name
             arguments = params.arguments or {}
-            content = await call_tool_handler(tool_name, arguments)
-            return CallToolResult(content=content, is_error=False)  # type: ignore[call-arg]
+            content, structured = await call_tool_handler(tool_name, arguments)
+            kwargs: dict[str, Any] = {}
+            if structured is not None:
+                kwargs["structured_content"] = structured
+            return CallToolResult(content=content, is_error=False, **kwargs)  # type: ignore[call-arg]
         except Exception as e:
             # In v2, MCPError raised from on_call_tool becomes a JSON-RPC
             # protocol error (client raises instead of getting is_error=True).
@@ -235,14 +242,24 @@ def _create_server_v2(
 # ---------------------------------------------------------------------------
 
 
-def make_mcp_tool(name: str, description: str, schema: dict) -> Any:
-    """Create an MCP Tool with the correct field name for the version."""
+def make_mcp_tool(
+    name: str,
+    description: str,
+    schema: dict,
+    output_schema: dict | None = None,
+) -> Any:
+    """Create an MCP Tool with the correct field names for the SDK version."""
     from mcp.types import Tool
 
     if MCP_VERSION >= 2:
-        return Tool(name=name, description=description, input_schema=schema)
+        kwargs: dict[str, Any] = {"input_schema": schema}
+        if output_schema is not None:
+            kwargs["output_schema"] = output_schema
     else:
-        return Tool(name=name, description=description, inputSchema=schema)
+        kwargs = {"inputSchema": schema}
+        if output_schema is not None:
+            kwargs["outputSchema"] = output_schema
+    return Tool(name=name, description=description, **kwargs)
 
 
 def supports_list_tools_cache() -> bool:

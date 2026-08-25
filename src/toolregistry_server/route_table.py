@@ -14,6 +14,21 @@ from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
 
 
+def _extract_output_schema(tool: Tool) -> dict[str, Any] | None:
+    """Return a tool's declared output schema, if any.
+
+    Tool authors declare an output schema via ``metadata.extra['output_schema']``.
+    """
+    metadata = getattr(tool, "metadata", None)
+    extra = getattr(metadata, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+    schema = extra.get("output_schema")
+    if not isinstance(schema, dict) or not schema:
+        return None
+    return schema
+
+
 def normalize_parameters_schema(schema: Any) -> dict[str, Any]:
     """Return a canonical object schema for tool parameters."""
     if not isinstance(schema, dict) or schema.get("type") not in (None, "object"):
@@ -59,6 +74,9 @@ class RouteEntry:
 
     # Validation
     parameters_model: Any | None = None
+
+    # Optional JSON Schema for the tool result (MCP ``outputSchema``)
+    output_schema: dict[str, Any] | None = None
 
     # Session-scoped handler factory (optional)
     handler_factory: Callable[..., Callable[..., Any]] | None = None
@@ -172,6 +190,7 @@ class RouteTable:
             enabled=self._registry.is_enabled(tool.name),
             disable_reason=self._registry.get_disable_reason(tool.name),
             deferred=bool(getattr(getattr(tool, "metadata", None), "defer", False)),
+            output_schema=_extract_output_schema(tool),
         )
 
     # ============== Query API ==============
