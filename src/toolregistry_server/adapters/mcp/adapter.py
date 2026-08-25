@@ -27,6 +27,24 @@ if TYPE_CHECKING:
 
 logger = get_logger()
 
+# --- Multimodal content support (module-level capability probes) -----------
+
+from mcp.types import TextContent  # noqa: E402
+
+try:
+    from mcp.types import ImageContent  # noqa: E402
+
+    _HAS_IMAGE_CONTENT = True
+except ImportError:
+    _HAS_IMAGE_CONTENT = False
+
+try:
+    from toolregistry.llm.content_blocks import is_content_block_list  # noqa: E402
+
+    _HAS_CONTENT_BLOCKS = True
+except ImportError:
+    _HAS_CONTENT_BLOCKS = False
+
 
 def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None:
     """Extract or create a SessionContext from the current MCP request.
@@ -116,25 +134,9 @@ def _result_to_mcp_content(result: Any) -> list:
     Returns:
         A list of MCP content objects (TextContent and/or ImageContent).
     """
-    from mcp.types import TextContent
-
-    try:
-        from mcp.types import ImageContent
-
-        _has_image_content = True
-    except ImportError:
-        _has_image_content = False
-
-    try:
-        from toolregistry.llm.content_blocks import is_content_block_list
-
-        _has_content_blocks = True
-    except ImportError:
-        _has_content_blocks = False
-
     if (
-        _has_content_blocks
-        and _has_image_content
+        _HAS_CONTENT_BLOCKS
+        and _HAS_IMAGE_CONTENT
         and isinstance(result, list)
         and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
     ):
