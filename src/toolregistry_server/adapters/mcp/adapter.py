@@ -22,6 +22,7 @@ from ...session import (
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
+    from mcp.types import ContentBlock as MCPContentBlock
 
     from ...route_table import RouteTable
 
@@ -121,7 +122,7 @@ def _serialize_result(result: Any) -> str:
         return str(result)
 
 
-def _result_to_mcp_content(result: Any) -> list:
+def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     """Convert a tool result to MCP content blocks.
 
     If the result is a multimodal content block list (containing image
@@ -276,7 +277,9 @@ def route_table_to_mcp_server(
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
         return tools
 
-    async def handle_call_tool(tool_name: str, arguments: dict) -> list:
+    async def handle_call_tool(
+        tool_name: str, arguments: dict
+    ) -> "list[MCPContentBlock]":
         """Execute a tool by name with the given arguments.
 
         Args:
