@@ -769,7 +769,7 @@ class TestResultSerialization:
             """Return content blocks including a future unknown type."""
             return [
                 {"type": "text", "text": "Known text"},
-                {"type": "audio", "data": "base64audio", "format": "wav"},
+                {"type": "video", "url": "https://example.com/v.mp4"},
                 {
                     "type": "image",
                     "source": {
@@ -807,10 +807,10 @@ class TestResultSerialization:
                 # Known text block
                 assert isinstance(result.content[0], TextContent)
                 assert result.content[0].text == "Known text"
-                # Unknown "audio" block degraded to TextContent (JSON)
+                # Unknown "video" block degraded to TextContent (JSON)
                 assert isinstance(result.content[1], TextContent)
                 degraded = json.loads(result.content[1].text)
-                assert degraded["type"] == "audio"
+                assert degraded["type"] == "video"
                 # Known image block
                 assert isinstance(result.content[2], ImageContent)
 
@@ -1151,3 +1151,124 @@ class TestOutputSchema:
             result = await client.call_tool("stats", {})
             assert get_field(result, "structured_content", "structuredContent") is None
             assert json.loads(result.content[0].text) == {"count": 2}
+
+
+# ---------------------------------------------------------------------------
+# 11. Extended content types: audio, resource_link, resource (MCP 2026-07-28)
+# ---------------------------------------------------------------------------
+
+
+class TestExtendedContentTypes:
+    """Tests for audio, resource_link, and embedded resource content blocks."""
+
+    @pytest.mark.asyncio
+    async def test_audio_content_block(self, mock_registry: MagicMock) -> None:
+        """Audio content blocks should become MCP AudioContent."""
+        from mcp.types import AudioContent
+
+        def audio_tool() -> list:
+            """Return an audio content block."""
+            return [
+                {"type": "audio", "data": "base64audio", "mimeType": "audio/wav"},
+            ]
+
+        tool = MagicMock()
+        tool.name = "audio_tool"
+        tool.namespace = "default"
+        tool.method_name = "audio_tool"
+        tool.description = "Return audio."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = audio_tool
+        tool.is_async = False
+
+        mock_registry._tools = {"audio_tool": tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with create_test_client(server) as client:
+            result = await client.call_tool("audio_tool", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert len(result.content) == 1
+            assert isinstance(result.content[0], AudioContent)
+            assert result.content[0].data == "base64audio"
+            assert get_field(result.content[0], "mime_type", "mimeType") == "audio/wav"
+
+    @pytest.mark.asyncio
+    async def test_resource_link_content_block(self, mock_registry: MagicMock) -> None:
+        """Resource link content blocks should become MCP ResourceLink."""
+        from mcp.types import ResourceLink
+
+        def link_tool() -> list:
+            """Return a resource link."""
+            return [
+                {
+                    "type": "resource_link",
+                    "uri": "file:///tmp/report.json",
+                    "name": "report.json",
+                    "mimeType": "application/json",
+                },
+            ]
+
+        tool = MagicMock()
+        tool.name = "link_tool"
+        tool.namespace = "default"
+        tool.method_name = "link_tool"
+        tool.description = "Return a link."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = link_tool
+        tool.is_async = False
+
+        mock_registry._tools = {"link_tool": tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with create_test_client(server) as client:
+            result = await client.call_tool("link_tool", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert len(result.content) == 1
+            assert isinstance(result.content[0], ResourceLink)
+            assert str(result.content[0].uri) == "file:///tmp/report.json"
+            assert result.content[0].name == "report.json"
+
+    @pytest.mark.asyncio
+    async def test_embedded_resource_content_block(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Embedded resource content blocks should become MCP EmbeddedResource."""
+        from mcp.types import EmbeddedResource
+
+        def embed_tool() -> list:
+            """Return an embedded resource."""
+            return [
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///main.rs",
+                        "text": "fn main() {}",
+                        "mimeType": "text/x-rust",
+                    },
+                },
+            ]
+
+        tool = MagicMock()
+        tool.name = "embed_tool"
+        tool.namespace = "default"
+        tool.method_name = "embed_tool"
+        tool.description = "Return embedded resource."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = embed_tool
+        tool.is_async = False
+
+        mock_registry._tools = {"embed_tool": tool}
+
+        route_table = RouteTable(mock_registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with create_test_client(server) as client:
+            result = await client.call_tool("embed_tool", {})
+            assert get_field(result, "is_error", "isError") is False
+            assert len(result.content) == 1
+            assert isinstance(result.content[0], EmbeddedResource)
+            assert result.content[0].resource.text == "fn main() {}"
