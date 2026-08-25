@@ -121,6 +121,11 @@ def _serialize_result(result: Any) -> str:
         return str(result)
 
 
+def _get_mime_type(d: dict) -> str | None:
+    """Read MIME type from a content block dict, accepting both key conventions."""
+    return d.get("mimeType", d.get("media_type"))
+
+
 def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     """Convert a tool result to MCP content blocks.
 
@@ -146,34 +151,31 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
                 content.append(TextContent(type="text", text=block["text"]))
             elif btype == "image":
                 source = block["source"]
+                mime = _get_mime_type(source)
                 content.append(
                     ImageContent(  # type: ignore[call-arg]
                         type="image",
                         data=source["data"],
-                        **{"mimeType": source["media_type"]},
+                        **{"mimeType": mime} if mime else {},
                     )
                 )
             elif btype == "audio":
+                mime = _get_mime_type(block)
                 content.append(
                     AudioContent(  # type: ignore[call-arg]
                         type="audio",
                         data=block["data"],
-                        **{
-                            "mimeType": block.get(
-                                "mimeType", block.get("media_type", "audio/wav")
-                            )
-                        },
+                        **{"mimeType": mime} if mime else {},
                     )
                 )
             elif btype == "resource_link":
+                mime = _get_mime_type(block)
                 content.append(
                     ResourceLink(  # type: ignore[call-arg]
                         type="resource_link",
                         uri=block["uri"],
                         name=block["name"],
-                        **{"mimeType": block["mimeType"]}
-                        if "mimeType" in block
-                        else {},
+                        **{"mimeType": mime} if mime else {},
                     )
                 )
             elif btype == "resource":
