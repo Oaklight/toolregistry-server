@@ -1022,3 +1022,42 @@ class TestParameterValidation:
             )
             assert get_field(result, "is_error", "isError") is False
             assert "verbose=True(bool)" in result.content[0].text
+
+
+# ---------------------------------------------------------------------------
+# 9. tools/list cache hints (MCP spec 2026-07-28)
+# ---------------------------------------------------------------------------
+
+
+class TestListToolsCacheHints:
+    """Tests for ttlMs / cacheScope hints on tools/list responses."""
+
+    @pytest.mark.asyncio
+    async def test_cache_hints_forwarded_when_supported(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """Cache hints should appear in list_tools response on supported SDKs."""
+        from toolregistry_server.adapters.mcp._compat import supports_list_tools_cache
+
+        server = route_table_to_mcp_server(
+            route_table_with_tools,
+            list_tools_ttl_ms=60000,
+            list_tools_cache_scope="public",
+        )
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            assert len(result.tools) > 0
+            if supports_list_tools_cache():
+                assert get_field(result, "ttl_ms", "ttlMs") == 60000
+                assert get_field(result, "cache_scope", "cacheScope") == "public"
+
+    @pytest.mark.asyncio
+    async def test_no_cache_hints_by_default(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """Without cache hint params, defaults should be unchanged."""
+        server = route_table_to_mcp_server(route_table_with_tools)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            assert len(result.tools) > 0
+            assert get_field(result, "ttl_ms", "ttlMs") in (None, 0)

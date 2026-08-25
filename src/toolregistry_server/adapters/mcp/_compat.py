@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextvars
 from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
@@ -128,6 +128,8 @@ def create_mcp_server(
     *,
     list_tools_handler: ListToolsHandler,
     call_tool_handler: CallToolHandler,
+    list_tools_ttl_ms: int | None = None,
+    list_tools_cache_scope: Literal["public", "private"] | None = None,
 ) -> Server:
     """Create an MCP lowlevel Server with handlers registered.
 
@@ -137,13 +139,22 @@ def create_mcp_server(
     Args:
         name: Server name for MCP identification.
         list_tools_handler: ``async () -> list[Tool]``
-        call_tool_handler: ``async (name, arguments) -> list[TextContent]``
+        call_tool_handler: ``async (name, arguments) -> list[ContentBlock]``
+        list_tools_ttl_ms: Optional cache lifetime in milliseconds for
+            ``tools/list`` responses (MCP spec 2026-07-28). Ignored on v1.
+        list_tools_cache_scope: Cache scope for ``tools/list``. Ignored on v1.
 
     Returns:
         A configured ``mcp.server.lowlevel.Server``.
     """
     if MCP_VERSION >= 2:
-        return _create_server_v2(name, list_tools_handler, call_tool_handler)
+        return _create_server_v2(
+            name,
+            list_tools_handler,
+            call_tool_handler,
+            list_tools_ttl_ms,
+            list_tools_cache_scope,
+        )
     else:
         return _create_server_v1(name, list_tools_handler, call_tool_handler)
 
@@ -172,15 +183,24 @@ def _create_server_v2(
     name: str,
     list_tools_handler: ListToolsHandler,
     call_tool_handler: CallToolHandler,
+    list_tools_ttl_ms: int | None = None,
+    list_tools_cache_scope: Literal["public", "private"] | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
     from mcp.types import CallToolResult, ListToolsResult
+
+    _cache_supported = supports_list_tools_cache()
 
     # list_tools does not set _v2_request_ctx because list_tools
     # handlers don't need session context.
     async def on_list_tools(ctx: Any, params: Any) -> Any:
         tools = await list_tools_handler()
-        return ListToolsResult(tools=tools)
+        extra: dict[str, Any] = {}
+        if list_tools_ttl_ms is not None and _cache_supported:
+            extra["ttl_ms"] = list_tools_ttl_ms
+        if list_tools_cache_scope is not None and _cache_supported:
+            extra["cache_scope"] = list_tools_cache_scope
+        return ListToolsResult(tools=tools, **extra)
 
     async def on_call_tool(ctx: Any, params: Any) -> Any:
         from mcp.types import TextContent
@@ -223,6 +243,19 @@ def make_mcp_tool(name: str, description: str, schema: dict) -> Any:
         return Tool(name=name, description=description, input_schema=schema)
     else:
         return Tool(name=name, description=description, inputSchema=schema)
+
+
+def supports_list_tools_cache() -> bool:
+    """Return True when the SDK's ``ListToolsResult`` supports cache hints.
+
+    ``ttlMs`` / ``cacheScope`` were introduced by MCP spec 2026-07-28 and are
+    only present on SDK v2.
+    """
+    try:
+        from mcp.types import ListToolsResult
+    except ImportError:
+        return False
+    return "ttl_ms" in getattr(ListToolsResult, "model_fields", {})
 
 
 _MISSING = object()
@@ -276,6 +309,7 @@ __all__ = [
     "make_mcp_error",
     "get_mcp_session_info",
     "create_mcp_server",
+    "supports_list_tools_cache",
     "get_field",
     "create_test_client",
 ]
