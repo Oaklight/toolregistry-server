@@ -279,6 +279,7 @@ def route_table_to_mcp_server(
                     name=route.tool_name,
                     description=route.description or "",
                     schema=normalize_parameters_schema(route.parameters_schema),
+                    output_schema=route.output_schema,
                 )
             )
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
@@ -286,7 +287,7 @@ def route_table_to_mcp_server(
 
     async def handle_call_tool(
         tool_name: str, arguments: dict
-    ) -> "list[MCPContentBlock]":
+    ) -> "tuple[list[MCPContentBlock], Any]":
         """Execute a tool by name with the given arguments.
 
         Args:
@@ -294,7 +295,8 @@ def route_table_to_mcp_server(
             arguments: The input arguments for the tool.
 
         Returns:
-            A list of MCP content blocks (TextContent and/or ImageContent).
+            A ``(content, structured)`` pair. *structured* is the raw
+            result when the tool declares an ``outputSchema``, else None.
 
         Raises:
             McpErrorClass: If the tool is disabled or not found.
@@ -319,8 +321,13 @@ def route_table_to_mcp_server(
         try:
             result = await _execute_tool(route, arguments, session_ctx, session_mgr)
             content = _result_to_mcp_content(result)
+            structured = (
+                result
+                if route.output_schema and isinstance(result, (dict, list))
+                else None
+            )
             logger.debug(f"call_tool '{tool_name}': success")
-            return content
+            return content, structured
 
         except McpErrorClass:
             raise
