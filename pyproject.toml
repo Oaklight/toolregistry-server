@@ -103,3 +103,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+
+[tool.zerodep]
+vendor-dir = "src/toolregistry_server/_vendor"
