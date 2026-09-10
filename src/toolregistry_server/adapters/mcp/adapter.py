@@ -9,8 +9,6 @@ import inspect
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel
-
 from ..._vendor.structlog import get_logger
 from ...route_table import normalize_parameters_schema
 from ...session import (
@@ -201,6 +199,57 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     return [TextContent(type="text", text=_serialize_result(result))]
 
 
+def _coerce_arguments_from_schema(
+    arguments: dict[str, Any],
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    """Coerce string arguments to their declared types using the JSON schema.
+
+    MCP clients (especially Codex-like ones) may send all parameter values as
+    strings.  This function uses the ``properties`` section of the tool's JSON
+    schema to cast values to the expected type.  Framework-injected fields
+    (e.g. ``toolcall_reason``) are stripped so they are not forwarded to
+    handlers that do not accept them.
+
+    Args:
+        arguments: Raw arguments from the MCP ``call_tool`` request.
+        schema: The tool's JSON Schema (``route.parameters_schema``).
+
+    Returns:
+        A dict of coerced arguments suitable for passing to the handler.
+
+    Raises:
+        ValueError: When a string value cannot be converted to the declared
+            type (e.g. ``"abc"`` for an ``integer`` field).
+    """
+    properties = schema.get("properties", {})
+    coerced: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if key == "toolcall_reason":
+            continue
+        prop_schema = properties.get(key, {})
+        expected_type = prop_schema.get("type")
+        if isinstance(value, str) and expected_type:
+            if expected_type == "integer":
+                try:
+                    value = int(value)
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Parameter '{key}': cannot convert {value!r} to integer"
+                    ) from exc
+            elif expected_type == "number":
+                try:
+                    value = float(value)
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Parameter '{key}': cannot convert {value!r} to number"
+                    ) from exc
+            elif expected_type == "boolean":
+                value = value.lower() in ("true", "1", "yes")
+        coerced[key] = value
+    return coerced
+
+
 async def _execute_tool(
     route: Any,
     arguments: dict,
@@ -210,8 +259,7 @@ async def _execute_tool(
     """Resolve the handler for a route and execute it with the given arguments.
 
     Handles session-scoped handler resolution, parameter validation/coercion
-    via the route's Pydantic model, optional session injection, and async/sync
-    dispatch.
+    via the JSON schema, optional session injection, and async/sync dispatch.
 
     Args:
         route: The RouteEntry for the tool being invoked.
@@ -227,12 +275,10 @@ async def _execute_tool(
     if route.handler_factory and session_ctx:
         handler = session_mgr.get_session_handler(session_ctx.session_id, route)
 
-    # Validate and coerce parameters (e.g. string "8" → int 8)
-    if isinstance(route.parameters_model, type) and issubclass(
-        route.parameters_model, BaseModel
-    ):
-        model = route.parameters_model(**arguments)
-        arguments = model.model_dump_one_level()
+    # Strip framework-injected fields and coerce parameter types based on
+    # the JSON schema (e.g. string "8" → int 8 for MCP clients that send
+    # all values as strings).
+    arguments = _coerce_arguments_from_schema(arguments, route.parameters_schema)
 
     # Inject session if handler requests it
     if session_ctx and should_inject_session(handler):

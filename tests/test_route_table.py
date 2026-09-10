@@ -593,11 +593,11 @@ class TestRouteTable:
 
         assert route is not None
         assert route.parameters_model is not None
-        # Verify the model can coerce string → int
-        model = route.parameters_model(a="3", b="4")
-        result = model.model_dump_one_level()
-        assert result == {"a": 3, "b": 4}
-        assert isinstance(result["a"], int)
+        # parameters_model is a TypedDict class; calling it produces a dict
+        result = route.parameters_model(a=3, b=4)
+        assert isinstance(result, dict)
+        assert result["a"] == 3
+        assert result["b"] == 4
 
     def test_parameters_model_none_when_tool_lacks_it(
         self, mock_registry: MagicMock
