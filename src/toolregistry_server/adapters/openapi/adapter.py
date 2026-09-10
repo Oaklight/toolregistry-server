@@ -559,4 +559,4 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
         # is regenerated on every request, reflecting runtime changes.
         return openapi_schema
 
-    app.openapi = custom_openapi  # type: ignore[assignment]
+    app.openapi = custom_openapi  # ty: ignore[invalid-assignment]

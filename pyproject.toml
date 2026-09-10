@@ -93,6 +93,7 @@ exclude = [
 
 [tool.ty.rules]
 unresolved-import = "ignore"
+unused-ignore-comment = "ignore"
 
 [tool.complexipy]
 exclude = ["src/toolregistry_server/_vendor"]
@@ -106,3 +107,4 @@ python_functions = ["test_*"]
 
 [tool.zerodep]
 vendor-dir = "src/toolregistry_server/_vendor"
+
