@@ -56,6 +56,8 @@ class RouteEntry:
         is_async: Whether the handler is async
         enabled: Whether the tool is currently enabled
         disable_reason: Reason for disabling, if disabled
+        schema_hash: Content hash of the tool's parameter schema
+        last_refreshed_at: ISO 8601 timestamp of the last schema refresh
     """
 
     # Tool identity
@@ -85,6 +87,10 @@ class RouteEntry:
     enabled: bool = True
     disable_reason: str | None = None
     deferred: bool = False
+
+    # Schema fingerprint
+    schema_hash: str = ""
+    last_refreshed_at: str = ""
 
 
 @dataclass
@@ -191,6 +197,12 @@ class RouteTable:
             disable_reason=self._registry.get_disable_reason(tool.name),
             deferred=bool(getattr(getattr(tool, "metadata", None), "defer", False)),
             output_schema=_extract_output_schema(tool),
+            schema_hash=getattr(getattr(tool, "metadata", None), "schema_hash", "")
+            or "",
+            last_refreshed_at=getattr(
+                getattr(tool, "metadata", None), "last_refreshed_at", ""
+            )
+            or "",
         )
 
     # ============== Query API ==============

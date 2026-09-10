@@ -84,6 +84,7 @@ def create_openapi_app(
         ) from e
 
     from .adapter import (
+        add_events_endpoint,
         add_tools_endpoint,
         route_table_to_router,
         setup_dynamic_openapi,
@@ -111,6 +112,9 @@ def create_openapi_app(
 
     # Add /tools endpoint for listing available tools
     add_tools_endpoint(app, route_table)
+
+    # Add /events SSE endpoint for streaming tool change events
+    add_events_endpoint(app, route_table)
 
     # Add routes from route table
     router = route_table_to_router(route_table)

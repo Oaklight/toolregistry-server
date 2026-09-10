@@ -246,7 +246,7 @@ def _add_route_from_entry(
             methods=["POST"],
             operation_id=route.tool_name,
             summary=summary,
-            tags=tags,  # ty: ignore[invalid-argument-type]
+            tags=tags,
         )
     else:
 
@@ -281,7 +281,7 @@ def _add_route_from_entry(
             methods=["POST"],
             operation_id=route.tool_name,
             summary=summary,
-            tags=tags,  # ty: ignore[invalid-argument-type]
+            tags=tags,
         )
 
 
@@ -383,19 +383,94 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
         # listing so that LLMs discover them via discover_tools.
         tools = []
         for route in route_table.list_routes(enabled_only=True, include_deferred=False):
-            tools.append(
-                {
-                    "name": route.tool_name,
-                    "namespace": route.namespace,
-                    "method": route.method_name,
-                    "path": route.path,
-                    "description": route.description,
-                }
-            )
+            tool_info: dict[str, Any] = {
+                "name": route.tool_name,
+                "namespace": route.namespace,
+                "method": route.method_name,
+                "path": route.path,
+                "description": route.description,
+            }
+            if route.schema_hash:
+                tool_info["schema_hash"] = route.schema_hash
+            if route.last_refreshed_at:
+                tool_info["last_refreshed_at"] = route.last_refreshed_at
+            tools.append(tool_info)
 
         return JSONResponse(
             content={"tools": tools, "etag": current_etag},
             headers={"ETag": current_etag},
+        )
+
+
+# ---------------------------------------------------------------------------
+# SSE event stream
+# ---------------------------------------------------------------------------
+
+
+def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
+    """Add a GET /events SSE endpoint that streams tool change events.
+
+    Each connected client receives server-sent events whenever a tool is
+    registered, unregistered, enabled, disabled, or otherwise modified.
+
+    Event format::
+
+        event: tool_change
+        data: {"tool": "search", "event": "register"}
+
+    Args:
+        app: The FastAPI application instance.
+        route_table: The RouteTable whose changes are broadcast.
+    """
+    import asyncio
+    import json as _json
+
+    try:
+        from starlette.responses import StreamingResponse
+    except ImportError as e:
+        raise ImportError(
+            "Starlette is required for SSE support. "
+            "Install with: pip install toolregistry-server[openapi]"
+        ) from e
+
+    # All currently connected SSE client queues
+    _queues: set[asyncio.Queue[str]] = set()
+
+    def _on_change(tool_name: str, event: str) -> None:
+        """Push a change event to every connected SSE client."""
+        payload = _json.dumps({"tool": tool_name, "event": event})
+        msg = f"event: tool_change\ndata: {payload}\n\n"
+        import contextlib
+
+        for q in list(_queues):
+            with contextlib.suppress(asyncio.QueueFull):
+                q.put_nowait(msg)
+
+    route_table.add_listener(_on_change)
+
+    @app.get("/events", tags=["meta"], include_in_schema=True)
+    async def sse_events():
+        """Stream tool change events via Server-Sent Events."""
+        q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
+        _queues.add(q)
+
+        async def _generate():
+            try:
+                while True:
+                    msg = await q.get()
+                    yield msg
+            except asyncio.CancelledError:
+                return
+            finally:
+                _queues.discard(q)
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
 
@@ -483,4 +558,4 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
         # is regenerated on every request, reflecting runtime changes.
         return openapi_schema
 
-    app.openapi = custom_openapi  # ty: ignore[invalid-assignment]
+    app.openapi = custom_openapi
