@@ -131,6 +131,7 @@ def create_mcp_server(
     call_tool_handler: CallToolHandler,
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
+    session_tracker: set | None = None,
 ) -> Server:
     """Create an MCP lowlevel Server with handlers registered.
 
@@ -144,6 +145,8 @@ def create_mcp_server(
         list_tools_ttl_ms: Optional cache lifetime in milliseconds for
             ``tools/list`` responses (MCP spec 2026-07-28). Ignored on v1.
         list_tools_cache_scope: Cache scope for ``tools/list``. Ignored on v1.
+        session_tracker: Optional set to collect active ``ServerSession``
+            objects for sending ``notifications/tools/list_changed``.
 
     Returns:
         A configured ``mcp.server.lowlevel.Server``.
@@ -155,15 +158,19 @@ def create_mcp_server(
             call_tool_handler,
             list_tools_ttl_ms,
             list_tools_cache_scope,
+            session_tracker,
         )
     else:
-        return _create_server_v1(name, list_tools_handler, call_tool_handler)
+        return _create_server_v1(
+            name, list_tools_handler, call_tool_handler, session_tracker
+        )
 
 
 def _create_server_v1(
     name: str,
     list_tools_handler: ListToolsHandler,
     call_tool_handler: CallToolHandler,
+    session_tracker: set | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
 
@@ -171,6 +178,15 @@ def _create_server_v1(
 
     @server.list_tools()
     async def _list_tools() -> list:
+        if session_tracker is not None:
+            try:
+                from mcp.server.lowlevel.server import request_ctx
+
+                mcp_ctx = request_ctx.get(None)
+                if mcp_ctx is not None:
+                    session_tracker.add(mcp_ctx.session)
+            except ImportError:
+                pass
         return await list_tools_handler()
 
     @server.call_tool(validate_input=False)
@@ -189,15 +205,16 @@ def _create_server_v2(
     call_tool_handler: CallToolHandler,
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
+    session_tracker: set | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
     from mcp.types import CallToolResult, ListToolsResult
 
     _cache_supported = supports_list_tools_cache()
 
-    # list_tools does not set _v2_request_ctx because list_tools
-    # handlers don't need session context.
     async def on_list_tools(ctx: Any, params: Any) -> Any:
+        if session_tracker is not None:
+            session_tracker.add(ctx.session)
         tools = await list_tools_handler()
         extra: dict[str, Any] = {}
         if list_tools_ttl_ms is not None and _cache_supported:
@@ -320,6 +337,21 @@ async def create_test_client(server: Server):
             yield session
 
 
+def tools_changed_notification_options():
+    """Return a NotificationOptions with tools_changed=True.
+
+    This advertises that the server supports
+    notifications/tools/list_changed so clients know to listen
+    for dynamic tool list updates.
+
+    Returns:
+        A NotificationOptions instance.
+    """
+    from mcp.server import NotificationOptions
+
+    return NotificationOptions(tools_changed=True)
+
+
 __all__ = [
     "MCP_VERSION",
     "McpErrorClass",
@@ -327,6 +359,7 @@ __all__ = [
     "get_mcp_session_info",
     "create_mcp_server",
     "supports_list_tools_cache",
+    "tools_changed_notification_options",
     "get_field",
     "create_test_client",
 ]
