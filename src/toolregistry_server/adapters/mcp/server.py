@@ -77,10 +77,14 @@ async def run_stdio(server: "Server") -> None:
     logger.info("Starting MCP server with stdio transport")
     try:
         async with stdio_server() as (read, write):
+            from ._compat import tools_changed_notification_options
+
             await server.run(
                 read,
                 write,
-                server.create_initialization_options(),
+                server.create_initialization_options(
+                    notification_options=tools_changed_notification_options(),
+                ),
             )
     except KeyboardInterrupt:
         logger.info("MCP stdio server shutdown requested (KeyboardInterrupt)")
@@ -129,10 +133,14 @@ async def run_sse(
         async with sse.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
+            from ._compat import tools_changed_notification_options
+
             await server.run(
                 streams[0],
                 streams[1],
-                server.create_initialization_options(),
+                server.create_initialization_options(
+                    notification_options=tools_changed_notification_options(),
+                ),
             )
         # Return empty response to avoid NoneType error when client disconnects
         return Response()

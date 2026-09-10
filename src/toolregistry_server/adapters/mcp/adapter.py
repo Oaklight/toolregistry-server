@@ -250,6 +250,61 @@ async def _execute_tool(
     return result
 
 
+def _setup_tools_changed_notifications(
+    server: "Server",
+    route_table: "RouteTable",
+    sessions: set,
+) -> None:
+    """Wire up MCP tools/list_changed notifications.
+
+    Patches the server's create_initialization_options to always advertise
+    tools_changed=True, and registers a RouteTable listener that sends
+    send_tool_list_changed() to all tracked sessions on change.
+
+    Args:
+        server: The MCP Server instance to patch.
+        route_table: The RouteTable to listen for changes.
+        sessions: The session tracker set (populated by session_tracker
+            in create_mcp_server).
+    """
+    import asyncio
+
+    # Patch create_initialization_options so that tools_changed is always
+    # advertised, even when called without arguments by the SDK's internal
+    # StreamableHTTPSessionManager.
+    _orig_create_init_opts = server.create_initialization_options
+
+    def _patched_create_init_opts(
+        notification_options=None, experimental_capabilities=None
+    ):
+        from mcp.server import NotificationOptions as _NO
+
+        opts = notification_options or _NO()
+        opts.tools_changed = True
+        return _orig_create_init_opts(opts, experimental_capabilities)
+
+    server.create_initialization_options = _patched_create_init_opts  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+
+    async def _send_tool_list_changed(session) -> None:
+        """Send the notification, removing dead sessions on failure."""
+        try:
+            await session.send_tool_list_changed()
+        except Exception:
+            sessions.discard(session)
+
+    def _on_route_change(tool_name: str, event: str) -> None:
+        """Send tool-list-changed to all tracked MCP sessions."""
+        for session in list(sessions):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_send_tool_list_changed(session))
+            except RuntimeError:
+                # No running event loop — skip silently
+                pass
+
+    route_table.add_listener(_on_route_change)
+
+
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
@@ -340,7 +395,7 @@ def route_table_to_mcp_server(
                 INTERNAL_ERROR, f"Tool '{tool_name}' is disabled: {reason}"
             )
 
-        # --- Session context ---
+        # --- Session context & notification tracking ---
         session_ctx = _get_session_context(session_mgr)
         token = None
         if session_ctx is not None:
@@ -373,13 +428,20 @@ def route_table_to_mcp_server(
             if token is not None:
                 session_context_var.reset(token)
 
+    # Track active MCP sessions so we can push tool-list-changed
+    # notifications when the route table changes.
+    _sessions: set = set()
+
     server = create_mcp_server(
         name,
         list_tools_handler=handle_list_tools,
         call_tool_handler=handle_call_tool,
         list_tools_ttl_ms=list_tools_ttl_ms,
         list_tools_cache_scope=list_tools_cache_scope,
+        session_tracker=_sessions,
     )
+
+    _setup_tools_changed_notifications(server, route_table, _sessions)
 
     logger.info(
         f"MCP server '{name}' created with {len(route_table.list_routes())} "
