@@ -5,6 +5,7 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
@@ -136,11 +137,9 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
 def _coerce_arguments(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
     """Validate and coerce request arguments through the tool's parameters model.
 
-    When a ``parameters_model`` is available on the route, the raw arguments
-    are validated through it and dumped via ``model_dump_one_level()``.  This
-    strips framework-injected fields (e.g. ``thought`` from think-augmented
-    tool calling) that the handler does not accept, and coerces types
-    (e.g. string ``"8"`` to int ``8``).
+    Strips framework-injected fields (e.g. ``toolcall_reason``) that the
+    handler does not accept, and coerces types when a Pydantic
+    ``parameters_model`` is available (e.g. string ``"8"`` to int ``8``).
 
     Args:
         raw: The raw arguments from the request body.
@@ -149,12 +148,14 @@ def _coerce_arguments(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
     Returns:
         A dict of arguments suitable for passing to the handler.
     """
+    # Strip framework-injected properties that tool handlers don't accept
+    filtered = {k: v for k, v in raw.items() if k != "toolcall_reason"}
     if isinstance(route.parameters_model, type) and issubclass(
         route.parameters_model, BaseModel
     ):
-        model = route.parameters_model(**raw)
+        model = route.parameters_model(**filtered)
         return model.model_dump_one_level()
-    return raw
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +203,7 @@ def _add_route_from_entry(
     # Use the top-level segment of the namespace as the tag for grouping
     # e.g. "web/brave_search" → tag "web", "calculator" → tag "calculator"
     namespace = route.namespace
-    tags: list[str] = []
+    tags: list[str | Enum] = []
     if namespace:
         tags = [namespace.split("/")[0]]
 
@@ -558,4 +559,4 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
         # is regenerated on every request, reflecting runtime changes.
         return openapi_schema
 
-    app.openapi = custom_openapi
+    app.openapi = custom_openapi  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
