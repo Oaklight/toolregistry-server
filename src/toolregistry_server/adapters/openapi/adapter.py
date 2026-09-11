@@ -5,6 +5,7 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
+import contextlib
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -138,8 +139,7 @@ def _coerce_arguments(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
     """Validate and coerce request arguments through the tool's parameters model.
 
     Strips framework-injected fields (e.g. ``toolcall_reason``) that the
-    handler does not accept, and coerces types when a Pydantic
-    ``parameters_model`` is available (e.g. string ``"8"`` to int ``8``).
+    handler does not accept.
 
     Args:
         raw: The raw arguments from the request body.
@@ -149,13 +149,7 @@ def _coerce_arguments(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
         A dict of arguments suitable for passing to the handler.
     """
     # Strip framework-injected properties that tool handlers don't accept
-    filtered = {k: v for k, v in raw.items() if k != "toolcall_reason"}
-    if isinstance(route.parameters_model, type) and issubclass(
-        route.parameters_model, BaseModel
-    ):
-        model = route.parameters_model(**filtered)
-        return model.model_dump_one_level()
-    return filtered
+    return {k: v for k, v in raw.items() if k != "toolcall_reason"}
 
 
 # ---------------------------------------------------------------------------
@@ -440,14 +434,16 @@ def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
     def _on_change(tool_name: str, event: str) -> None:
         """Push a change event to every connected SSE client."""
         payload = _json.dumps({"tool": tool_name, "event": event})
+        # TODO: SSE events do not include an ``id:`` field, so clients
+        # cannot resume from a Last-Event-ID after reconnection.
         msg = f"event: tool_change\ndata: {payload}\n\n"
-        import contextlib
-
         for q in list(_queues):
             with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(msg)
 
     route_table.add_listener(_on_change)
+
+    _KEEPALIVE_INTERVAL: float = 30.0  # seconds
 
     @app.get("/events", tags=["meta"], include_in_schema=True)
     async def sse_events():
@@ -458,8 +454,15 @@ def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
         async def _generate():
             try:
                 while True:
-                    msg = await q.get()
-                    yield msg
+                    try:
+                        msg = await asyncio.wait_for(
+                            q.get(), timeout=_KEEPALIVE_INTERVAL
+                        )
+                        yield msg
+                    except asyncio.TimeoutError:
+                        # Send SSE comment as keepalive to prevent reverse
+                        # proxies from closing idle connections.
+                        yield ": keepalive\n\n"
             except asyncio.CancelledError:
                 return
             finally:

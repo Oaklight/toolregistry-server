@@ -5,8 +5,10 @@ ensuring tool enable/disable state is always read directly from the route table
 at request time (no drift).
 """
 
+import contextlib
 import inspect
 import json
+import weakref
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..._vendor.structlog import get_logger
@@ -199,6 +201,66 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     return [TextContent(type="text", text=_serialize_result(result))]
 
 
+def _resolve_expected_type(prop_schema: dict[str, Any]) -> str | None:
+    """Resolve the effective JSON Schema type for a property.
+
+    Handles union types like ``["string", "null"]`` by picking the first
+    non-null type.
+
+    Args:
+        prop_schema: The JSON Schema dict for a single property.
+
+    Returns:
+        The resolved type string, or ``None`` if unresolvable.
+    """
+    expected_type = prop_schema.get("type")
+    if isinstance(expected_type, list):
+        non_null = [t for t in expected_type if t != "null"]
+        return non_null[0] if non_null else None
+    return expected_type
+
+
+def _coerce_string_value(key: str, value: str, expected_type: str) -> Any:
+    """Coerce a single string value to the declared JSON Schema type.
+
+    Boolean coercion: string values are compared case-insensitively
+    against ``("true", "1", "yes")``; all other strings coerce to ``False``.
+
+    Args:
+        key: The parameter name (used in error messages).
+        value: The string value to coerce.
+        expected_type: The JSON Schema type to coerce to.
+
+    Returns:
+        The coerced value, or the original string if no coercion applies.
+
+    Raises:
+        ValueError: When the string cannot be converted to the target type.
+    """
+    if expected_type == "integer":
+        try:
+            return int(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Parameter '{key}': cannot convert {value!r} to integer"
+            ) from exc
+    if expected_type == "number":
+        try:
+            return float(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"Parameter '{key}': cannot convert {value!r} to number"
+            ) from exc
+    if expected_type == "boolean":
+        return value.lower() in ("true", "1", "yes")
+    if (expected_type == "array" and value.startswith("[")) or (
+        expected_type == "object" and value.startswith("{")
+    ):
+        with contextlib.suppress(json.JSONDecodeError, ValueError):
+            return json.loads(value)
+    return value
+
+
 def _coerce_arguments_from_schema(
     arguments: dict[str, Any],
     schema: dict[str, Any],
@@ -228,24 +290,9 @@ def _coerce_arguments_from_schema(
         if key == "toolcall_reason":
             continue
         prop_schema = properties.get(key, {})
-        expected_type = prop_schema.get("type")
+        expected_type = _resolve_expected_type(prop_schema)
         if isinstance(value, str) and expected_type:
-            if expected_type == "integer":
-                try:
-                    value = int(value)
-                except (ValueError, TypeError) as exc:
-                    raise ValueError(
-                        f"Parameter '{key}': cannot convert {value!r} to integer"
-                    ) from exc
-            elif expected_type == "number":
-                try:
-                    value = float(value)
-                except (ValueError, TypeError) as exc:
-                    raise ValueError(
-                        f"Parameter '{key}': cannot convert {value!r} to number"
-                    ) from exc
-            elif expected_type == "boolean":
-                value = value.lower() in ("true", "1", "yes")
+            value = _coerce_string_value(key, value, expected_type)
         coerced[key] = value
     return coerced
 
@@ -299,7 +346,7 @@ async def _execute_tool(
 def _setup_tools_changed_notifications(
     server: "Server",
     route_table: "RouteTable",
-    sessions: set,
+    sessions: "weakref.WeakSet[Any]",
 ) -> None:
     """Wire up MCP tools/list_changed notifications.
 
@@ -310,7 +357,7 @@ def _setup_tools_changed_notifications(
     Args:
         server: The MCP Server instance to patch.
         route_table: The RouteTable to listen for changes.
-        sessions: The session tracker set (populated by session_tracker
+        sessions: The session tracker WeakSet (populated by session_tracker
             in create_mcp_server).
     """
     import asyncio
@@ -331,7 +378,12 @@ def _setup_tools_changed_notifications(
 
     server.create_initialization_options = _patched_create_init_opts  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    async def _send_tool_list_changed(session) -> None:
+    # Hold strong references to pending notification tasks so they are
+    # not garbage-collected before completion ("Task exception was never
+    # retrieved" warning).
+    _pending_tasks: set[asyncio.Task[None]] = set()
+
+    async def _send_tool_list_changed(session: Any) -> None:
         """Send the notification, removing dead sessions on failure."""
         try:
             await session.send_tool_list_changed()
@@ -343,7 +395,9 @@ def _setup_tools_changed_notifications(
         for session in list(sessions):
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(_send_tool_list_changed(session))
+                task = loop.create_task(_send_tool_list_changed(session))
+                _pending_tasks.add(task)
+                task.add_done_callback(_pending_tasks.discard)
             except RuntimeError:
                 # No running event loop — skip silently
                 pass
@@ -476,7 +530,7 @@ def route_table_to_mcp_server(
 
     # Track active MCP sessions so we can push tool-list-changed
     # notifications when the route table changes.
-    _sessions: set = set()
+    _sessions: weakref.WeakSet[Any] = weakref.WeakSet()
 
     server = create_mcp_server(
         name,
