@@ -5,13 +5,15 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
-import contextlib
+import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
 
 from ...route_table import RouteEntry, RouteTable, normalize_parameters_schema
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import APIRouter, FastAPI
@@ -438,8 +440,10 @@ def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
         # cannot resume from a Last-Event-ID after reconnection.
         msg = f"event: tool_change\ndata: {payload}\n\n"
         for q in list(_queues):
-            with contextlib.suppress(asyncio.QueueFull):
+            try:
                 q.put_nowait(msg)
+            except asyncio.QueueFull:
+                logger.debug("SSE client queue full, dropping event: %s", tool_name)
 
     route_table.add_listener(_on_change)
 
