@@ -8,7 +8,7 @@ implement our own MCP SDK, only this file needs a new backend.
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, MutableSet
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -131,7 +131,7 @@ def create_mcp_server(
     call_tool_handler: CallToolHandler,
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
-    session_tracker: set | None = None,
+    session_tracker: MutableSet | None = None,
 ) -> Server:
     """Create an MCP lowlevel Server with handlers registered.
 
@@ -145,8 +145,9 @@ def create_mcp_server(
         list_tools_ttl_ms: Optional cache lifetime in milliseconds for
             ``tools/list`` responses (MCP spec 2026-07-28). Ignored on v1.
         list_tools_cache_scope: Cache scope for ``tools/list``. Ignored on v1.
-        session_tracker: Optional set to collect active ``ServerSession``
-            objects for sending ``notifications/tools/list_changed``.
+        session_tracker: Optional mutable set (``set`` or ``WeakSet``) to
+            collect active ``ServerSession`` objects for sending
+            ``notifications/tools/list_changed``.
 
     Returns:
         A configured ``mcp.server.lowlevel.Server``.
@@ -170,7 +171,7 @@ def _create_server_v1(
     name: str,
     list_tools_handler: ListToolsHandler,
     call_tool_handler: CallToolHandler,
-    session_tracker: set | None = None,
+    session_tracker: MutableSet | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
 
@@ -205,7 +206,7 @@ def _create_server_v2(
     call_tool_handler: CallToolHandler,
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
-    session_tracker: set | None = None,
+    session_tracker: MutableSet | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
     from mcp.types import CallToolResult, ListToolsResult
