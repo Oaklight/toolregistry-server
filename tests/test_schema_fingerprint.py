@@ -267,7 +267,7 @@ class TestMCPToolsChangedCapability:
         init_opts = server.create_initialization_options()
         caps = init_opts.capabilities
         assert caps.tools is not None
-        assert caps.tools.listChanged is True
+        assert caps.tools.list_changed is True
 
     async def test_mcp_session_tracker_captures_sessions(self):
         """The session_tracker set should capture sessions during list_tools."""
