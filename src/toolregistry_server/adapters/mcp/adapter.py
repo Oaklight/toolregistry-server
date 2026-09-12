@@ -5,7 +5,6 @@ ensuring tool enable/disable state is always read directly from the route table
 at request time (no drift).
 """
 
-import contextlib
 import inspect
 import json
 import weakref
@@ -201,100 +200,35 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     return [TextContent(type="text", text=_serialize_result(result))]
 
 
-def _resolve_expected_type(prop_schema: dict[str, Any]) -> str | None:
-    """Resolve the effective JSON Schema type for a property.
-
-    Handles union types like ``["string", "null"]`` by picking the first
-    non-null type.
-
-    Args:
-        prop_schema: The JSON Schema dict for a single property.
-
-    Returns:
-        The resolved type string, or ``None`` if unresolvable.
-    """
-    expected_type = prop_schema.get("type")
-    if isinstance(expected_type, list):
-        non_null = [t for t in expected_type if t != "null"]
-        return non_null[0] if non_null else None
-    return expected_type
-
-
-def _coerce_string_value(key: str, value: str, expected_type: str) -> Any:
-    """Coerce a single string value to the declared JSON Schema type.
-
-    Boolean coercion: string values are compared case-insensitively
-    against ``("true", "1", "yes")``; all other strings coerce to ``False``.
-
-    Args:
-        key: The parameter name (used in error messages).
-        value: The string value to coerce.
-        expected_type: The JSON Schema type to coerce to.
-
-    Returns:
-        The coerced value, or the original string if no coercion applies.
-
-    Raises:
-        ValueError: When the string cannot be converted to the target type.
-    """
-    if expected_type == "integer":
-        try:
-            return int(value)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                f"Parameter '{key}': cannot convert {value!r} to integer"
-            ) from exc
-    if expected_type == "number":
-        try:
-            return float(value)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                f"Parameter '{key}': cannot convert {value!r} to number"
-            ) from exc
-    if expected_type == "boolean":
-        return value.lower() in ("true", "1", "yes")
-    if (expected_type == "array" and value.startswith("[")) or (
-        expected_type == "object" and value.startswith("{")
-    ):
-        with contextlib.suppress(json.JSONDecodeError, ValueError):
-            return json.loads(value)
-    return value
-
-
-def _coerce_arguments_from_schema(
-    arguments: dict[str, Any],
-    schema: dict[str, Any],
+def _pre_coerce_bools(
+    arguments: dict[str, Any], schema: dict[str, Any]
 ) -> dict[str, Any]:
-    """Coerce string arguments to their declared types using the JSON schema.
+    """Pre-coerce string values to booleans for bool-typed parameters.
 
-    MCP clients (especially Codex-like ones) may send all parameter values as
-    strings.  This function uses the ``properties`` section of the tool's JSON
-    schema to cast values to the expected type.  Framework-injected fields
-    (e.g. ``toolcall_reason``) are stripped so they are not forwarded to
-    handlers that do not accept them.
+    MCP clients may send ``"true"``/``"false"`` strings for boolean
+    parameters.  ``Tool.validate_parameters`` handles int/float coercion
+    but not string-to-bool, so this step converts them before validation.
 
     Args:
-        arguments: Raw arguments from the MCP ``call_tool`` request.
-        schema: The tool's JSON Schema (``route.parameters_schema``).
+        arguments: Raw arguments from the MCP client.
+        schema: The tool's JSON Schema.
 
     Returns:
-        A dict of coerced arguments suitable for passing to the handler.
-
-    Raises:
-        ValueError: When a string value cannot be converted to the declared
-            type (e.g. ``"abc"`` for an ``integer`` field).
+        Arguments with string booleans coerced to ``bool``.
     """
     properties = schema.get("properties", {})
-    coerced: dict[str, Any] = {}
-    for key, value in arguments.items():
-        if key == "toolcall_reason":
+    result = dict(arguments)
+    for key, value in result.items():
+        if not isinstance(value, str):
             continue
         prop_schema = properties.get(key, {})
-        expected_type = _resolve_expected_type(prop_schema)
-        if isinstance(value, str) and expected_type:
-            value = _coerce_string_value(key, value, expected_type)
-        coerced[key] = value
-    return coerced
+        prop_type = prop_schema.get("type")
+        if isinstance(prop_type, list):
+            non_null = [t for t in prop_type if t != "null"]
+            prop_type = non_null[0] if non_null else None
+        if prop_type == "boolean":
+            result[key] = value.lower() in ("true", "1", "yes")
+    return result
 
 
 async def _execute_tool(
@@ -306,7 +240,8 @@ async def _execute_tool(
     """Resolve the handler for a route and execute it with the given arguments.
 
     Handles session-scoped handler resolution, parameter validation/coercion
-    via the JSON schema, optional session injection, and async/sync dispatch.
+    via ``Tool.validate_parameters``, optional session injection, and
+    async/sync dispatch.
 
     Args:
         route: The RouteEntry for the tool being invoked.
@@ -322,14 +257,30 @@ async def _execute_tool(
     if route.handler_factory and session_ctx:
         handler = session_mgr.get_session_handler(session_ctx.session_id, route)
 
-    # Strip framework-injected fields and coerce parameter types based on
-    # the JSON schema (e.g. string "8" → int 8 for MCP clients that send
-    # all values as strings).
-    arguments = _coerce_arguments_from_schema(arguments, route.parameters_schema)
+    # Validate and coerce parameter types using the Tool's built-in
+    # validator.  This strips framework-injected fields (e.g.
+    # toolcall_reason) and coerces string values to their declared
+    # types (e.g. string "8" → int 8 for MCP clients that send all
+    # values as strings).
+    from toolregistry.tool import Tool as _Tool
+
+    needs_session = session_ctx is not None and should_inject_session(handler)
+
+    if isinstance(route.tool, _Tool) and not needs_session:
+        # Use the Tool's built-in validator for coercion + stripping.
+        # Pre-coerce string booleans that the core validator doesn't handle.
+        arguments = _pre_coerce_bools(arguments, route.tool.parameters)
+        arguments = route.tool.validate_parameters(arguments)
+    else:
+        # For session-injected tools or non-Tool objects (mocks):
+        # strip toolcall_reason manually.  We cannot use validate_parameters
+        # for session tools because _session is a required schema field
+        # that the MCP client never sends.
+        arguments = {k: v for k, v in arguments.items() if k != "toolcall_reason"}
 
     # Inject session if handler requests it
-    if session_ctx and should_inject_session(handler):
-        arguments = {**arguments, "_session": session_ctx}
+    if needs_session:
+        arguments["_session"] = session_ctx
 
     # Execute the tool handler.
     # Always check for awaitable results: _FunctionToolWrapper.__call__

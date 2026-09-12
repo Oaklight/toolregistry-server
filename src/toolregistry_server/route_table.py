@@ -45,52 +45,93 @@ def normalize_parameters_schema(schema: Any) -> dict[str, Any]:
 class RouteEntry:
     """A single route entry in the central router table.
 
+    Holds a direct reference to the underlying :class:`~toolregistry.tool.Tool`
+    instead of copying its fields.  Backward-compatible properties expose
+    commonly accessed tool attributes (``tool_name``, ``description``, etc.)
+    so that existing adapter code continues to work unchanged.
+
     Attributes:
-        tool_name: Full tool name (e.g., "calculator-evaluate")
-        namespace: Tool namespace (e.g., "calculator")
-        method_name: Method name within namespace (e.g., "evaluate")
-        path: HTTP path for the route (e.g., "/tools/calculator/evaluate")
-        description: Tool description
-        parameters_schema: JSON Schema for tool parameters
-        handler: The actual tool callable
-        is_async: Whether the handler is async
-        enabled: Whether the tool is currently enabled
-        disable_reason: Reason for disabling, if disabled
-        schema_hash: Content hash of the tool's parameter schema
-        last_refreshed_at: ISO 8601 timestamp of the last schema refresh
+        tool: Direct reference to the Tool instance.
+        path: HTTP path for the route (e.g., "/tools/calculator/evaluate").
+        handler: The callable used to execute the tool (may differ from
+            ``tool.callable`` for session-scoped handlers).
+        is_async: Whether the handler is async (cached from tool).
+        handler_factory: Optional factory for session-scoped handlers.
+        output_schema: Optional JSON Schema for the tool result
+            (MCP ``outputSchema``).
+        enabled: Whether the tool is currently enabled.
+        disable_reason: Reason for disabling, if disabled.
     """
 
-    # Tool identity
-    tool_name: str
-    namespace: str
-    method_name: str
+    # Tool reference
+    tool: Tool
 
     # Route metadata
     path: str
-    description: str
-    parameters_schema: dict[str, Any]
 
     # Execution
     handler: Callable[..., Any]
     is_async: bool
 
-    # Validation
-    parameters_model: Any | None = None
+    # Session-scoped handler factory (optional)
+    handler_factory: Callable[..., Callable[..., Any]] | None = None
 
     # Optional JSON Schema for the tool result (MCP ``outputSchema``)
     output_schema: dict[str, Any] | None = None
 
-    # Session-scoped handler factory (optional)
-    handler_factory: Callable[..., Callable[..., Any]] | None = None
-
     # State
     enabled: bool = True
     disable_reason: str | None = None
-    deferred: bool = False
 
-    # Schema fingerprint
-    schema_hash: str = ""
-    last_refreshed_at: str = ""
+    # --- Backward-compatible properties -----------------------------------
+
+    @property
+    def tool_name(self) -> str:
+        """Full tool name (e.g. ``"calculator-evaluate"``)."""
+        return self.tool.name
+
+    @property
+    def namespace(self) -> str:
+        """Tool namespace, defaulting to ``"default"``."""
+        return getattr(self.tool, "namespace", None) or "default"
+
+    @property
+    def method_name(self) -> str:
+        """Method name within namespace."""
+        return getattr(self.tool, "method_name", None) or self.tool.name
+
+    @property
+    def description(self) -> str:
+        """Tool description."""
+        return self.tool.description or ""
+
+    @property
+    def parameters_schema(self) -> dict[str, Any]:
+        """Canonical JSON Schema for tool parameters."""
+        return normalize_parameters_schema(self.tool.parameters)
+
+    @property
+    def parameters_model(self) -> Any | None:
+        """Parameters model from the tool, if available."""
+        return getattr(self.tool, "parameters_model", None)
+
+    @property
+    def deferred(self) -> bool:
+        """Whether the tool is deferred (discovered via ``discover_tools``)."""
+        metadata = getattr(self.tool, "metadata", None)
+        return bool(getattr(metadata, "defer", False))
+
+    @property
+    def schema_hash(self) -> str:
+        """Content hash of the tool's parameter schema."""
+        metadata = getattr(self.tool, "metadata", None)
+        return getattr(metadata, "schema_hash", "") or ""
+
+    @property
+    def last_refreshed_at(self) -> str:
+        """ISO 8601 timestamp of the last schema refresh."""
+        metadata = getattr(self.tool, "metadata", None)
+        return getattr(metadata, "last_refreshed_at", "") or ""
 
 
 @dataclass
@@ -153,7 +194,7 @@ class RouteTable:
                     self.refresh(event.tool_name)
                     self._notify_listeners(event.tool_name, event.event_type.value)
                 else:
-                    # Namespace-level change — refresh all tools in that namespace
+                    # Namespace-level change - refresh all tools in that namespace
                     for route in self._routes.values():
                         if route.namespace == event.tool_name:
                             self.refresh(route.tool_name)
@@ -184,25 +225,13 @@ class RouteTable:
         method_name = getattr(tool, "method_name", None) or tool.name
 
         return RouteEntry(
-            tool_name=tool.name,
-            namespace=namespace,
-            method_name=method_name,
+            tool=tool,
             path=f"/tools/{namespace}/{method_name}",
-            description=tool.description or "",
-            parameters_schema=normalize_parameters_schema(tool.parameters),
             handler=tool.callable,
             is_async=tool.is_async,
-            parameters_model=getattr(tool, "parameters_model", None),
+            output_schema=_extract_output_schema(tool),
             enabled=self._registry.is_enabled(tool.name),
             disable_reason=self._registry.get_disable_reason(tool.name),
-            deferred=bool(getattr(getattr(tool, "metadata", None), "defer", False)),
-            output_schema=_extract_output_schema(tool),
-            schema_hash=getattr(getattr(tool, "metadata", None), "schema_hash", "")
-            or "",
-            last_refreshed_at=getattr(
-                getattr(tool, "metadata", None), "last_refreshed_at", ""
-            )
-            or "",
         )
 
     # ============== Query API ==============
