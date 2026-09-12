@@ -200,6 +200,10 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
     return [TextContent(type="text", text=_serialize_result(result))]
 
 
+_BOOL_TRUE = {"true", "1", "yes"}
+_BOOL_FALSE = {"false", "0", "no"}
+
+
 def _pre_coerce_bools(
     arguments: dict[str, Any], schema: dict[str, Any]
 ) -> dict[str, Any]:
@@ -209,12 +213,16 @@ def _pre_coerce_bools(
     parameters.  ``Tool.validate_parameters`` handles int/float coercion
     but not string-to-bool, so this step converts them before validation.
 
+    Only recognized boolean strings (true/false/1/0/yes/no) are coerced.
+    Unrecognized values are left as strings so that ``validate_parameters``
+    raises a proper validation error.
+
     Args:
         arguments: Raw arguments from the MCP client.
         schema: The tool's JSON Schema.
 
     Returns:
-        Arguments with string booleans coerced to ``bool``.
+        Arguments with recognized string booleans coerced to ``bool``.
     """
     properties = schema.get("properties", {})
     result = dict(arguments)
@@ -227,7 +235,12 @@ def _pre_coerce_bools(
             non_null = [t for t in prop_type if t != "null"]
             prop_type = non_null[0] if non_null else None
         if prop_type == "boolean":
-            result[key] = value.lower() in ("true", "1", "yes")
+            lowered = value.lower()
+            if lowered in _BOOL_TRUE:
+                result[key] = True
+            elif lowered in _BOOL_FALSE:
+                result[key] = False
+            # else: leave as string for validate_parameters to reject
     return result
 
 
