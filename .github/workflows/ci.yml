@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies for ty
         run: |
           python -m pip install --upgrade pip
-          pip install --extra-index-url https://test.pypi.org/simple/ -e ".[all,dev]"
+          pip install --extra-index-url https://test.pypi.org/simple/ --prefer-binary -e ".[all,dev]"
 
       - name: Run pre-commit checks
         uses: pre-commit/action@v3.0.1
@@ -43,7 +43,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --extra-index-url https://test.pypi.org/simple/ -e ".[all,dev]"
+          pip install --extra-index-url https://test.pypi.org/simple/ --prefer-binary -e ".[all,dev]"
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
