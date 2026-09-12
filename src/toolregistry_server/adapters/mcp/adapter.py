@@ -10,6 +10,8 @@ import json
 import weakref
 from typing import TYPE_CHECKING, Any, Literal
 
+from toolregistry.tool import Tool as _Tool
+
 from ..._vendor.structlog import get_logger
 from ...route_table import normalize_parameters_schema
 from ...session import (
@@ -275,8 +277,6 @@ async def _execute_tool(
     # toolcall_reason) and coerces string values to their declared
     # types (e.g. string "8" → int 8 for MCP clients that send all
     # values as strings).
-    from toolregistry.tool import Tool as _Tool
-
     needs_session = session_ctx is not None and should_inject_session(handler)
 
     if isinstance(route.tool, _Tool) and not needs_session:
@@ -285,10 +285,12 @@ async def _execute_tool(
         arguments = _pre_coerce_bools(arguments, route.tool.parameters)
         arguments = route.tool.validate_parameters(arguments)
     else:
-        # For session-injected tools or non-Tool objects (mocks):
-        # strip toolcall_reason manually.  We cannot use validate_parameters
-        # for session tools because _session is a required schema field
-        # that the MCP client never sends.
+        # Session-injected tools skip validate_parameters because _session
+        # is a required schema field that MCP clients never send — validation
+        # would reject the missing field.  Session tools must accept string
+        # params or handle coercion internally.
+        # Non-Tool objects (mocks) also fall through here; strip
+        # toolcall_reason manually.
         arguments = {k: v for k, v in arguments.items() if k != "toolcall_reason"}
 
     # Inject session if handler requests it
@@ -326,9 +328,10 @@ def _setup_tools_changed_notifications(
     """
     import asyncio
 
-    # Patch create_initialization_options so that tools_changed is always
-    # advertised, even when called without arguments by the SDK's internal
-    # StreamableHTTPSessionManager.
+    # StreamableHTTP's SessionManager calls create_initialization_options()
+    # internally without arguments.  The explicit notification_options= calls
+    # in server.py cover stdio/SSE, but this patch is needed to ensure
+    # StreamableHTTP also advertises tools_changed=True.
     _orig_create_init_opts = server.create_initialization_options
 
     def _patched_create_init_opts(
