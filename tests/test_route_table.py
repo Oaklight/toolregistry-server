@@ -14,16 +14,21 @@ class TestRouteEntry:
     """Tests for the RouteEntry dataclass."""
 
     def test_route_entry_creation(self) -> None:
-        """Test creating a RouteEntry with all fields."""
+        """Test creating a RouteEntry with a Tool reference."""
         handler = lambda x: x  # noqa: E731
 
-        entry = RouteEntry(
-            tool_name="calculator-evaluate",
+        tool = Tool(
+            name="calculator-evaluate",
+            description="Evaluate a math expression",
+            parameters={"type": "object", "properties": {}},
+            callable=handler,
             namespace="calculator",
             method_name="evaluate",
+        )
+
+        entry = RouteEntry(
+            tool=tool,
             path="/tools/calculator/evaluate",
-            description="Evaluate a math expression",
-            parameters_schema={"type": "object", "properties": {}},
             handler=handler,
             is_async=False,
             enabled=True,
@@ -35,21 +40,31 @@ class TestRouteEntry:
         assert entry.method_name == "evaluate"
         assert entry.path == "/tools/calculator/evaluate"
         assert entry.description == "Evaluate a math expression"
-        assert entry.parameters_schema == {"type": "object", "properties": {}}
+        # Schema is normalized from the tool's parameters (which may
+        # include framework-injected fields like toolcall_reason)
+        schema = entry.parameters_schema
+        assert schema["type"] == "object"
+        assert isinstance(schema["properties"], dict)
         assert entry.handler is handler
         assert entry.is_async is False
         assert entry.enabled is True
         assert entry.disable_reason is None
+        assert entry.tool is tool
 
     def test_route_entry_disabled(self) -> None:
         """Test creating a disabled RouteEntry."""
-        entry = RouteEntry(
-            tool_name="test-tool",
+        tool = Tool(
+            name="test-tool",
+            description="A test tool",
+            parameters={"type": "object", "properties": {}},
+            callable=lambda: None,
             namespace="test",
             method_name="tool",
+        )
+
+        entry = RouteEntry(
+            tool=tool,
             path="/tools/test/tool",
-            description="A test tool",
-            parameters_schema={},
             handler=lambda: None,
             is_async=False,
             enabled=False,
@@ -88,18 +103,12 @@ class TestNormalizeParametersSchema:
 
 
 def _make_mock_registry() -> MagicMock:
-    """Create a mock ToolRegistry that simulates on_change callback behavior.
-
-    When enable() or disable() is called on the mock, registered on_change
-    callbacks are invoked with the appropriate ChangeEvent, mimicking real
-    ToolRegistry behavior.
-    """
+    """Create a mock ToolRegistry that simulates on_change callback behavior."""
     registry = MagicMock()
     registry._tools = {}
     registry.is_enabled = MagicMock(return_value=True)
     registry.get_disable_reason = MagicMock(return_value=None)
 
-    # Track registered callbacks so enable/disable can fire them
     callbacks: list = []
 
     def mock_on_change(cb):
@@ -150,7 +159,6 @@ class TestRouteTable:
     def test_route_table_initialization(self, mock_registry: MagicMock) -> None:
         """Test RouteTable initialization with empty registry."""
         route_table = RouteTable(mock_registry)
-
         assert route_table.list_routes() == []
         assert route_table.version == 0
         assert route_table.etag == '"0"'
@@ -160,10 +168,8 @@ class TestRouteTable:
     ) -> None:
         """Test RouteTable initialization with tools."""
         mock_registry._tools = {"greet": mock_tool}
-
         route_table = RouteTable(mock_registry)
         routes = route_table.list_routes()
-
         assert len(routes) == 1
         assert routes[0].tool_name == "greet"
         assert routes[0].path == "/tools/default/greet"
@@ -172,14 +178,10 @@ class TestRouteTable:
     def test_get_route(self, mock_registry: MagicMock, mock_tool: MagicMock) -> None:
         """Test getting a specific route by name."""
         mock_registry._tools = {"greet": mock_tool}
-
         route_table = RouteTable(mock_registry)
-
         route = route_table.get_route("greet")
         assert route is not None
         assert route.tool_name == "greet"
-
-        # Non-existent route
         assert route_table.get_route("nonexistent") is None
 
     def test_route_table_normalizes_tool_parameters_schema(
@@ -188,10 +190,8 @@ class TestRouteTable:
         """Route entries should store canonical object parameter schemas."""
         mock_tool.parameters = {"type": "string"}
         mock_registry._tools = {"greet": mock_tool}
-
         route_table = RouteTable(mock_registry)
         route = route_table.get_route("greet")
-
         assert route is not None
         assert route.parameters_schema == {"type": "object", "properties": {}}
 
@@ -202,11 +202,9 @@ class TestRouteTable:
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
         route_table = RouteTable(mock_registry)
-
         mock_tool.parameters = {}
         route_table.refresh("greet")
         route = route_table.get_route("greet")
-
         assert route is not None
         assert route.parameters_schema == {"type": "object", "properties": {}}
 
@@ -219,13 +217,8 @@ class TestRouteTable:
         mock_registry.get_disable_reason = MagicMock(
             return_value="Disabled for testing"
         )
-
         route_table = RouteTable(mock_registry)
-
-        # enabled_only=True (default) should return empty list
         assert route_table.list_routes(enabled_only=True) == []
-
-        # enabled_only=False should return all routes
         routes = route_table.list_routes(enabled_only=False)
         assert len(routes) == 1
         assert routes[0].enabled is False
@@ -234,24 +227,18 @@ class TestRouteTable:
         """Test enabling a tool."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
         initial_version = route_table.version
-
         route_table.enable("greet")
-
         assert route_table.version == initial_version + 1
 
     def test_disable_tool(self, mock_registry: MagicMock, mock_tool: MagicMock) -> None:
         """Test disabling a tool."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
         initial_version = route_table.version
-
         route_table.disable("greet", reason="Under maintenance")
-
         assert route_table.version == initial_version + 1
 
     def test_refresh_single_route(
@@ -260,14 +247,9 @@ class TestRouteTable:
         """Test refreshing a single route."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
-
-        # Modify the tool
         mock_tool.description = "Updated description"
-
         route_table.refresh("greet")
-
         route = route_table.get_route("greet")
         assert route is not None
         assert route.description == "Updated description"
@@ -277,21 +259,16 @@ class TestRouteTable:
     ) -> None:
         """Test refreshing all routes."""
         mock_registry._tools = {"greet": mock_tool}
-
         route_table = RouteTable(mock_registry)
         initial_version = route_table.version
-
         route_table.refresh_all()
-
         assert route_table.version == initial_version + 1
 
     def test_add_listener(self, mock_registry: MagicMock, mock_tool: MagicMock) -> None:
         """Test adding a listener for route changes."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
-
         events: list[tuple[str, str]] = []
 
         def listener(tool_name: str, event: str) -> None:
@@ -299,7 +276,6 @@ class TestRouteTable:
 
         route_table.add_listener(listener)
         route_table.enable("greet")
-
         assert len(events) == 1
         assert events[0] == ("greet", "enable")
 
@@ -309,9 +285,7 @@ class TestRouteTable:
         """Test removing a listener."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
-
         events: list[tuple[str, str]] = []
 
         def listener(tool_name: str, event: str) -> None:
@@ -320,8 +294,6 @@ class TestRouteTable:
         route_table.add_listener(listener)
         route_table.remove_listener(listener)
         route_table.enable("greet")
-
-        # Listener should not be called after removal
         assert len(events) == 0
 
     def test_remove_nonexistent_listener(self, mock_registry: MagicMock) -> None:
@@ -340,12 +312,9 @@ class TestRouteTable:
         """Test that ETag changes when routes are modified."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
         initial_etag = route_table.etag
-
         route_table.enable("greet")
-
         assert route_table.etag != initial_etag
 
     def test_namespace_handling(self, mock_registry: MagicMock) -> None:
@@ -368,14 +337,9 @@ class TestRouteTable:
         tool2.callable = lambda: "now"
         tool2.is_async = False
 
-        mock_registry._tools = {
-            "calculator-add": tool1,
-            "datetime-now": tool2,
-        }
-
+        mock_registry._tools = {"calculator-add": tool1, "datetime-now": tool2}
         route_table = RouteTable(mock_registry)
         routes = route_table.list_routes()
-
         assert len(routes) == 2
 
         calc_route = route_table.get_route("calculator-add")
@@ -392,18 +356,15 @@ class TestRouteTable:
         """Test that tools without namespace get 'default' namespace."""
         tool = MagicMock()
         tool.name = "simple_tool"
-        tool.namespace = None  # No namespace
-        tool.method_name = None  # No method name
+        tool.namespace = None
+        tool.method_name = None
         tool.description = "A simple tool"
         tool.parameters = {}
         tool.callable = lambda: "result"
         tool.is_async = False
-
         mock_registry._tools = {"simple_tool": tool}
-
         route_table = RouteTable(mock_registry)
         route = route_table.get_route("simple_tool")
-
         assert route is not None
         assert route.namespace == "default"
         assert route.method_name == "simple_tool"
@@ -419,12 +380,9 @@ class TestRouteTable:
         async_tool.parameters = {}
         async_tool.callable = lambda: "result"
         async_tool.is_async = True
-
         mock_registry._tools = {"async_tool": async_tool}
-
         route_table = RouteTable(mock_registry)
         route = route_table.get_route("async_tool")
-
         assert route is not None
         assert route.is_async is True
 
@@ -434,9 +392,7 @@ class TestRouteTable:
         """Test that multiple listeners are all notified."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
-
         events1: list[tuple[str, str]] = []
         events2: list[tuple[str, str]] = []
 
@@ -449,7 +405,6 @@ class TestRouteTable:
         route_table.add_listener(listener1)
         route_table.add_listener(listener2)
         route_table.enable("greet")
-
         assert len(events1) == 1
         assert len(events2) == 1
         assert events1[0] == ("greet", "enable")
@@ -458,7 +413,6 @@ class TestRouteTable:
     def test_refresh_all_notifies_listeners(self, mock_registry: MagicMock) -> None:
         """Test that refresh_all notifies listeners with '*' tool name."""
         route_table = RouteTable(mock_registry)
-
         events: list[tuple[str, str]] = []
 
         def listener(tool_name: str, event: str) -> None:
@@ -466,30 +420,23 @@ class TestRouteTable:
 
         route_table.add_listener(listener)
         route_table.refresh_all()
-
         assert len(events) == 1
         assert events[0] == ("*", "refresh_all")
 
     def test_external_registry_change_syncs(
         self, mock_registry: MagicMock, mock_tool: MagicMock
     ) -> None:
-        """Test that changes made directly on registry (e.g. via admin panel)
-        are reflected in the RouteTable via on_change callback."""
+        """Test that changes made directly on registry are reflected."""
         mock_registry._tools = {"greet": mock_tool}
         mock_registry.get_tool = MagicMock(return_value=mock_tool)
-
         route_table = RouteTable(mock_registry)
         initial_version = route_table.version
-
         events: list[tuple[str, str]] = []
 
         def listener(tool_name: str, event: str) -> None:
             events.append((tool_name, event))
 
         route_table.add_listener(listener)
-
-        # Simulate admin panel calling registry.disable() directly
-        # (bypassing route_table.disable())
         route_table._on_registry_change(
             ChangeEvent(
                 event_type=ChangeEventType.DISABLE,
@@ -497,7 +444,6 @@ class TestRouteTable:
                 reason="admin disabled",
             )
         )
-
         assert route_table.version == initial_version + 1
         assert len(events) == 1
         assert events[0] == ("greet", "disable")
@@ -540,23 +486,18 @@ class TestRouteTable:
             side_effect=lambda n: mock_registry._tools.get(n)
         )
 
-        # After namespace disable, is_enabled should return False for calculator tools
         def mock_is_enabled(name):
             return name not in ("calculator-add", "calculator-sub")
 
         mock_registry.is_enabled = MagicMock(side_effect=mock_is_enabled)
         mock_registry.get_disable_reason = MagicMock(return_value=None)
-
         route_table = RouteTable(mock_registry)
-
         events: list[tuple[str, str]] = []
 
         def listener(tool_name: str, event: str) -> None:
             events.append((tool_name, event))
 
         route_table.add_listener(listener)
-
-        # Simulate admin panel disabling the "calculator" namespace
         route_table._on_registry_change(
             ChangeEvent(
                 event_type=ChangeEventType.DISABLE,
@@ -564,17 +505,12 @@ class TestRouteTable:
                 reason="namespace disabled",
             )
         )
-
-        # Both calculator tools should now be disabled
         add_route = route_table.get_route("calculator-add")
         sub_route = route_table.get_route("calculator-sub")
         dt_route = route_table.get_route("datetime-now")
-
         assert add_route is not None and add_route.enabled is False
         assert sub_route is not None and sub_route.enabled is False
         assert dt_route is not None and dt_route.enabled is True
-
-        # Listener should have been notified
         assert len(events) == 1
         assert events[0] == ("calculator", "disable")
 
@@ -587,13 +523,10 @@ class TestRouteTable:
 
         tool = Tool.from_function(add)
         mock_registry._tools = {"add": tool}
-
         route_table = RouteTable(mock_registry)
         route = route_table.get_route("add")
-
         assert route is not None
         assert route.parameters_model is not None
-        # parameters_model is a TypedDict class; calling it produces a dict
         result = route.parameters_model(a=3, b=4)
         assert isinstance(result, dict)
         assert result["a"] == 3
@@ -621,11 +554,23 @@ class TestRouteTable:
         tool.parameters = {}
         tool.callable = lambda name: f"Hello, {name}!"
         tool.is_async = False
-
         mock_registry._tools = {"greet": tool}
-
         route_table = RouteTable(mock_registry)
         route = route_table.get_route("greet")
-
         assert route is not None
         assert route.parameters_model is None
+
+    def test_route_entry_tool_reference(self, mock_registry: MagicMock) -> None:
+        """Test that RouteEntry holds a direct reference to the Tool."""
+
+        def greet(name: str) -> str:
+            """Greet someone."""
+            return f"Hello, {name}!"
+
+        tool = Tool.from_function(greet)
+        mock_registry._tools = {"greet": tool}
+        route_table = RouteTable(mock_registry)
+        route = route_table.get_route("greet")
+        assert route is not None
+        assert route.tool is tool
+        assert route.tool.name == "greet"

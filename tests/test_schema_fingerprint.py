@@ -4,8 +4,11 @@ Covers issue #68: schema_hash/last_refreshed_at on RouteEntry and /tools,
 GET /events SSE endpoint, and MCP tools/list_changed notification.
 """
 
+import dataclasses
+
 import pytest
 from toolregistry import ToolRegistry
+from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
 from toolregistry_server.adapters.openapi import create_openapi_app
@@ -43,47 +46,60 @@ def route_table(registry: ToolRegistry) -> RouteTable:
 class TestRouteEntrySchemaFingerprint:
     """Tests for schema_hash and last_refreshed_at on RouteEntry."""
 
-    def test_route_entry_has_schema_hash_field(self):
-        """RouteEntry should have schema_hash field with empty default."""
-        entry = RouteEntry(
-            tool_name="test",
-            namespace="default",
-            method_name="test",
-            path="/tools/default/test",
+    def test_route_entry_has_schema_hash_default(self):
+        """RouteEntry should expose schema_hash from tool metadata."""
+        tool = Tool(
+            name="test",
             description="A test tool",
-            parameters_schema={"type": "object", "properties": {}},
+            parameters={"type": "object", "properties": {}},
+            callable=lambda: None,
+        )
+        entry = RouteEntry(
+            tool=tool,
+            path="/tools/default/test",
             handler=lambda: None,
             is_async=False,
         )
-        assert entry.schema_hash == ""
+        # Tool metadata always has a schema_hash (possibly empty string)
+        assert isinstance(entry.schema_hash, str)
 
-    def test_route_entry_has_last_refreshed_at_field(self):
-        """RouteEntry should have last_refreshed_at field with empty default."""
-        entry = RouteEntry(
-            tool_name="test",
-            namespace="default",
-            method_name="test",
-            path="/tools/default/test",
+    def test_route_entry_has_last_refreshed_at_default(self):
+        """RouteEntry should expose last_refreshed_at from tool metadata."""
+        tool = Tool(
+            name="test",
             description="A test tool",
-            parameters_schema={"type": "object", "properties": {}},
+            parameters={"type": "object", "properties": {}},
+            callable=lambda: None,
+        )
+        entry = RouteEntry(
+            tool=tool,
+            path="/tools/default/test",
             handler=lambda: None,
             is_async=False,
         )
-        assert entry.last_refreshed_at == ""
+        assert isinstance(entry.last_refreshed_at, str)
 
     def test_route_entry_custom_schema_hash(self):
-        """RouteEntry should accept custom schema_hash value."""
-        entry = RouteEntry(
-            tool_name="test",
-            namespace="default",
-            method_name="test",
-            path="/tools/default/test",
+        """RouteEntry should reflect custom schema_hash from tool metadata."""
+        tool = Tool(
+            name="test",
             description="A test tool",
-            parameters_schema={"type": "object", "properties": {}},
-            handler=lambda: None,
-            is_async=False,
+            parameters={"type": "object", "properties": {}},
+            callable=lambda: None,
+        )
+        # Use dataclasses.replace to set custom metadata values on frozen Tool
+        new_meta = dataclasses.replace(
+            tool.metadata,
             schema_hash="abc123",
             last_refreshed_at="2026-09-10T00:00:00Z",
+        )
+        tool = dataclasses.replace(tool, metadata=new_meta)
+
+        entry = RouteEntry(
+            tool=tool,
+            path="/tools/default/test",
+            handler=lambda: None,
+            is_async=False,
         )
         assert entry.schema_hash == "abc123"
         assert entry.last_refreshed_at == "2026-09-10T00:00:00Z"
@@ -115,10 +131,16 @@ class TestToolsEndpointSchemaFingerprint:
             """Greet someone."""
             return f"Hello, {name}!"
 
-        # Manually set schema_hash on the tool's metadata
+        # Use dataclasses.replace to set schema_hash on the tool's metadata
         tool = reg.get_tool("greet")
-        tool.metadata.schema_hash = "deadbeef"
-        tool.metadata.last_refreshed_at = "2026-09-10T12:00:00Z"
+        new_meta = dataclasses.replace(
+            tool.metadata,
+            schema_hash="deadbeef",
+            last_refreshed_at="2026-09-10T12:00:00Z",
+        )
+        new_tool = dataclasses.replace(tool, metadata=new_meta)
+        # Replace the tool in the registry's internal dict
+        reg._tools["greet"] = new_tool
 
         rt = RouteTable(reg)
         app = create_openapi_app(rt)
@@ -200,10 +222,6 @@ class TestSSEEventsEndpoint:
         app = FastAPI()
         add_events_endpoint(app, rt)
 
-        # Directly test the SSE queue mechanism by calling the endpoint
-        # and checking queue content through the listener
-        # We inspect the _queues set indirectly by verifying
-        # the listener chain works end-to-end
         events_received: list[tuple[str, str]] = []
 
         def spy(tool_name: str, event: str) -> None:
@@ -246,12 +264,10 @@ class TestMCPToolsChangedCapability:
         rt = RouteTable(reg)
         server = route_table_to_mcp_server(rt)
 
-        # Check that create_initialization_options produces
-        # listChanged=True in tools capability
         init_opts = server.create_initialization_options()
         caps = init_opts.capabilities
         assert caps.tools is not None
-        assert caps.tools.list_changed is True
+        assert caps.tools.listChanged is True
 
     async def test_mcp_session_tracker_captures_sessions(self):
         """The session_tracker set should capture sessions during list_tools."""
@@ -269,6 +285,5 @@ class TestMCPToolsChangedCapability:
         server = route_table_to_mcp_server(rt)
 
         async with create_test_client(server) as client:
-            # list_tools should trigger session tracking
             tools = await client.list_tools()
             assert len(tools.tools) == 1

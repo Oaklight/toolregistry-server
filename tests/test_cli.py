@@ -1,6 +1,7 @@
 """Tests for the CLI module."""
 
 import argparse
+import dataclasses
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -754,9 +755,9 @@ class TestApplyProfile:
             return "safe"
 
         t1 = Tool.from_function(fs_tool)
-        t1.metadata = ToolMetadata(tags={ToolTag.FILE_SYSTEM})
+        t1 = dataclasses.replace(t1, metadata=ToolMetadata(tags={ToolTag.FILE_SYSTEM}))
         t2 = Tool.from_function(safe_tool)
-        t2.metadata = ToolMetadata(tags={ToolTag.NETWORK})
+        t2 = dataclasses.replace(t2, metadata=ToolMetadata(tags={ToolTag.NETWORK}))
 
         registry._tools["fs_tool"] = t1
         registry._tools["safe_tool"] = t2
@@ -784,11 +785,15 @@ class TestApplyProfile:
             return "y"
 
         t_fs = Tool.from_function(fs_tool)
-        t_fs.metadata = ToolMetadata(tags={ToolTag.FILE_SYSTEM})
+        t_fs = dataclasses.replace(
+            t_fs, metadata=ToolMetadata(tags={ToolTag.FILE_SYSTEM})
+        )
         registry._tools["fs_tool"] = t_fs
 
         t_net = Tool.from_function(net_tool)
-        t_net.metadata = ToolMetadata(tags={ToolTag.NETWORK})
+        t_net = dataclasses.replace(
+            t_net, metadata=ToolMetadata(tags={ToolTag.NETWORK})
+        )
         registry._tools["net_tool"] = t_net
 
         apply_profile(registry, "local")

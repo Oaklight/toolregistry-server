@@ -324,12 +324,8 @@ class TestEnableDisable:
             assert route is not None
             # Manually update the route entry to simulate disable
             route_table._routes["add"] = RouteEntry(
-                tool_name=route.tool_name,
-                namespace=route.namespace,
-                method_name=route.method_name,
+                tool=route.tool,
                 path=route.path,
-                description=route.description,
-                parameters_schema=route.parameters_schema,
                 handler=route.handler,
                 is_async=route.is_async,
                 enabled=False,
@@ -350,6 +346,7 @@ class TestEnableDisable:
         add_tool.parameters = {"type": "object", "properties": {}}
         add_tool.callable = add
         add_tool.is_async = False
+        add_tool.metadata.defer = False
 
         mock_registry._tools = {"add": add_tool}
         mock_registry.get_tool = MagicMock(return_value=add_tool)
@@ -364,12 +361,8 @@ class TestEnableDisable:
 
             # Disable
             route_table._routes["add"] = RouteEntry(
-                tool_name=route.tool_name,
-                namespace=route.namespace,
-                method_name=route.method_name,
+                tool=route.tool,
                 path=route.path,
-                description=route.description,
-                parameters_schema=route.parameters_schema,
                 handler=route.handler,
                 is_async=route.is_async,
                 enabled=False,
@@ -381,12 +374,8 @@ class TestEnableDisable:
 
             # Re-enable
             route_table._routes["add"] = RouteEntry(
-                tool_name=route.tool_name,
-                namespace=route.namespace,
-                method_name=route.method_name,
+                tool=route.tool,
                 path=route.path,
-                description=route.description,
-                parameters_schema=route.parameters_schema,
                 handler=route.handler,
                 is_async=route.is_async,
                 enabled=True,
