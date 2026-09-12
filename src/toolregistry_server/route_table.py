@@ -5,6 +5,7 @@ This module provides the RouteTable class that bridges ToolRegistry and
 protocol adapters (OpenAPI, MCP, etc.).
 """
 
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -105,9 +106,13 @@ class RouteEntry:
         """Tool description."""
         return self.tool.description or ""
 
-    @property
+    @functools.cached_property
     def parameters_schema(self) -> dict[str, Any]:
-        """Canonical JSON Schema for tool parameters."""
+        """Canonical JSON Schema for tool parameters.
+
+        Cached because the underlying Tool is frozen and its parameters
+        never change after construction.
+        """
         return normalize_parameters_schema(self.tool.parameters)
 
     @property

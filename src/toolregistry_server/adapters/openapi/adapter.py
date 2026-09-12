@@ -137,11 +137,11 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
 # ---------------------------------------------------------------------------
 
 
-def _coerce_arguments(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
-    """Validate and coerce request arguments through the tool's parameters model.
+def _strip_framework_fields(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
+    """Strip framework-injected fields from request arguments.
 
-    Strips framework-injected fields (e.g. ``toolcall_reason``) that the
-    handler does not accept.
+    Removes fields (e.g. ``toolcall_reason``) that the handler does
+    not accept.
 
     Args:
         raw: The raw arguments from the request body.
@@ -225,7 +225,7 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _coerce_arguments(data.model_dump(), current_route)
+                arguments = _strip_framework_fields(data.model_dump(), current_route)
                 try:
                     return await h(**arguments)
                 except HTTPException:
@@ -260,7 +260,7 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _coerce_arguments(data.model_dump(), current_route)
+                arguments = _strip_framework_fields(data.model_dump(), current_route)
                 try:
                     return h(**arguments)
                 except HTTPException:
