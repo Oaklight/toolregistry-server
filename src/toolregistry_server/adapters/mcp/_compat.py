@@ -101,6 +101,7 @@ def get_mcp_session_info() -> tuple[Any, Any | None, Any] | None:
         return session, request, session_key
     else:
         try:
+            # Internal API — no public accessor for v1 request context exists.
             from mcp.server.lowlevel.server import request_ctx
         except ImportError:
             return None
@@ -181,6 +182,7 @@ def _create_server_v1(
     async def _list_tools() -> list:
         if session_tracker is not None:
             try:
+                # Internal API — no public accessor for v1 request context exists.
                 from mcp.server.lowlevel.server import request_ctx
 
                 mcp_ctx = request_ctx.get(None)

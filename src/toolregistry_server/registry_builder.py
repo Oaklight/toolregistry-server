@@ -259,7 +259,7 @@ def _apply_ns_tags(
                     f"Unknown tag '{t}' for namespace '{tool.namespace}', skipping"
                 )
         if tag_enums:
-            tool.metadata.tags = tag_enums
+            tool.metadata.tags = tag_enums  # ty: ignore[invalid-assignment]
 
 
 def _describe_source(source: "ToolSource") -> str:
