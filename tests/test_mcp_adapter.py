@@ -1261,3 +1261,89 @@ class TestExtendedContentTypes:
             assert len(result.content) == 1
             assert isinstance(result.content[0], EmbeddedResource)
             assert result.content[0].resource.text == "fn main() {}"
+
+
+# ---------------------------------------------------------------------------
+# call_deferred integration
+# ---------------------------------------------------------------------------
+
+
+class TestCallDeferred:
+    """Tests for call_deferred proxy tool via MCP adapter."""
+
+    @pytest.fixture
+    def discovery_route_table(self) -> RouteTable:
+        """RouteTable with tool discovery enabled and a deferred tool."""
+        import dataclasses
+
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import Tool
+
+        registry = ToolRegistry(tool_discovery=True)
+
+        def search(query: str, limit: int = 10) -> str:
+            """Search for items."""
+            return f"results for '{query}' (limit={limit})"
+
+        tool = Tool.from_function(search)
+        tool = dataclasses.replace(
+            tool,
+            metadata=dataclasses.replace(tool.metadata, defer=True),
+        )
+        registry.register(tool)
+
+        return RouteTable(registry)
+
+    async def test_call_deferred_in_list_tools(
+        self, discovery_route_table: RouteTable
+    ) -> None:
+        """call_deferred appears in tools/list as a non-deferred tool."""
+        server = route_table_to_mcp_server(discovery_route_table)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            names = [t.name for t in result.tools]
+            assert "call_deferred" in names
+            assert "discover_tools" in names
+            assert "search" not in names
+
+    async def test_call_deferred_invokes_deferred_tool(
+        self, discovery_route_table: RouteTable
+    ) -> None:
+        """call_deferred can invoke a deferred tool by name."""
+        server = route_table_to_mcp_server(discovery_route_table)
+        async with create_test_client(server) as client:
+            result = await client.call_tool(
+                "call_deferred",
+                {"_target_tool": "search", "query": "hello", "limit": 5},
+            )
+            text = result.content[0].text
+            assert "hello" in text
+            assert "limit=5" in text
+
+    async def test_call_deferred_rejects_non_deferred(
+        self, discovery_route_table: RouteTable
+    ) -> None:
+        """call_deferred raises when targeting a non-deferred tool."""
+        server = route_table_to_mcp_server(discovery_route_table)
+        async with create_test_client(server) as client:
+            result = await client.call_tool(
+                "call_deferred",
+                {"_target_tool": "discover_tools"},
+            )
+            assert result.isError
+
+    async def test_discover_tools_returns_deferred_schema(
+        self, discovery_route_table: RouteTable
+    ) -> None:
+        """discover_tools returns full schema for deferred tools."""
+        server = route_table_to_mcp_server(discovery_route_table)
+        async with create_test_client(server) as client:
+            result = await client.call_tool(
+                "discover_tools",
+                {"query": "search"},
+            )
+            data = json.loads(result.content[0].text)
+            assert len(data) >= 1
+            assert data[0]["name"] == "search"
+            assert data[0]["deferred"] is True
+            assert "schema" in data[0]

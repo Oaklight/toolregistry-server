@@ -237,8 +237,9 @@ def _apply_ns_tags(
 ) -> None:
     """Apply namespace-based tag declarations to already-registered tools.
 
-    For each tool in *registry* whose namespace appears in *ns_tags*, sets
-    ``tool.metadata.tags`` to the corresponding ``ToolTag`` enum set.
+    For each tool in *registry* whose namespace appears in *ns_tags*, updates
+    ``tool.metadata.tags`` via ``_replace_tool_metadata`` (Tool and
+    ToolMetadata are frozen dataclasses).
     Unknown tag strings are skipped with a warning.
 
     Args:
@@ -247,6 +248,9 @@ def _apply_ns_tags(
     """
     from toolregistry.tool import ToolTag
 
+    # Collect updates first — _replace_tool_metadata mutates the _tools dict,
+    # so we cannot modify it while iterating.
+    updates: list[tuple[str, set[ToolTag]]] = []
     for tool in registry._tools.values():
         if not tool.namespace or tool.namespace not in ns_tags:
             continue
@@ -259,7 +263,10 @@ def _apply_ns_tags(
                     f"Unknown tag '{t}' for namespace '{tool.namespace}', skipping"
                 )
         if tag_enums:
-            tool.metadata.tags = tag_enums  # ty: ignore[invalid-assignment]
+            updates.append((tool.name, tag_enums))
+
+    for name, tags in updates:
+        registry._replace_tool_metadata(name, tags=tags)
 
 
 def _describe_source(source: "ToolSource") -> str:

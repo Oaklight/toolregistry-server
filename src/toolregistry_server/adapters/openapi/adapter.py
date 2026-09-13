@@ -9,7 +9,7 @@ import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from ...route_table import RouteEntry, RouteTable, normalize_parameters_schema
 
@@ -92,6 +92,15 @@ def _resolve_type(field_schema: dict[str, Any]) -> type:
 def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
     """Convert a JSON Schema ``object`` definition into a dynamic Pydantic model.
 
+    When the schema declares ``additionalProperties: true`` (e.g. for
+    proxy tools that accept ``**kwargs``), the generated model is
+    configured with ``extra="allow"`` so that undeclared fields are
+    accepted and included in ``model_dump()``.
+
+    Field names starting with ``_`` are mapped via Pydantic aliases
+    (since Pydantic forbids leading underscores in field names).
+    Use ``model_dump(by_alias=True)`` to recover the original names.
+
     Args:
         name: The class name for the generated model.
         schema: A JSON Schema dict with ``properties`` (and optionally
@@ -103,8 +112,16 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
     """
     schema = normalize_parameters_schema(schema)
     properties: dict[str, Any] = schema["properties"]
+    allow_extra = bool(schema.get("additionalProperties"))
+    has_aliases = False
+
+    config_parts: dict[str, Any] = {}
+    if allow_extra:
+        config_parts["extra"] = "allow"
+
     if not properties:
-        # Return an empty model when there are no properties
+        if config_parts:
+            return create_model(name, __config__=ConfigDict(**config_parts))
         return create_model(name)
 
     required_fields: list[str] = schema.get("required", [])
@@ -121,15 +138,36 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
         if description:
             field_kwargs["description"] = description
 
+        # Pydantic forbids field names with leading underscores; use an
+        # alias so the model accepts the original JSON key while storing
+        # the value under a valid Python name.
+        model_field_name = field_name
+        if field_name.startswith("_"):
+            model_field_name = field_name[1:] or f"field_{hash(field_name) % 10000}"
+            if model_field_name in field_definitions:
+                raise ValueError(
+                    f"Alias collision: '{field_name}' maps to "
+                    f"'{model_field_name}' which already exists"
+                )
+            field_kwargs["alias"] = field_name
+            has_aliases = True
+
         if default_value is ...:
-            field_definitions[field_name] = (py_type, Field(**field_kwargs))
+            field_definitions[model_field_name] = (py_type, Field(**field_kwargs))
         else:
-            field_definitions[field_name] = (
+            field_definitions[model_field_name] = (
                 py_type,
                 Field(default=default_value, **field_kwargs),
             )
 
-    return create_model(name, **field_definitions)  # ty: ignore[no-matching-overload]
+    if has_aliases:
+        config_parts["populate_by_name"] = True
+
+    kwargs: dict[str, Any] = dict(field_definitions)
+    if config_parts:
+        kwargs["__config__"] = ConfigDict(**config_parts)
+
+    return create_model(name, **kwargs)  # ty: ignore[no-matching-overload]
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +176,12 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
 
 
 def _strip_framework_fields(raw: dict[str, Any], route: RouteEntry) -> dict[str, Any]:
-    """Strip framework-injected fields from request arguments.
+    """Strip framework fields from request arguments before execution.
 
-    Removes fields (e.g. ``toolcall_reason``) that the handler does
-    not accept.
+    ``tool.parameters`` is a clean schema (no framework fields), but
+    ``get_schema()`` injects ``toolcall_reason`` when think_augment is
+    enabled.  Clients that build requests from the augmented schema may
+    include it, so we strip it before calling the handler.
 
     Args:
         raw: The raw arguments from the request body.
@@ -150,7 +190,6 @@ def _strip_framework_fields(raw: dict[str, Any], route: RouteEntry) -> dict[str,
     Returns:
         A dict of arguments suitable for passing to the handler.
     """
-    # Strip framework-injected properties that tool handlers don't accept
     return {k: v for k, v in raw.items() if k != "toolcall_reason"}
 
 
@@ -225,7 +264,9 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _strip_framework_fields(data.model_dump(), current_route)
+                arguments = _strip_framework_fields(
+                    data.model_dump(by_alias=True), current_route
+                )
                 try:
                     return await h(**arguments)
                 except HTTPException:
@@ -260,7 +301,9 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _strip_framework_fields(data.model_dump(), current_route)
+                arguments = _strip_framework_fields(
+                    data.model_dump(by_alias=True), current_route
+                )
                 try:
                     return h(**arguments)
                 except HTTPException:

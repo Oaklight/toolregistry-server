@@ -273,10 +273,11 @@ async def _execute_tool(
         handler = session_mgr.get_session_handler(session_ctx.session_id, route)
 
     # Validate and coerce parameter types using the Tool's built-in
-    # validator.  This strips framework-injected fields (e.g.
-    # toolcall_reason) and coerces string values to their declared
-    # types (e.g. string "8" → int 8 for MCP clients that send all
-    # values as strings).
+    # validator.  Coerces string values to their declared types
+    # (e.g. string "8" → int 8 for MCP clients that send all values
+    # as strings).  Also strips toolcall_reason — tool.parameters is
+    # a clean schema, but get_schema() injects toolcall_reason when
+    # think_augment is enabled, so clients may still send it.
     needs_session = session_ctx is not None and should_inject_session(handler)
 
     if isinstance(route.tool, _Tool) and not needs_session:
