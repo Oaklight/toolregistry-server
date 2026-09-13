@@ -144,7 +144,7 @@ def route_table_with_tools(mock_registry: MagicMock) -> RouteTable:
     }
     add_tool.callable = add
     add_tool.is_async = False
-    add_tool.metadata.defer = False
+    add_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
     multiply_tool = MagicMock()
     multiply_tool.name = "multiply"
@@ -161,7 +161,7 @@ def route_table_with_tools(mock_registry: MagicMock) -> RouteTable:
     }
     multiply_tool.callable = multiply
     multiply_tool.is_async = False
-    multiply_tool.metadata.defer = False
+    multiply_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
     mock_registry._tools = {"add": add_tool, "multiply": multiply_tool}
 
@@ -258,7 +258,7 @@ class TestListTools:
         bad_tool.parameters = {}
         bad_tool.callable = get_info
         bad_tool.is_async = False
-        bad_tool.metadata.defer = False
+        bad_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
         mock_registry._tools = {"bad": bad_tool}
 
@@ -294,7 +294,7 @@ class TestEnableDisable:
         add_tool.parameters = {"type": "object", "properties": {}}
         add_tool.callable = add
         add_tool.is_async = False
-        add_tool.metadata.defer = False
+        add_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
         multiply_tool = MagicMock()
         multiply_tool.name = "multiply"
@@ -304,7 +304,7 @@ class TestEnableDisable:
         multiply_tool.parameters = {"type": "object", "properties": {}}
         multiply_tool.callable = multiply
         multiply_tool.is_async = False
-        multiply_tool.metadata.defer = False
+        multiply_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
         mock_registry._tools = {"add": add_tool, "multiply": multiply_tool}
         mock_registry.get_tool = MagicMock(
@@ -346,7 +346,7 @@ class TestEnableDisable:
         add_tool.parameters = {"type": "object", "properties": {}}
         add_tool.callable = add
         add_tool.is_async = False
-        add_tool.metadata.defer = False
+        add_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
         mock_registry._tools = {"add": add_tool}
         mock_registry.get_tool = MagicMock(return_value=add_tool)
@@ -506,7 +506,7 @@ class TestSyncAsyncTools:
         add_tool.parameters = {"type": "object", "properties": {}}
         add_tool.callable = add
         add_tool.is_async = False
-        add_tool.metadata.defer = False
+        add_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
         async_add_tool = MagicMock()
         async_add_tool.name = "async_add"
@@ -516,7 +516,7 @@ class TestSyncAsyncTools:
         async_add_tool.parameters = {"type": "object", "properties": {}}
         async_add_tool.callable = async_add
         async_add_tool.is_async = True
-        async_add_tool.metadata.defer = False
+        async_add_tool.metadata.defer = False  # MagicMock bypasses frozen semantics  # MagicMock bypasses frozen semantics
 
         mock_registry._tools = {"add": add_tool, "async_add": async_add_tool}
 
