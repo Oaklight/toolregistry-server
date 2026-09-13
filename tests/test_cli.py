@@ -811,3 +811,70 @@ class TestApplyProfile:
         apply_profile(registry, "nonexistent_profile")
         # Registry should be unchanged (no tools to disable anyway)
         assert len(registry._tools) == 0
+
+
+class TestApplyNsTags:
+    """Tests for _apply_ns_tags with frozen Tool/ToolMetadata."""
+
+    def test_apply_ns_tags_with_frozen_tool(self):
+        """_apply_ns_tags works with frozen Tool and ToolMetadata."""
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolTag
+
+        from toolregistry_server.registry_builder import _apply_ns_tags
+
+        registry = ToolRegistry()
+
+        def my_tool() -> str:
+            """A tool."""
+            return "ok"
+
+        registry.register(my_tool, namespace="test_ns")
+
+        ns_tags = {"test_ns": ("file_system",)}
+        _apply_ns_tags(registry, ns_tags)
+
+        tool = registry.get_tool("test_ns-my_tool")
+        assert ToolTag.FILE_SYSTEM in tool.metadata.tags
+
+    def test_apply_ns_tags_unknown_tag_skipped(self):
+        """Unknown tag strings are skipped with a warning."""
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolTag
+
+        from toolregistry_server.registry_builder import _apply_ns_tags
+
+        registry = ToolRegistry()
+
+        def my_tool() -> str:
+            """A tool."""
+            return "ok"
+
+        registry.register(my_tool, namespace="ns")
+
+        ns_tags = {"ns": ("file_system", "nonexistent_tag")}
+        _apply_ns_tags(registry, ns_tags)
+
+        tool = registry.get_tool("ns-my_tool")
+        assert ToolTag.FILE_SYSTEM in tool.metadata.tags
+        assert len(tool.metadata.tags) == 1
+
+    def test_apply_ns_tags_no_matching_namespace(self):
+        """Tools with non-matching namespace are untouched."""
+        from toolregistry import ToolRegistry
+
+        from toolregistry_server.registry_builder import _apply_ns_tags
+
+        registry = ToolRegistry()
+
+        def my_tool() -> str:
+            """A tool."""
+            return "ok"
+
+        registry.register(my_tool, namespace="other")
+
+        ns_tags = {"unrelated": ("file_system",)}
+        _apply_ns_tags(registry, ns_tags)
+
+        tool = registry.get_tool("other-my_tool")
+        assert not tool.metadata.tags

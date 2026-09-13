@@ -143,6 +143,64 @@ class TestSchemaToPydantic:
         model = _schema_to_pydantic("BadModel", {"type": "string"})
         assert model.model_fields == {}
 
+    def test_additional_properties_allows_extra_fields(self):
+        """Schema with additionalProperties: true produces a model accepting extra fields."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "_target_tool": {"type": "string"},
+            },
+            "required": ["_target_tool"],
+            "additionalProperties": True,
+        }
+        model = _schema_to_pydantic("ProxyModel", schema)
+        instance = model(**{"_target_tool": "search", "query": "hello", "limit": 10})
+        dumped = instance.model_dump(by_alias=True)
+        assert dumped["_target_tool"] == "search"
+        assert dumped["query"] == "hello"
+        assert dumped["limit"] == 10
+
+    def test_additional_properties_empty_schema(self):
+        """Empty schema with additionalProperties: true accepts arbitrary fields."""
+        schema = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+        }
+        model = _schema_to_pydantic("OpenModel", schema)
+        instance = model(foo="bar", baz=42)
+        dumped = instance.model_dump()
+        assert dumped["foo"] == "bar"
+        assert dumped["baz"] == 42
+
+    def test_no_additional_properties_ignores_extra_fields(self):
+        """Schema without additionalProperties ignores extra fields."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+            },
+            "required": ["name"],
+        }
+        model = _schema_to_pydantic("StrictModel", schema)
+        instance = model(name="test", unexpected="field")
+        dumped = instance.model_dump()
+        assert dumped["name"] == "test"
+        assert "unexpected" not in dumped
+
+    def test_underscore_alias_collision_raises(self):
+        """Collision between _foo and foo in properties raises ValueError."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string"},
+                "_target": {"type": "string"},
+            },
+            "required": ["target", "_target"],
+        }
+        with pytest.raises(ValueError, match="Alias collision"):
+            _schema_to_pydantic("CollisionModel", schema)
+
 
 # ============== Router Generation Tests ==============
 
