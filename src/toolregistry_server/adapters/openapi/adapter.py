@@ -144,13 +144,14 @@ def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
         model_field_name = field_name
         if field_name.startswith("_"):
             model_field_name = field_name[1:] or f"field_{hash(field_name) % 10000}"
-            if model_field_name in field_definitions:
-                raise ValueError(
-                    f"Alias collision: '{field_name}' maps to "
-                    f"'{model_field_name}' which already exists"
-                )
             field_kwargs["alias"] = field_name
             has_aliases = True
+
+        if model_field_name in field_definitions:
+            raise ValueError(
+                f"Alias collision: '{field_name}' maps to "
+                f"'{model_field_name}' which already exists"
+            )
 
         if default_value is ...:
             field_definitions[model_field_name] = (py_type, Field(**field_kwargs))
