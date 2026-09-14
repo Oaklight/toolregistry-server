@@ -201,6 +201,19 @@ class TestSchemaToPydantic:
         with pytest.raises(ValueError, match="Alias collision"):
             _schema_to_pydantic("CollisionModel", schema)
 
+    def test_underscore_alias_collision_reverse_order(self):
+        """Collision detected regardless of iteration order."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "_target": {"type": "string"},
+                "target": {"type": "string"},
+            },
+            "required": ["_target", "target"],
+        }
+        with pytest.raises(ValueError, match="Alias collision"):
+            _schema_to_pydantic("CollisionReverseModel", schema)
+
 
 # ============== Router Generation Tests ==============
 
