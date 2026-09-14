@@ -1330,7 +1330,7 @@ class TestCallDeferred:
                 "call_deferred",
                 {"_target_tool": "discover_tools"},
             )
-            assert result.isError
+            assert get_field(result, "is_error", "isError")
 
     async def test_discover_tools_returns_deferred_schema(
         self, discovery_route_table: RouteTable
