@@ -13,7 +13,11 @@ from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
 from toolregistry_server.adapters.mcp import route_table_to_mcp_server
-from toolregistry_server.adapters.mcp._compat import create_test_client, get_field
+from toolregistry_server.adapters.mcp._compat import (
+    CompatProxy,
+    create_test_client,
+    get_field,
+)
 
 # ---------------------------------------------------------------------------
 # Test helper functions
@@ -1347,3 +1351,75 @@ class TestCallDeferred:
             assert data[0]["name"] == "search"
             assert data[0]["deferred"] is True
             assert "schema" in data[0]
+
+
+# ---------------------------------------------------------------------------
+# CompatProxy unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestCompatProxy:
+    """Unit tests for CompatProxy snake/camelCase resolution."""
+
+    def test_snake_to_camel_fallback(self):
+        """Resolves snake_case when object only has camelCase."""
+
+        class FakeResult:
+            isError = False
+            inputSchema = {"type": "object"}
+
+        proxy = CompatProxy(FakeResult())
+        assert proxy.is_error is False
+        assert proxy.input_schema == {"type": "object"}
+
+    def test_camel_to_snake_fallback(self):
+        """Resolves camelCase when object only has snake_case."""
+
+        class FakeResult:
+            is_error = True
+            input_schema = {"type": "object"}
+
+        proxy = CompatProxy(FakeResult())
+        assert proxy.isError is True
+        assert proxy.inputSchema == {"type": "object"}
+
+    def test_direct_name_preferred(self):
+        """When both conventions exist, the requested name wins."""
+
+        class FakeResult:
+            is_error = "snake"
+            isError = "camel"
+
+        proxy = CompatProxy(FakeResult())
+        assert proxy.is_error == "snake"
+        assert proxy.isError == "camel"
+
+    def test_missing_attr_raises(self):
+        """Truly missing attributes raise AttributeError."""
+
+        class FakeResult:
+            pass
+
+        proxy = CompatProxy(FakeResult())
+        with pytest.raises(AttributeError):
+            _ = proxy.nonexistent_field
+
+    def test_iter_delegation(self):
+        """__iter__ delegates to the wrapped object."""
+        proxy = CompatProxy([1, 2, 3])
+        assert list(proxy) == [1, 2, 3]
+
+    def test_len_delegation(self):
+        """__len__ delegates to the wrapped object."""
+        proxy = CompatProxy([1, 2, 3])
+        assert len(proxy) == 3
+
+    def test_getitem_delegation(self):
+        """__getitem__ delegates to the wrapped object."""
+        proxy = CompatProxy(["a", "b", "c"])
+        assert proxy[1] == "b"
+
+    def test_bool_delegation(self):
+        """__bool__ delegates to the wrapped object."""
+        assert bool(CompatProxy([1]))
+        assert not bool(CompatProxy([]))
