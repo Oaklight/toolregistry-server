@@ -11,6 +11,7 @@ from toolregistry import ToolRegistry
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
+from toolregistry_server.adapters.mcp._compat import get_field
 from toolregistry_server.adapters.openapi import create_openapi_app
 
 # ============== Fixtures ==============
@@ -267,7 +268,7 @@ class TestMCPToolsChangedCapability:
         init_opts = server.create_initialization_options()
         caps = init_opts.capabilities
         assert caps.tools is not None
-        assert caps.tools.listChanged is True
+        assert get_field(caps.tools, "list_changed", "listChanged") is True
 
     async def test_mcp_session_tracker_captures_sessions(self):
         """The session_tracker set should capture sessions during list_tools."""
