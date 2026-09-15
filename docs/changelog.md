@@ -4,6 +4,85 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，并在需要时保留项目自身的分类方式。
 
+## [未发布]
+
+## [0.6.0] - 2026-09-15
+
+### 新增
+
+- **`call_deferred` 集成**：`toolregistry` core 的 `call_deferred` 代理工具可通过 MCP 和 OpenAPI 适配器透明暴露（需启用工具发现）。MCP 客户端可在通过 `discover_tools` 发现 schema 后调用延迟工具。
+- **OpenAPI 适配器支持 `additionalProperties`**：当 JSON Schema 声明 `additionalProperties: true` 时，`_schema_to_pydantic` 生成带 `extra="allow"` 的 Pydantic 模型，支持 `call_deferred` 等接受 `**kwargs` 的代理工具。
+- **下划线前缀字段处理**：`_schema_to_pydantic` 通过 Pydantic 别名映射 `_` 前缀字段名（Pydantic 禁止前导下划线）。别名冲突检测支持双向检查，冲突时抛出 `ValueError`。
+- **`CompatProxy` MCP SDK 兼容层**：透明包装器，自动解析 MCP SDK 对象上的 snake_case 和 camelCase 属性名。`create_test_client` 自动包装结果，测试代码在 MCP SDK v1（camelCase）和 v2（snake_case）间无缝运行。
+- **MCP 和 OpenAPI 源注册测试**：为 `registry_builder` 的 `register_mcp_source` 和 `register_openapi_source` 增加测试覆盖。
+- **Schema 指纹和通知**：`/tools` 端点暴露 `schema_hash` 和 `last_refreshed_at`。路由表变更时向已连接的 MCP 会话推送 `tools/list_changed` 通知。
+- **测试发布工作流**：新增向 Test PyPI 发布开发版本的 CI 工作流。
+
+### 变更
+
+- **冻结数据类兼容** （对直接修改 `Tool`/`ToolMetadata` 的下游代码为**破坏性变更**）：`_apply_ns_tags` 使用 `_replace_tool_metadata()` 替代直接属性赋值。`RouteEntry` 直接引用冻结的 `Tool` 而非复制字段，`parameters_schema` 作为 `cached_property`。
+- **两层 Schema 模型注释更新**：MCP 和 OpenAPI 适配器中的 `toolcall_reason` 剥离注释已更新，反映 `tool.parameters` 现在是干净 schema，`get_schema()` 按需注入 `toolcall_reason`。
+- OpenAPI 端点使用 `model_dump(by_alias=True)` 保留原始 JSON 键名。
+- `toolregistry` 最低版本要求提升至 `>=0.18.0`。
+
+### 修复
+
+- SSE 队列溢出改为 debug 级别日志，不再静默丢弃。
+- 修复所有测试中 MCP SDK snake_case/camelCase 字段访问兼容性。
+
+## [0.5.0] - 2026-08-25
+
+### 新增
+
+- **原生多模态内容支持**（#58、#59）：MCP 适配器现在将内容块列表转换为原生 MCP 类型，而非 JSON 转储为文本。返回图片、音频、资源链接或嵌入资源的工具现以实际的 `ImageContent`、`AudioContent`、`ResourceLink` 和 `EmbeddedResource` 类型传递。
+- **`outputSchema` / `structuredContent`**（#61、#65）：工具可通过 `metadata.extra['output_schema']` 声明输出 schema。schema 在 `tools/list` 中作为 `outputSchema` 发布，工具结果在文本内容块之外以 `structuredContent` 返回——按 MCP spec 2026-07-28 支持客户端验证。
+- **`tools/list` 缓存提示**（#62、#64）：`route_table_to_mcp_server()` 和 `MCPAdapter` 接受 `list_tools_ttl_ms` 和 `list_tools_cache_scope` 参数。客户端可缓存工具目录以减少重复获取，提高 LLM prompt 缓存命中率。
+- **音频、resource_link 和嵌入资源内容类型**（#59）：完整的 MCP 2026-07-28 内容类型覆盖——全部五种类型（`text`、`image`、`audio`、`resource_link`、`resource`）均原生支持。未知的未来类型优雅降级为 JSON `TextContent` 并附带警告。
+
+### 变更
+
+- `CallToolHandler` 返回类型使用 `mcp.types.ContentBlock` 联合类型替代 `list[Any]`。
+- MIME 类型提取通过 `_get_mime_type()` 辅助函数在所有内容块类型间统一。
+- `toolregistry` 最低版本要求提升至 `>=0.16.0`。
+
+### 修复
+
+- 对多模态内容块结果跳过 `structuredContent` 以避免 spec 违规。
+- 将未知内容块类型降级为 `TextContent` 而非静默丢弃。
+- 对齐返回类型注解与 `MCPContentBlock` 类型别名。
+
+## [0.4.3] - 2026-08-06
+
+### 新增
+
+- **MCP SDK v2 兼容**（#56）：服务端适配器同时支持 MCP SDK v1 (1.x) 和 v2 (2.x)。依赖 pin 放宽至 `mcp>=1.17,<3`。新增 `_compat.py` 兼容层透明处理 API 差异。
+
+### 变更
+
+- `toolregistry` 最低版本要求提升至 `>=0.15.0`。
+
+## [0.4.2] - 2026-07-16
+
+### 修复
+
+- **将 `headers` 从 MCPSource 配置传递至 `register_from_mcp`**：`MCPSource.headers` 被配置加载器解析但从未转发至 `register_from_mcp()`，导致配置文件中的 MCP 服务器 header 认证无效。
+- **`_FunctionToolWrapper` 中 await 协程**：修复工具 wrapper 在 OpenAPI/MCP 端点中返回协程而非普通值时的 session 注入崩溃。
+
+### 变更
+
+- `toolregistry` 最低版本要求提升至 `>=0.14.0`。
+
+## [0.4.1] - 2026-06-26
+
+### 修复
+
+- 捕获 OpenAPI 端点中的工具异常，返回结构化 HTTP 500 而非未处理错误（#49）。
+- 在 CI lint 中安装完整依赖，移除过时的 `ty: ignore` 注释。
+
+### 变更
+
+- 固定开发工具版本：ruff==0.15.20、ty==0.0.54、complexipy==5.6.1。
+
 ## [0.4.0] - 2026-06-22
 
 ### 新增
