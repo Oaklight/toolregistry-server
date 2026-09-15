@@ -266,7 +266,7 @@ def _apply_ns_tags(
             updates.append((tool.name, tag_enums))
 
     for name, tags in updates:
-        registry._replace_tool_metadata(name, tags=tags)
+        registry._replace_tool_metadata(name, tags=tags)  # ty: ignore[unresolved-attribute]
 
 
 def _describe_source(source: "ToolSource") -> str:

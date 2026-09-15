@@ -24,7 +24,7 @@ Example:
     ```
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0.dev1"
 
 from .app import App, serve_mcp, serve_openapi
 from .auth import load_tokens
