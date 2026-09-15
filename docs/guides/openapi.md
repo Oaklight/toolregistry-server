@@ -107,6 +107,18 @@ curl -X POST http://localhost:8000/calculator/evaluate \
 curl http://localhost:8000/tools
 ```
 
+Each tool entry includes `schema_hash` (SHA-256 fingerprint of the tool's parameter schema) and `last_refreshed_at` (ISO 8601 timestamp of the last schema refresh) when available. These fields enable clients to detect schema changes without re-fetching full tool definitions.
+
+## Real-time Events
+
+`GET /events` provides a Server-Sent Events (SSE) stream of tool change events:
+
+```bash
+curl -N http://localhost:8000/events
+```
+
+Events are emitted when tools are registered, unregistered, enabled, or disabled. Each event contains the tool name and event type as JSON.
+
 ## Authentication
 
 Pass Bearer tokens via a file or `API_BEARER_TOKEN` env var:

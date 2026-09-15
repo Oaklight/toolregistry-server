@@ -20,6 +20,10 @@ When the underlying `ToolRegistry` has tool discovery enabled (via `enable_tool_
 
 Deferred tools (those with `metadata.defer=True`) are excluded from `tools/list` but remain callable via `call_deferred` after the LLM discovers their schema. This enables progressive disclosure of large tool catalogs without overwhelming the initial tool listing.
 
+## Live Tool Updates
+
+The MCP adapter advertises `tools_changed` capability and automatically sends `notifications/tools/list_changed` to all connected sessions when the route table changes (tools registered, unregistered, enabled, or disabled). Clients that support this notification can re-fetch `tools/list` to get the updated tool catalog.
+
 ## Quick Start
 
 ### Via `App` (recommended)
