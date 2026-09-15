@@ -107,6 +107,18 @@ curl -X POST http://localhost:8000/calculator/evaluate \
 curl http://localhost:8000/tools
 ```
 
+每个工具条目包含 `schema_hash`（工具参数模式的 SHA-256 指纹）和 `last_refreshed_at`（上次模式刷新的 ISO 8601 时间戳，如可用）。这些字段使客户端能够检测模式变更，而无需重新获取完整的工具定义。
+
+## 实时事件
+
+`GET /events` 提供工具变更事件的 Server-Sent Events（SSE）流：
+
+```bash
+curl -N http://localhost:8000/events
+```
+
+当工具被注册、注销、启用或禁用时会发出事件。每个事件以 JSON 格式包含工具名称和事件类型。
+
 ## 认证
 
 通过 token 文件或 `API_BEARER_TOKEN` 环境变量设置 Bearer 认证：

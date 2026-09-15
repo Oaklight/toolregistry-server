@@ -20,6 +20,10 @@ MCP 适配器通过 [模型上下文协议](https://modelcontextprotocol.io/) �
 
 延迟工具（`metadata.defer=True`）不会出现在 `tools/list` 中，但 LLM 在通过 `discover_tools` 发现其 schema 后，可通过 `call_deferred` 调用。这实现了大型工具目录的渐进式暴露，避免初始工具列表过于庞大。
 
+## 实时工具更新
+
+MCP 适配器声明了 `tools_changed` 能力，并在路由表发生变更（工具注册、注销、启用或禁用）时自动向所有已连接的会话发送 `notifications/tools/list_changed` 通知。支持此通知的客户端可以重新获取 `tools/list` 以得到最新的工具目录。
+
 ## 快速开始
 
 ### 通过 `App`（推荐）
