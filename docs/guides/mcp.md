@@ -11,6 +11,15 @@ MCP 适配器通过 [模型上下文协议](https://modelcontextprotocol.io/) �
 - 透明处理异步和同步工具
 - 提供阻塞式 (`run`) 和异步 (`run_async`) 两种入口
 
+## 延迟工具与 `call_deferred`
+
+当底层 `ToolRegistry` 启用了工具发现（通过 `enable_tool_discovery()`）时，两个基础设施工具会自动通过 MCP 适配器暴露：
+
+- **`discover_tools`** — 基于 BM25 的模糊搜索，覆盖所有已注册工具。对延迟工具返回完整 schema。
+- **`call_deferred`** — 代理工具，通过名称调用延迟工具。接受 `_target_tool` 参数并将 `**kwargs` 转发给目标工具。
+
+延迟工具（`metadata.defer=True`）不会出现在 `tools/list` 中，但 LLM 在通过 `discover_tools` 发现其 schema 后，可通过 `call_deferred` 调用。这实现了大型工具目录的渐进式暴露，避免初始工具列表过于庞大。
+
 ## 快速开始
 
 ### 通过 `App`（推荐）

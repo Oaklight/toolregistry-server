@@ -12,6 +12,7 @@ OpenAPI 适配器使用 [FastAPI](https://fastapi.tiangolo.com/) 将 `ToolRegist
 - 提供 `/tools` 元数据端点，列出可用工具
 - 支持运行时启用/禁用单个工具
 - 实现基于 ETag 的 HTTP 缓存
+- 支持 `additionalProperties: true` 的 schema（如 `call_deferred` 的 `**kwargs`），通过 Pydantic `extra="allow"` 实现
 
 ## 快速开始
 
