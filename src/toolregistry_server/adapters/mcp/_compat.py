@@ -310,9 +310,93 @@ def get_field(obj: Any, snake_name: str, camel_name: str, default: Any = None) -
     return getattr(obj, camel_name, default)
 
 
+def _snake_to_camel(name: str) -> str:
+    """Convert ``snake_case`` to ``camelCase``."""
+    parts = name.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+def _camel_to_snake(name: str) -> str:
+    """Convert ``camelCase`` to ``snake_case``."""
+    import re
+
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+
+
+class CompatProxy:
+    """Wrapper that resolves both snake_case and camelCase attribute access.
+
+    MCP SDK v1 uses camelCase (``isError``, ``inputSchema``), while v2
+    uses snake_case (``is_error``, ``input_schema``).  Wrapping an SDK
+    object in ``CompatProxy`` lets test code use either convention
+    without manual ``get_field()`` calls::
+
+        result = CompatProxy(await client.call_tool(...))
+        assert result.is_error is False   # works on both v1 and v2
+
+    Attribute lookup order: try the requested name first, then try the
+    opposite convention (snake ↔ camel).  Non-string keys and dunder
+    attributes bypass the fallback.
+    """
+
+    __slots__ = ("_obj",)
+
+    def __init__(self, obj: Any) -> None:
+        object.__setattr__(self, "_obj", obj)
+
+    def __getattr__(self, name: str) -> Any:
+        obj = object.__getattribute__(self, "_obj")
+        val = getattr(obj, name, _MISSING)
+        if val is not _MISSING:
+            return val
+        alt = _snake_to_camel(name) if "_" in name else _camel_to_snake(name)
+        val = getattr(obj, alt, _MISSING)
+        if val is not _MISSING:
+            return val
+        raise AttributeError(
+            f"{type(obj).__name__!r} has no attribute {name!r} or {alt!r}"
+        )
+
+    def __repr__(self) -> str:
+        return f"CompatProxy({object.__getattribute__(self, '_obj')!r})"
+
+    def __iter__(self):
+        return iter(object.__getattribute__(self, "_obj"))
+
+    def __len__(self):
+        return len(object.__getattribute__(self, "_obj"))
+
+    def __getitem__(self, key: Any) -> Any:
+        return object.__getattribute__(self, "_obj")[key]
+
+    def __eq__(self, other):
+        return object.__getattribute__(self, "_obj") == other
+
+    def __bool__(self):
+        return bool(object.__getattribute__(self, "_obj"))
+
+
 # ---------------------------------------------------------------------------
 # Test helper
 # ---------------------------------------------------------------------------
+
+
+class _CompatClient:
+    """Wraps an MCP client/session so results auto-resolve snake/camelCase."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    async def list_tools(self, *args, **kwargs):
+        result = await self._raw.list_tools(*args, **kwargs)
+        return CompatProxy(result)
+
+    async def call_tool(self, *args, **kwargs):
+        result = await self._raw.call_tool(*args, **kwargs)
+        return CompatProxy(result)
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
 
 
 @asynccontextmanager
@@ -322,22 +406,25 @@ async def create_test_client(server: Server):
     v1: ``create_connected_server_and_client_session``
     v2: ``mcp.client.Client``
 
+    Results from ``list_tools()`` and ``call_tool()`` are wrapped in
+    :class:`CompatProxy` so tests can use either snake_case or
+    camelCase attribute names.
+
     Yields:
-        A session/client object with ``list_tools()`` and ``call_tool()``
-        methods.
+        A :class:`_CompatClient` wrapping the raw session/client.
     """
     if MCP_VERSION >= 2:
         from mcp.client import Client
 
         async with Client(server) as client:
-            yield client
+            yield _CompatClient(client)
     else:
         from mcp.shared.memory import (
             create_connected_server_and_client_session as _create,
         )
 
         async with _create(server) as session:
-            yield session
+            yield _CompatClient(session)
 
 
 def tools_changed_notification_options():
@@ -364,5 +451,6 @@ __all__ = [
     "supports_list_tools_cache",
     "tools_changed_notification_options",
     "get_field",
+    "CompatProxy",
     "create_test_client",
 ]
