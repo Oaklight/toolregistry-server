@@ -12,6 +12,7 @@ The adapter automatically:
 - Provides a `/tools` metadata endpoint listing available tools
 - Supports runtime enable/disable of individual tools
 - Implements ETag-based HTTP caching
+- Supports `additionalProperties: true` schemas (e.g. `call_deferred`'s `**kwargs`) via Pydantic `extra="allow"`
 
 ## Quick Start
 

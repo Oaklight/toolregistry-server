@@ -11,6 +11,15 @@ The adapter:
 - Handles async and sync tools transparently
 - Provides both blocking (`run`) and async (`run_async`) entry points
 
+## Deferred Tools and `call_deferred`
+
+When the underlying `ToolRegistry` has tool discovery enabled (via `enable_tool_discovery()`), two infrastructure tools are automatically exposed through the MCP adapter:
+
+- **`discover_tools`** — BM25 fuzzy search over all registered tools. Returns full schema for deferred tools.
+- **`call_deferred`** — Proxy tool for invoking deferred tools by name. Accepts `_target_tool` and forwards `**kwargs` to the target.
+
+Deferred tools (those with `metadata.defer=True`) are excluded from `tools/list` but remain callable via `call_deferred` after the LLM discovers their schema. This enables progressive disclosure of large tool catalogs without overwhelming the initial tool listing.
+
 ## Quick Start
 
 ### Via `App` (recommended)
