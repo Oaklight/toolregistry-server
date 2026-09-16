@@ -68,7 +68,7 @@ pip install -e ".[all,dev]"
 ## 系统要求
 
 - **Python**: 3.10 或更高版本
-- **核心依赖**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.5.0
+- **核心依赖**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.18.0
 
 ## 验证安装
 

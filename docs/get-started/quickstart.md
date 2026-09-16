@@ -1,6 +1,6 @@
 # 快速入门
 
-本指南带您了解使用 `toolregistry-server` v0.4.0 API 将工具发布为服务的基本用法。
+本指南带您了解使用 `toolregistry-server` 当前版本 API 将工具发布为服务的基本用法。
 
 ## 编程方式：OpenAPI 服务器
 
