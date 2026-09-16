@@ -1,6 +1,6 @@
 # Quick Start
 
-This guide walks you through the basic usage of `toolregistry-server` to expose your tools as services using the v0.4.0 API.
+This guide walks you through the basic usage of `toolregistry-server` to expose your tools as services using the current API.
 
 ## Programmatic Usage: OpenAPI Server
 

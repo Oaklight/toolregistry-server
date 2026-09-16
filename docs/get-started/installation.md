@@ -68,7 +68,7 @@ The `dev` extra includes:
 ## Requirements
 
 - **Python**: 3.10 or higher
-- **Core dependency**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.5.0
+- **Core dependency**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.18.0
 
 ## Verify Installation
 
