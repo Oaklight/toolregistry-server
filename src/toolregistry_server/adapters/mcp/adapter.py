@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
     from mcp.types import ContentBlock as MCPContentBlock
 
-    from ...route_table import RouteTable
+    from ...route_table import RouteEntry, RouteTable
 
 logger = get_logger()
 
@@ -401,7 +401,7 @@ def route_table_to_mcp_server(
         ImportError: If MCP SDK is not installed.
     """
     try:
-        from mcp.types import INTERNAL_ERROR
+        from mcp.types import INTERNAL_ERROR, INVALID_PARAMS
 
         from ._compat import (
             McpErrorClass,
@@ -417,6 +417,17 @@ def route_table_to_mcp_server(
         ) from e
 
     session_mgr = SessionManager()
+
+    def get_enabled_route(tool_name: str) -> "RouteEntry":
+        route = route_table.get_route(tool_name)
+        if route is None:
+            raise make_mcp_error(INVALID_PARAMS, f"Tool '{tool_name}' not found")
+        if not route.enabled:
+            reason = route.disable_reason or "unknown reason"
+            raise make_mcp_error(
+                INVALID_PARAMS, f"Tool '{tool_name}' is disabled: {reason}"
+            )
+        return route
 
     async def handle_list_tools() -> list:
         """Return MCP tool definitions for non-deferred enabled tools.
@@ -457,16 +468,7 @@ def route_table_to_mcp_server(
         Raises:
             McpErrorClass: If the tool is disabled or not found.
         """
-        route = route_table.get_route(tool_name)
-
-        if route is None:
-            raise make_mcp_error(INTERNAL_ERROR, f"Tool '{tool_name}' not found")
-
-        if not route.enabled:
-            reason = route.disable_reason or "unknown reason"
-            raise make_mcp_error(
-                INTERNAL_ERROR, f"Tool '{tool_name}' is disabled: {reason}"
-            )
+        route = get_enabled_route(tool_name)
 
         # --- Session context & notification tracking ---
         session_ctx = _get_session_context(session_mgr)
@@ -509,6 +511,7 @@ def route_table_to_mcp_server(
         name,
         list_tools_handler=handle_list_tools,
         call_tool_handler=handle_call_tool,
+        call_tool_route_getter=get_enabled_route,
         list_tools_ttl_ms=list_tools_ttl_ms,
         list_tools_cache_scope=list_tools_cache_scope,
         session_tracker=_sessions,
