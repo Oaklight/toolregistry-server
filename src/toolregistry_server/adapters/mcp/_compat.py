@@ -64,6 +64,14 @@ else:
         return McpErrorClass(_ErrorData(code=code, message=message))
 
 
+def _get_mcp_error_code(error: Exception) -> int | None:
+    error_data = getattr(error, "error", None)
+    code = getattr(error_data, "code", None)
+    if code is None:
+        code = getattr(error, "code", None)
+    return code if isinstance(code, int) else None
+
+
 # ---------------------------------------------------------------------------
 # Request context bridge
 # ---------------------------------------------------------------------------
@@ -129,6 +137,7 @@ CallToolHandler = Callable[
     [str, dict[str, Any]],
     Coroutine[Any, Any, "tuple[list[MCPContentBlock], Any]"],
 ]
+CallToolRouteGetter = Callable[[str], object]
 
 
 def create_mcp_server(
@@ -136,6 +145,7 @@ def create_mcp_server(
     *,
     list_tools_handler: ListToolsHandler,
     call_tool_handler: CallToolHandler,
+    call_tool_route_getter: CallToolRouteGetter | None = None,
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
     session_tracker: MutableSet | None = None,
@@ -149,6 +159,8 @@ def create_mcp_server(
         name: Server name for MCP identification.
         list_tools_handler: ``async () -> list[Tool]``
         call_tool_handler: ``async (name, arguments) -> list[ContentBlock]``
+        call_tool_route_getter: Synchronous route lookup used to preserve
+            protocol errors in SDK v1, whose call-tool decorator catches them.
         list_tools_ttl_ms: Optional cache lifetime in milliseconds for
             ``tools/list`` responses (MCP spec 2026-07-28). Ignored on v1.
         list_tools_cache_scope: Cache scope for ``tools/list``. Ignored on v1.
@@ -170,7 +182,11 @@ def create_mcp_server(
         )
     else:
         return _create_server_v1(
-            name, list_tools_handler, call_tool_handler, session_tracker
+            name,
+            list_tools_handler,
+            call_tool_handler,
+            call_tool_route_getter,
+            session_tracker,
         )
 
 
@@ -178,6 +194,7 @@ def _create_server_v1(
     name: str,
     list_tools_handler: ListToolsHandler,
     call_tool_handler: CallToolHandler,
+    call_tool_route_getter: CallToolRouteGetter | None = None,
     session_tracker: MutableSet | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
@@ -205,6 +222,18 @@ def _create_server_v1(
             return content, structured
         return content
 
+    if call_tool_route_getter is not None:
+        from mcp.types import CallToolRequest
+
+        handler = server.request_handlers[CallToolRequest]
+
+        async def _handle_call_tool_request(request: CallToolRequest) -> Any:
+            # The SDK decorator converts all callback exceptions to isError results.
+            call_tool_route_getter(request.params.name)
+            return await handler(request)
+
+        server.request_handlers[CallToolRequest] = _handle_call_tool_request
+
     return server
 
 
@@ -217,7 +246,7 @@ def _create_server_v2(
     session_tracker: MutableSet | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
-    from mcp.types import CallToolResult, ListToolsResult
+    from mcp.types import INVALID_PARAMS, CallToolResult, ListToolsResult
 
     _cache_supported = supports_list_tools_cache()
 
@@ -244,11 +273,14 @@ def _create_server_v2(
             if structured is not None:
                 kwargs["structured_content"] = structured
             return CallToolResult(content=content, is_error=False, **kwargs)  # type: ignore[call-arg]
+        except McpErrorClass as e:
+            if _get_mcp_error_code(e) == INVALID_PARAMS:
+                raise
+            return CallToolResult(  # type: ignore[call-arg]
+                content=[TextContent(type="text", text=str(e))],
+                is_error=True,
+            )
         except Exception as e:
-            # In v2, MCPError raised from on_call_tool becomes a JSON-RPC
-            # protocol error (client raises instead of getting is_error=True).
-            # Catch everything and return as is_error=True to preserve v1
-            # behavior where errors are LLM-visible tool results.
             return CallToolResult(  # type: ignore[call-arg]
                 content=[TextContent(type="text", text=str(e))],
                 is_error=True,

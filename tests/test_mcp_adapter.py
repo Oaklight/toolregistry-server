@@ -9,12 +9,14 @@ from unittest.mock import MagicMock
 
 import pytest
 from mcp.server.lowlevel import Server
+from mcp.types import INVALID_PARAMS
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
 from toolregistry_server.adapters.mcp import route_table_to_mcp_server
 from toolregistry_server.adapters.mcp._compat import (
     CompatProxy,
+    McpErrorClass,
     create_test_client,
     get_field,
 )
@@ -443,7 +445,7 @@ class TestCallTool:
     async def test_call_disabled_tool_returns_error(
         self, mock_registry: MagicMock
     ) -> None:
-        """Calling a disabled tool should return isError=True with reason."""
+        """Calling a disabled tool should return an invalid-params protocol error."""
         add_tool = MagicMock()
         add_tool.name = "add"
         add_tool.namespace = "default"
@@ -461,21 +463,27 @@ class TestCallTool:
         server = route_table_to_mcp_server(route_table)
 
         async with create_test_client(server) as client:
-            result = await client.call_tool("add", {"a": 1, "b": 2})
-            assert get_field(result, "is_error", "isError") is True
-            assert "disabled" in result.content[0].text.lower()
-            assert "maintenance" in result.content[0].text
+            with pytest.raises(McpErrorClass) as exc_info:
+                await client.call_tool("add", {"a": 1, "b": 2})
+
+        error_data = getattr(exc_info.value, "error", exc_info.value)
+        assert getattr(error_data, "code", None) == INVALID_PARAMS
+        assert "disabled" in str(exc_info.value).lower()
+        assert "maintenance" in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_call_nonexistent_tool_returns_error(
         self, route_table_with_tools: RouteTable
     ) -> None:
-        """Calling a non-existent tool should return isError=True."""
+        """Calling a non-existent tool should return an invalid-params protocol error."""
         server = route_table_to_mcp_server(route_table_with_tools)
         async with create_test_client(server) as client:
-            result = await client.call_tool("nonexistent", {})
-            assert get_field(result, "is_error", "isError") is True
-            assert "not found" in result.content[0].text.lower()
+            with pytest.raises(McpErrorClass) as exc_info:
+                await client.call_tool("nonexistent", {})
+
+        error_data = getattr(exc_info.value, "error", exc_info.value)
+        assert getattr(error_data, "code", None) == INVALID_PARAMS
+        assert "not found" in str(exc_info.value).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1354,6 +1362,17 @@ class TestCallDeferred:
             text = result.content[0].text
             assert "hello" in text
             assert "limit=5" in text
+
+    async def test_deferred_tool_can_be_called_by_name(
+        self, discovery_route_table: RouteTable
+    ) -> None:
+        """Deferred tools remain callable after they are discovered."""
+        server = route_table_to_mcp_server(discovery_route_table)
+        async with create_test_client(server) as client:
+            result = await client.call_tool("search", {"query": "hello"})
+
+        assert get_field(result, "is_error", "isError") is False
+        assert "results for 'hello'" in result.content[0].text
 
     async def test_call_deferred_rejects_non_deferred(
         self, discovery_route_table: RouteTable
