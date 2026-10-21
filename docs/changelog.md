@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **MCP extra floor raised to `mcp>=1.22.0`** (#95): SDK releases below 1.22 import a pydantic internal that pydantic 2.12+ removed (`eval_type_backport`), so a resolver landing anywhere in 1.17–1.21 produced an install that fails at `import mcp.server.lowlevel`. 1.21 fails and 1.22 imports, so the floor is the boundary. The `test-mcp-v1` CI job now installs the declared floor and prints the version it tested.
 - **Startup banner no longer corrupts the stdio stream** (#80): `print_banner()` wrote to stdout, which over the MCP stdio transport is the JSON-RPC channel — clients read banner art between their messages, sometimes after the first responses. The banner now goes to stderr, alongside the logs, and `print_banner()` accepts an optional `file` argument. `--no-banner` still suppresses it. The Hub calls the same helper, so it is fixed without a Hub change — but only once its installed `toolregistry-server` crosses the version that carries this.
 
 ### Security
