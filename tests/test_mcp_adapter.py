@@ -1579,3 +1579,30 @@ class TestToolAnnotations:
         from toolregistry_server.adapters.mcp._compat import make_tool_annotations
 
         assert make_tool_annotations({}) is None
+
+
+def test_annotation_serialization_uses_camel_case() -> None:
+    """Annotations serialize to the spec's camelCase keys on both SDKs.
+
+    The Python field spelling differs between SDK generations, but the wire
+    format does not; a host only ever sees the serialized form. Asserting on
+    ``model_dump`` catches a mapping that builds a model with unrecognised
+    snake_case fields, which the v1 SDK silently accepts.
+    """
+    from toolregistry_server.adapters.mcp._compat import make_tool_annotations
+
+    annotations = make_tool_annotations(
+        {
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": True,
+        }
+    )
+    dumped = annotations.model_dump(by_alias=True, exclude_none=True)
+    assert dumped == {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
