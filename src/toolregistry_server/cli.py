@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, NoReturn, TextIO
 
 if TYPE_CHECKING:
     from .app import App
@@ -65,13 +65,20 @@ def print_banner(
     version: str | None = None,
     banner_art: str | None = None,
     extra_lines: list[str] | None = None,
+    file: TextIO | None = None,
 ) -> None:
     """Print a bordered ASCII banner.
+
+    The banner goes to *stderr* by default, alongside the log output.
+    Over the MCP stdio transport stdout is the JSON-RPC channel, and the
+    spec forbids writing anything else there; a client reading stdout
+    would otherwise see banner art between its messages.
 
     Args:
         version: Version string to display.
         banner_art: ASCII art to display. If None, uses default.
         extra_lines: Additional lines after the version.
+        file: Stream to write to. Defaults to ``sys.stderr``.
     """
     if version is None:
         from . import __version__
@@ -82,6 +89,8 @@ def print_banner(
         from .banner import BANNER_ART
 
         banner_art = BANNER_ART
+
+    stream = file if file is not None else sys.stderr
 
     width = 80
     border_char = "·"
@@ -99,7 +108,7 @@ def print_banner(
             lines.append(f": {extra.center(width - 4)} :")
     lines.append(f": {' ' * (width - 4)} :")
     lines.append(border_char * width)
-    print("\n".join(lines))
+    print("\n".join(lines), file=stream)
 
 
 # ---------------------------------------------------------------------------
