@@ -80,7 +80,7 @@ jobs:
               `The MCP Python SDK release **${version}** needs attention.`,
               ``,
               process.env.OUTSIDE_RANGE === 'true'
-                ? `It is outside the range declared in \`pyproject.toml\` (\`mcp>=1.17.0,<3\`). Decide whether to support it or pin it out.`
+                ? `It is outside the range declared in \`pyproject.toml\` (\`mcp>=1.22.0,<3\`). Decide whether to support it or pin it out.`
                 : `The adapter test suite fails against this release.`,
               ``,
               `**Workflow run:** ${runUrl}`,
