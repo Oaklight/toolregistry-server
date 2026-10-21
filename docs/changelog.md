@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **MCP tool annotations and title** (#280): `tools/list` now carries `title` from `Tool.metadata.title` and `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) from `Tool.execution_hints`. Hints that are not declared stay absent, so a tool that claims nothing keeps the minimal `{name, description, inputSchema}` definition. The Python field spelling differs between MCP SDK v1 (camelCase) and v2 (snake_case); both serialize to the spec's camelCase JSON keys.
 - **OpenAPI operation extensions and route accessors** (#280): generated operations carry `x-read-only`, `x-destructive`, `x-idempotent`, `x-open-world` and `x-title` for the hints a tool declares, matching the MCP `annotations`; undeclared hints are omitted. `RouteEntry` gains `title` and `execution_hints` properties so both adapters read the same metadata instead of reaching into `route.tool`.
 
+### Changed
+
+- **Unknown or disabled tools are protocol errors** (#81, **behavior change** for MCP clients): `tools/call` for a tool that does not exist, or that is currently disabled, now returns JSON-RPC error `-32602` (Invalid params) instead of a `CallToolResult` with `isError: true`. The request itself was invalid, so hosts should not hand it back to the model as a tool result. Tool execution failures keep returning `isError: true` so the model can read the message and adapt. Works on both MCP SDK v1 and v2.
+
 ## [0.6.0] - 2026-09-15
 
 ### Added

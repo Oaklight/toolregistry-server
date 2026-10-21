@@ -158,6 +158,17 @@ tool_metadata:
 !!! note "Tags and hints are different layers"
     Tags (`read_only`, `file_system`, `network`, …) drive local permission rules and deployment profiles: the `remote` profile disables `file_system`, `destructive` and `privileged` tools. Hints describe a single call to an MCP host. A method-level hint does not change profile exposure — a read-only file tool is still hidden from a `remote` deployment.
 
+## Error Semantics
+
+`tools/call` distinguishes a bad request from a failing tool:
+
+| Situation | What the client sees |
+|-----------|----------------------|
+| Tool name unknown, or the tool is disabled | JSON-RPC error `-32602` (Invalid params) |
+| Tool raises while executing | `CallToolResult` with `isError: true` and the error text as content |
+
+A protocol error means the call itself was invalid, so it should not be fed back to the model as a tool result. An execution error is model-visible: the LLM reads the message and can retry or change approach. Disabled tools report the disable reason in the error message.
+
 ## API Reference
 
 See the [MCP API Reference](../reference/api/mcp.md) for detailed documentation.
