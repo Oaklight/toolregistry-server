@@ -37,7 +37,10 @@ dependencies = ["toolregistry>=0.18.0,<1.0.0"]
 
 [project.optional-dependencies]
 openapi = ["fastapi>=0.119.0", "uvicorn[standard]>=0.24.0"]
-mcp = ["mcp>=1.17.0,<3"]
+# Floor raised from 1.17.0: mcp < 1.22 imports a pydantic internal that
+# pydantic 2.12+ removed, so those versions fail at import with a current
+# pydantic (see #95).
+mcp = ["mcp>=1.22.0,<3"]
 all = ["toolregistry-server[openapi]", "toolregistry-server[mcp]"]
 dev = [
     "pytest>=7.0.0",
