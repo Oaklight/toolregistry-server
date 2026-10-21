@@ -250,6 +250,37 @@ class TestListTools:
             assert set(schema["required"]) == {"a", "b"}
 
     @pytest.mark.asyncio
+    async def test_list_tools_emits_title_and_annotations(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """Hints and title on the tool are carried onto the MCP definition.
+
+        Uses the mock tools so the mapping is exercised regardless of which
+        ``toolregistry`` release is installed (the hint fields themselves
+        only exist from the release that adds them).
+        """
+        add_tool = route_table_with_tools.get_route("add").tool
+        add_tool.execution_hints = {
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "open_world_hint": False,
+        }
+        add_tool.metadata.title = "Add Numbers"
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+        tools_by_name = {t.name: t for t in result.tools}
+
+        assert get_field(tools_by_name["add"], "title", "title") == "Add Numbers"
+        annotations = tools_by_name["add"].annotations
+        assert get_field(annotations, "read_only_hint", "readOnlyHint") is True
+        assert get_field(annotations, "destructive_hint", "destructiveHint") is False
+        assert get_field(annotations, "open_world_hint", "openWorldHint") is False
+        # A tool that declares nothing keeps the minimal shape.
+        assert tools_by_name["multiply"].annotations is None
+
+    @pytest.mark.asyncio
     async def test_list_tools_normalizes_invalid_input_schema(
         self, mock_registry: MagicMock
     ) -> None:
