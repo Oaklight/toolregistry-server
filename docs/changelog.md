@@ -18,6 +18,7 @@
 
 ### 修复
 
+- **MCP extra 的下限提高到 `mcp>=1.22.0`**（#95）：低于 1.22 的 SDK 版本会导入一个 pydantic 2.12+ 已移除的内部符号（`eval_type_backport`），因此依赖解析落在 1.17–1.21 时，安装出来的包在执行 `import mcp.server.lowlevel` 时会直接失败。1.21 失败、1.22 可导入，因此下限取在该边界上。`test-mcp-v1` CI 任务现在安装声明的下限版本，并打印实际测试到的版本。
 - **启动横幅不再污染 stdio 数据流**（#80）：`print_banner()` 原先写入 stdout，而在 MCP stdio 传输下 stdout 就是 JSON-RPC 通道——客户端会在消息之间读到横幅字符画，有时甚至出现在首批响应之后。现在横幅改写到 stderr，与日志同流，并且 `print_banner()` 新增可选的 `file` 参数。`--no-banner` 仍可完全关闭横幅。Hub 调用的是同一辅助函数，因此无需改动 Hub 代码即可修复——但要等它安装的 `toolregistry-server` 升到包含该修复的版本之后才会生效。
 
 ### 安全
