@@ -226,6 +226,7 @@ class CLI:
                 host=parsed.host,
                 port=parsed.port,
                 transport=parsed.transport,
+                tokens_path=getattr(parsed, "tokens", None),
                 server_url=getattr(parsed, "server_url", None),
             )
 

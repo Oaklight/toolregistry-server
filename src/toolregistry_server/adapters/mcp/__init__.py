@@ -274,6 +274,17 @@ class MCPAdapter(Adapter):
             help="Port for SSE/HTTP transport (default: 8000)",
         )
         parser.add_argument(
+            "--tokens",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help=(
+                "Path to a file of Bearer tokens (one per line) for "
+                "streamable-http. Falls back to the API_BEARER_TOKEN "
+                "environment variable"
+            ),
+        )
+        parser.add_argument(
             "--server-url",
             type=str,
             default=None,
