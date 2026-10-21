@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Startup banner no longer corrupts the stdio stream** (#80): `print_banner()` wrote to stdout, which over the MCP stdio transport is the JSON-RPC channel — clients read banner art between their messages, sometimes after the first responses. The banner now goes to stderr, alongside the logs, and `print_banner()` accepts an optional `file` argument. `--no-banner` still suppresses it. The Hub uses the same helper, so it is covered too.
 
+### Security
+
+- **Disable reasons no longer disclose the deployment profile** (#84): `apply_profile()` stored `Disabled by profile 'remote'` as the tool's disable reason, and that string reaches callers through the MCP `tools/call` error and core's `RuntimeError`. The stored reason is now the neutral `"not available on this server"`; the profile name is only logged server-side.
+
 ## [0.6.0] - 2026-09-15
 
 ### Added
