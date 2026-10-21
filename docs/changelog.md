@@ -19,6 +19,10 @@
 
 - **启动横幅不再污染 stdio 数据流**（#80）：`print_banner()` 原先写入 stdout，而在 MCP stdio 传输下 stdout 就是 JSON-RPC 通道——客户端会在消息之间读到横幅字符画，有时甚至出现在首批响应之后。现在横幅改写到 stderr，与日志同流，并且 `print_banner()` 新增可选的 `file` 参数。`--no-banner` 仍可完全关闭横幅。Hub 复用同一辅助函数，因此同样得到修复。
 
+### 安全
+
+- **禁用原因不再泄露部署 profile**（#84）：`apply_profile()` 原先把 `Disabled by profile 'remote'` 作为工具的禁用原因存储，而该字符串会经由 MCP 的 `tools/call` 错误以及 core 抛出的 `RuntimeError` 传到调用方。现在存储的原因是中性的 `"not available on this server"`，profile 名称只在服务端日志中记录。
+
 ## [0.6.0] - 2026-09-15
 
 ### 新增
