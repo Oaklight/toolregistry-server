@@ -34,6 +34,12 @@ def _detect_mcp_version() -> int:
 
 MCP_VERSION: int = _detect_mcp_version()
 
+# MCP specification revision this adapter is written against.  The
+# ``mcp-upstream-drift`` workflow compares it with the latest release of
+# modelcontextprotocol/modelcontextprotocol and opens an issue when the
+# protocol moves ahead of us.
+MCP_SPEC_VERSION = "2026-07-28"
+
 # ---------------------------------------------------------------------------
 # Error abstraction
 # ---------------------------------------------------------------------------
