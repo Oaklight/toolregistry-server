@@ -373,23 +373,6 @@ def _setup_tools_changed_notifications(
     route_table.add_listener(_on_route_change)
 
 
-def _display_metadata(route: Any) -> tuple[str | None, dict[str, bool]]:
-    """Return ``(title, execution hints)`` for an MCP tool definition.
-
-    Tolerates tools that predate the metadata fields, and test doubles:
-    anything that is not a non-empty string title or a dict of hints is
-    treated as unset, so the definition keeps its minimal shape instead
-    of failing to serialize.
-    """
-    metadata = getattr(route.tool, "metadata", None)
-    title = getattr(metadata, "title", None)
-    hints = getattr(route.tool, "execution_hints", None)
-    return (
-        title if isinstance(title, str) and title else None,
-        hints if isinstance(hints, dict) else {},
-    )
-
-
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
@@ -445,15 +428,14 @@ def route_table_to_mcp_server(
         """
         tools: list = []
         for route in route_table.list_routes(enabled_only=True, include_deferred=False):
-            title, hints = _display_metadata(route)
             tools.append(
                 make_mcp_tool(
                     name=route.tool_name,
                     description=route.description or "",
                     schema=normalize_parameters_schema(route.parameters_schema),
                     output_schema=route.output_schema,
-                    title=title,
-                    annotations=make_tool_annotations(hints),
+                    title=route.title,
+                    annotations=make_tool_annotations(route.execution_hints),
                 )
             )
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
