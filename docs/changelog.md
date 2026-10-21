@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **MCP tool annotations and title** (#280): `tools/list` now carries `title` from `Tool.metadata.title` and `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) from `Tool.execution_hints`. Hints that are not declared stay absent, so a tool that claims nothing keeps the minimal `{name, description, inputSchema}` definition. Works with MCP SDK v1 (camelCase fields) and v2 (snake_case fields).
+
 ## [0.6.0] - 2026-09-15
 
 ### Added
