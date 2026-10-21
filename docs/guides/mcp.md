@@ -105,13 +105,31 @@ adapter.run(
     host="0.0.0.0",
     port=8000,
     tokens_path="/etc/myapp/tokens.txt",
+    server_url="https://tools.example.com/mcp",
 )
 ```
 
 ```bash
-# CLI 等效写法
-toolregistry-server mcp --config tools.yaml --transport http --tokens tokens.txt
+# CLI 等效写法（mcp 子命令从环境变量读取令牌；
+# 独立的 --tokens 参数见 #99）
+API_BEARER_TOKEN=$(cat tokens.txt) \
+  toolregistry-server mcp --config tools.yaml --transport http \
+  --server-url https://tools.example.com/mcp
 ```
+
+### 部署在反向代理之后
+
+启用令牌认证后，服务器会发布 RFC 9728 的 protected-resource 元数据，并在 401 响应的 `WWW-Authenticate` 头中指向该文档。这个 URL 必须是客户端可访问的，因此应当是公网源（origin），而不是监听地址：
+
+```bash
+toolregistry-server mcp --config tools.yaml --transport http \
+  --host 0.0.0.0 --port 8000 \
+  --server-url https://tools.example.com/mcp
+```
+
+未指定 `--server-url` 时，URL 由 `--host`/`--port` 推导。只有在客户端直连服务器时这才是正确的：绑定 `0.0.0.0`（容器/代理部署的常见做法）会对外声明 `http://0.0.0.0:8000/...`，客户端无法解析，同时也向未认证的调用方暴露了服务器的绑定方式。若即将声明的正是这种地址，服务器会在启动时输出警告。
+
+反向代理还需要转发发现路径，因为客户端会从同一源获取这些文档：除 `/mcp` 外，还要转发 `/.well-known/oauth-protected-resource/mcp`。
 
 ## MCP 客户端配置
 
