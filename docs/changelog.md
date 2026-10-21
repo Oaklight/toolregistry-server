@@ -15,6 +15,10 @@
 
 - **未知或已禁用的工具属于协议错误**（#81，对 MCP 客户端而言是**行为变更**）：当 `tools/call` 调用的工具不存在或当前处于禁用状态时，现在返回 JSON-RPC 错误 `-32602`（Invalid params），而不再是带 `isError: true` 的 `CallToolResult`。此时请求本身无效，宿主不应把它当作工具结果回传给模型。工具执行失败仍返回 `isError: true`，以便模型读取错误信息并调整做法。该行为在 MCP SDK v1 与 v2 上一致。
 
+### 修复
+
+- **启动横幅不再污染 stdio 数据流**（#80）：`print_banner()` 原先写入 stdout，而在 MCP stdio 传输下 stdout 就是 JSON-RPC 通道——客户端会在消息之间读到横幅字符画，有时甚至出现在首批响应之后。现在横幅改写到 stderr，与日志同流，并且 `print_banner()` 新增可选的 `file` 参数。`--no-banner` 仍可完全关闭横幅。Hub 复用同一辅助函数，因此同样得到修复。
+
 ## [0.6.0] - 2026-09-15
 
 ### 新增
