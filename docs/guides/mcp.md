@@ -110,10 +110,9 @@ adapter.run(
 ```
 
 ```bash
-# CLI 等效写法（mcp 子命令从环境变量读取令牌；
-# 独立的 --tokens 参数见 #99）
-API_BEARER_TOKEN=$(cat tokens.txt) \
-  toolregistry-server mcp --config tools.yaml --transport http \
+# CLI 等效写法
+toolregistry-server mcp --config tools.yaml --transport http \
+  --tokens /etc/myapp/tokens.txt \
   --server-url https://tools.example.com/mcp
 ```
 
