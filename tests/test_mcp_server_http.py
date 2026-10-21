@@ -114,3 +114,74 @@ class TestStreamableHttpJsonErrors:
 
         assert response.status_code == 200
         assert response.text == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Public URL resolution for Protected Resource Metadata (#78)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLogger:
+    """Logger stand-in that records what was logged.
+
+    The package's vendored structlog writes through a stream captured at
+    import time, so pytest's capture fixtures do not see it; recording on
+    the module's logger tests the decision instead of the sink.
+    """
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def _record(self, message, *args, **kwargs) -> None:
+        self.messages.append(str(message))
+
+    debug = info = warning = error = _record
+
+
+@pytest.fixture
+def recording_logger(monkeypatch):
+    """Replace the MCP server module's logger with a recorder."""
+    from toolregistry_server.adapters.mcp import server as server_mod
+
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(server_mod, "logger", recorder)
+    return recorder
+
+
+class TestResolvePublicUrl:
+    """The advertised metadata URL must be one a client can actually reach."""
+
+    def test_uses_configured_public_url(self, recording_logger):
+        """An operator-supplied URL wins over the bind address."""
+        from toolregistry_server.adapters.mcp.server import resolve_public_url
+
+        resolved = resolve_public_url(
+            "https://tools.example.com/mcp", "0.0.0.0", 8000, "/mcp"
+        )
+
+        assert resolved == "https://tools.example.com/mcp"
+        assert recording_logger.messages == []
+
+    def test_derives_from_bind_address_when_direct(self, recording_logger):
+        """Without a public URL, a directly reachable bind address is used."""
+        from toolregistry_server.adapters.mcp.server import resolve_public_url
+
+        resolved = resolve_public_url(None, "127.0.0.1", 9000, "/mcp")
+
+        assert resolved == "http://127.0.0.1:9000/mcp"
+        assert recording_logger.messages == []
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "[::]", ""])
+    def test_warns_when_advertising_an_unreachable_bind_address(
+        self, host, recording_logger
+    ):
+        """A wildcard bind address cannot be reached by clients — say so."""
+        from toolregistry_server.adapters.mcp.server import resolve_public_url
+
+        resolved = resolve_public_url(None, host, 8000, "/mcp")
+
+        assert resolved == f"http://{host}:8000/mcp"
+        assert len(recording_logger.messages) == 1
+        warning = recording_logger.messages[0]
+        assert "no client can reach" in warning
+        assert "--server-url" in warning

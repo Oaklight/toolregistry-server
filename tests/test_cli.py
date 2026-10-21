@@ -223,6 +223,25 @@ class TestMain:
             host="127.0.0.1",
             port=9000,
             transport="sse",
+            server_url=None,
+        )
+
+    @patch("toolregistry_server.app.App.serve_mcp")
+    def test_mcp_command_passes_server_url(self, mock_serve):
+        """--server-url reaches the adapter so metadata can name the proxy (#78)."""
+        main(
+            [
+                "mcp",
+                "--config",
+                "tools.yaml",
+                "--transport",
+                "streamable-http",
+                "--server-url",
+                "https://tools.example.com/mcp",
+            ]
+        )
+        assert (
+            mock_serve.call_args.kwargs["server_url"] == "https://tools.example.com/mcp"
         )
 
     @patch("toolregistry_server.app.App.serve_mcp")
@@ -235,6 +254,7 @@ class TestMain:
             host="127.0.0.1",
             port=8000,
             transport="stdio",
+            server_url=None,
         )
 
     def test_no_config_exits(self):

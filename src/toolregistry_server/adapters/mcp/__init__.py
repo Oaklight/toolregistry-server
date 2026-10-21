@@ -273,6 +273,18 @@ class MCPAdapter(Adapter):
             default=8000,
             help="Port for SSE/HTTP transport (default: 8000)",
         )
+        parser.add_argument(
+            "--server-url",
+            type=str,
+            default=None,
+            metavar="URL",
+            help=(
+                "Public URL of this server, used for OAuth protected-resource "
+                "metadata (e.g. https://tools.example.com/mcp). Required behind "
+                "a reverse proxy, where the bind address is not reachable "
+                "(default: derived from --host/--port)"
+            ),
+        )
 
     @classmethod
     def create_and_run(cls, route_table: "RouteTable", **kwargs) -> None:

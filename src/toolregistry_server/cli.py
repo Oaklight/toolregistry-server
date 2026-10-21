@@ -226,6 +226,7 @@ class CLI:
                 host=parsed.host,
                 port=parsed.port,
                 transport=parsed.transport,
+                server_url=getattr(parsed, "server_url", None),
             )
 
     def main(self, args: list[str] | None = None) -> NoReturn | None:
