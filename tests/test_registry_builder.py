@@ -573,6 +573,20 @@ def _tagged_registry(tags, name: str = "fs_tool"):
     return registry
 
 
+def _error_text(exc: BaseException) -> str:
+    """Return the text of *exc*, unwrapping nested exception groups.
+
+    An MCP client session runs inside an anyio task group, so an error
+    raised by the server arrives as an ``ExceptionGroup`` whose own
+    ``str()`` is only ``"unhandled errors in a TaskGroup"`` — the message
+    the caller actually sees lives on the sub-exceptions.
+    """
+    parts = [str(exc)]
+    for sub in getattr(exc, "exceptions", ()):
+        parts.append(_error_text(sub))
+    return " ".join(parts)
+
+
 def _discovery_skips_disabled_tools() -> bool:
     """Probe whether the installed core drops disabled tools from discovery.
 
@@ -650,10 +664,7 @@ class TestProfileDisableReason:
         pytest.importorskip("mcp")
 
         from toolregistry_server.adapters.mcp import route_table_to_mcp_server
-        from toolregistry_server.adapters.mcp._compat import (
-            McpErrorClass,
-            create_test_client,
-        )
+        from toolregistry_server.adapters.mcp._compat import create_test_client
         from toolregistry_server.registry_builder import apply_profile
         from toolregistry_server.route_table import RouteTable
 
@@ -665,15 +676,15 @@ class TestProfileDisableReason:
             async with create_test_client(server) as client:
                 return await client.call_tool("fs_tool", {})
 
-        try:
-            result = asyncio.run(_call())
-        except McpErrorClass as e:
-            # With the protocol-error pre-check the client gets a JSON-RPC
-            # error; without it the SDK turns it into an isError result.
-            message = str(e)
-        else:
-            message = result.content[0].text
+        # A disabled tool is a protocol error, so the client raises.  Which
+        # exception arrives depends on the SDK: v1 propagates ``McpError``
+        # directly, v2 runs the session in an anyio task group and the error
+        # comes back wrapped in an ``ExceptionGroup``.  Either way the text
+        # the caller sees is what must stay free of the profile name.
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(_call())
 
+        message = _error_text(exc_info.value)
         assert "remote" not in message
         assert "disabled" in message.lower()
 
