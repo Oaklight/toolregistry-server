@@ -48,6 +48,29 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
+  # The MCP adapter has two field-naming branches: camelCase on SDK v1 and
+  # snake_case on v2. The normal matrix resolves the latest SDK, so whichever
+  # branch is not current would ship untested. Pin one leg to v1.
+  test-mcp-v1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies with MCP SDK v1
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+          pip install "mcp>=1.17,<2"
+
+      - name: Run MCP adapter tests
+        run: python -m pytest tests/test_mcp_adapter.py tests/test_mcp_session.py -q
+
   build:
     runs-on: ubuntu-latest
     needs: [lint, test]
