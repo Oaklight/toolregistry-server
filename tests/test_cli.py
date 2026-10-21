@@ -225,6 +225,8 @@ class TestMain:
             transport="sse",
             tokens_path=None,
             server_url=None,
+            tools_list_ttl_ms=None,
+            tools_list_cache_scope=None,
         )
 
     @patch("toolregistry_server.app.App.serve_mcp")
@@ -242,6 +244,24 @@ class TestMain:
             ]
         )
         assert mock_serve.call_args.kwargs["tokens_path"] == "/etc/app/tokens.txt"
+
+    @patch("toolregistry_server.app.App.serve_mcp")
+    def test_mcp_command_passes_cache_hint_flags(self, mock_serve):
+        """tools/list cache hints are configurable from the CLI (#83)."""
+        main(
+            [
+                "mcp",
+                "--config",
+                "tools.yaml",
+                "--tools-list-ttl-ms",
+                "0",
+                "--tools-list-cache-scope",
+                "public",
+            ]
+        )
+        kwargs = mock_serve.call_args.kwargs
+        assert kwargs["tools_list_ttl_ms"] == 0
+        assert kwargs["tools_list_cache_scope"] == "public"
 
     @patch("toolregistry_server.app.App.serve_mcp")
     def test_mcp_command_passes_server_url(self, mock_serve):
@@ -273,6 +293,8 @@ class TestMain:
             transport="stdio",
             tokens_path=None,
             server_url=None,
+            tools_list_ttl_ms=None,
+            tools_list_cache_scope=None,
         )
 
     def test_no_config_exits(self):

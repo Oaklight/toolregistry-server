@@ -297,6 +297,28 @@ class MCPAdapter(Adapter):
             ),
         )
 
+        parser.add_argument(
+            "--tools-list-ttl-ms",
+            type=int,
+            default=None,
+            metavar="MS",
+            help=(
+                "ttlMs cache hint for tools/list. Default 0: clients must not "
+                "cache the list, because notifications/tools/list_changed is "
+                "not delivered on SDK v2 yet (#107). Set a positive value "
+                "(e.g. 300000) to let clients cache it"
+            ),
+        )
+        parser.add_argument(
+            "--tools-list-cache-scope",
+            choices=["public", "private"],
+            default=None,
+            help=(
+                "cacheScope hint for tools/list (default: private, since the "
+                "served set depends on profile and authorization)"
+            ),
+        )
+
     @classmethod
     def create_and_run(cls, route_table: "RouteTable", **kwargs) -> None:
         """Construct and run an MCP server in one step.
@@ -308,7 +330,12 @@ class MCPAdapter(Adapter):
 
         identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         name = kwargs.pop("name", identity.name)
-        adapter = cls(route_table, name=name)
+        adapter = cls(
+            route_table,
+            name=name,
+            list_tools_ttl_ms=kwargs.pop("tools_list_ttl_ms", None),
+            list_tools_cache_scope=kwargs.pop("tools_list_cache_scope", None),
+        )
         adapter.run(**kwargs)
 
 

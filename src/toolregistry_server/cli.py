@@ -228,6 +228,8 @@ class CLI:
                 transport=parsed.transport,
                 tokens_path=getattr(parsed, "tokens", None),
                 server_url=getattr(parsed, "server_url", None),
+                tools_list_ttl_ms=getattr(parsed, "tools_list_ttl_ms", None),
+                tools_list_cache_scope=getattr(parsed, "tools_list_cache_scope", None),
             )
 
     def main(self, args: list[str] | None = None) -> NoReturn | None:

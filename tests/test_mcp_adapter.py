@@ -349,7 +349,11 @@ class TestEnableDisable:
         )
 
         route_table = RouteTable(mock_registry)
-        server = route_table_to_mcp_server(route_table)
+        # Pin ttlMs=0: this test mutates the route table without emitting a
+        # change event, so a cacheable list would be served from the client's
+        # cache.  Pinning it keeps the test correct if the default moves.
+        # Caching itself is covered by TestListToolsCacheHints.
+        server = route_table_to_mcp_server(route_table, list_tools_ttl_ms=0)
 
         async with create_test_client(server) as client:
             # Initially both tools are listed
@@ -389,7 +393,9 @@ class TestEnableDisable:
         mock_registry.get_tool = MagicMock(return_value=add_tool)
 
         route_table = RouteTable(mock_registry)
-        server = route_table_to_mcp_server(route_table)
+        # ttlMs=0 for the same reason as the test above: no change event is
+        # emitted, so a cached list would hide the mutation.
+        server = route_table_to_mcp_server(route_table, list_tools_ttl_ms=0)
 
         async with create_test_client(server) as client:
             # Disable then re-enable
@@ -1127,15 +1133,48 @@ class TestListToolsCacheHints:
                 assert get_field(result, "cache_scope", "cacheScope") == "public"
 
     @pytest.mark.asyncio
-    async def test_no_cache_hints_by_default(
+    async def test_default_cache_hints_keep_the_list_uncached(
         self, route_table_with_tools: RouteTable
     ) -> None:
-        """Without cache hint params, defaults should be unchanged."""
+        """ttlMs stays 0 until list_changed works on v2 (#83, #107)."""
+        from toolregistry_server.adapters.mcp._compat import supports_list_tools_cache
+
         server = route_table_to_mcp_server(route_table_with_tools)
         async with create_test_client(server) as client:
             result = await client.list_tools()
             assert len(result.tools) > 0
-            assert get_field(result, "ttl_ms", "ttlMs") in (None, 0)
+            if supports_list_tools_cache():
+                assert get_field(result, "ttl_ms", "ttlMs") == 0
+                assert get_field(result, "cache_scope", "cacheScope") == "private"
+
+    @pytest.mark.asyncio
+    async def test_ttl_is_configurable(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """An operator can opt into caching once invalidation is trusted."""
+        from toolregistry_server.adapters.mcp._compat import supports_list_tools_cache
+
+        server = route_table_to_mcp_server(
+            route_table_with_tools, list_tools_ttl_ms=300_000
+        )
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            if supports_list_tools_cache():
+                assert get_field(result, "ttl_ms", "ttlMs") == 300_000
+                assert get_field(result, "cache_scope", "cacheScope") == "private"
+
+    @pytest.mark.asyncio
+    async def test_zero_ttl_still_means_never_cache(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """An explicit 0 is honoured rather than replaced by the default."""
+        from toolregistry_server.adapters.mcp._compat import supports_list_tools_cache
+
+        server = route_table_to_mcp_server(route_table_with_tools, list_tools_ttl_ms=0)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            if supports_list_tools_cache():
+                assert get_field(result, "ttl_ms", "ttlMs") == 0
 
 
 # ---------------------------------------------------------------------------
