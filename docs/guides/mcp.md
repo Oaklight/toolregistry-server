@@ -110,10 +110,9 @@ adapter.run(
 ```
 
 ```bash
-# CLI equivalent (the mcp subcommand reads tokens from the environment;
-# a --tokens flag is tracked in #99)
-API_BEARER_TOKEN=$(cat tokens.txt) \
-  toolregistry-server mcp --config tools.yaml --transport http \
+# CLI equivalent
+toolregistry-server mcp --config tools.yaml --transport http \
+  --tokens /etc/myapp/tokens.txt \
   --server-url https://tools.example.com/mcp
 ```
 
