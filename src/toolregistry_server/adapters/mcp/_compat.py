@@ -65,6 +65,12 @@ else:
 
 
 def _get_mcp_error_code(error: Exception) -> int | None:
+    """Return the JSON-RPC error code carried by an MCP error, if any.
+
+    v1 stores it on ``error.error.code``, v2 on ``error.code``; both shapes
+    are probed so the caller can branch on the code without knowing which
+    SDK version raised it.
+    """
     error_data = getattr(error, "error", None)
     code = getattr(error_data, "code", None)
     if code is None:
@@ -223,14 +229,20 @@ def _create_server_v1(
         return content
 
     if call_tool_route_getter is not None:
+        # SDK v1's ``call_tool`` decorator wraps the callback in a
+        # try/except that turns every exception -- including ``McpError``
+        # -- into an ``isError`` result.  Protocol errors must reach the
+        # client as JSON-RPC errors instead, so the lookup runs one level
+        # up, in the registered request handler.  ``request_handlers`` is
+        # an internal mapping, but it is stable across the v1 range we
+        # support and this file is exactly where SDK coupling belongs.
         from mcp.types import CallToolRequest
 
-        handler = server.request_handlers[CallToolRequest]
+        inner_handler = server.request_handlers[CallToolRequest]
 
         async def _handle_call_tool_request(request: CallToolRequest) -> Any:
-            # The SDK decorator converts all callback exceptions to isError results.
             call_tool_route_getter(request.params.name)
-            return await handler(request)
+            return await inner_handler(request)
 
         server.request_handlers[CallToolRequest] = _handle_call_tool_request
 
@@ -274,6 +286,9 @@ def _create_server_v2(
                 kwargs["structured_content"] = structured
             return CallToolResult(content=content, is_error=False, **kwargs)  # type: ignore[call-arg]
         except McpErrorClass as e:
+            # Invalid params (unknown or disabled tool) is a protocol-level
+            # failure, not a tool execution result: let it out so the
+            # runtime serializes it as a JSON-RPC error.
             if _get_mcp_error_code(e) == INVALID_PARAMS:
                 raise
             return CallToolResult(  # type: ignore[call-arg]
@@ -281,6 +296,8 @@ def _create_server_v2(
                 is_error=True,
             )
         except Exception as e:
+            # Everything else stays an LLM-visible tool result, matching
+            # SDK v1 behavior where execution errors are ``isError``.
             return CallToolResult(  # type: ignore[call-arg]
                 content=[TextContent(type="text", text=str(e))],
                 is_error=True,

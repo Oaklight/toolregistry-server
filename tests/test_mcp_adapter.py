@@ -442,10 +442,10 @@ class TestCallTool:
             assert result.content[0].text == "7"
 
     @pytest.mark.asyncio
-    async def test_call_disabled_tool_returns_error(
+    async def test_call_disabled_tool_raises_invalid_params(
         self, mock_registry: MagicMock
     ) -> None:
-        """Calling a disabled tool should return an invalid-params protocol error."""
+        """Calling a disabled tool raises a -32602 protocol error."""
         add_tool = MagicMock()
         add_tool.name = "add"
         add_tool.namespace = "default"
@@ -472,10 +472,10 @@ class TestCallTool:
         assert "maintenance" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_call_nonexistent_tool_returns_error(
+    async def test_call_nonexistent_tool_raises_invalid_params(
         self, route_table_with_tools: RouteTable
     ) -> None:
-        """Calling a non-existent tool should return an invalid-params protocol error."""
+        """Calling a non-existent tool raises a -32602 protocol error."""
         server = route_table_to_mcp_server(route_table_with_tools)
         async with create_test_client(server) as client:
             with pytest.raises(McpErrorClass) as exc_info:
