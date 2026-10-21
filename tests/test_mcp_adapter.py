@@ -1430,6 +1430,25 @@ class TestCompatProxy:
 # ---------------------------------------------------------------------------
 
 
+def _core_has_execution_hints() -> bool:
+    """Whether the installed toolregistry defines the hint metadata fields.
+
+    CI installs ``toolregistry`` from PyPI, which can predate the fields
+    this test class exercises; the adapter degrades to no annotations
+    there, so the tests are skipped instead of constructing an invalid
+    ``ToolMetadata``.
+    """
+    from dataclasses import fields
+
+    from toolregistry.tool import ToolMetadata
+
+    return "read_only_hint" in {f.name for f in fields(ToolMetadata)}
+
+
+@pytest.mark.skipif(
+    not _core_has_execution_hints(),
+    reason="installed toolregistry predates execution hints",
+)
 class TestToolAnnotations:
     """MCP ``title`` / ``annotations`` derived from ToolMetadata (#280)."""
 
