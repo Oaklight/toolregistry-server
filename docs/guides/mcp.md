@@ -105,13 +105,31 @@ adapter.run(
     host="0.0.0.0",
     port=8000,
     tokens_path="/etc/myapp/tokens.txt",
+    server_url="https://tools.example.com/mcp",
 )
 ```
 
 ```bash
-# CLI equivalent
-toolregistry-server mcp --config tools.yaml --transport http --tokens tokens.txt
+# CLI equivalent (the mcp subcommand reads tokens from the environment;
+# a --tokens flag is tracked in #99)
+API_BEARER_TOKEN=$(cat tokens.txt) \
+  toolregistry-server mcp --config tools.yaml --transport http \
+  --server-url https://tools.example.com/mcp
 ```
+
+### Behind a reverse proxy
+
+When token auth is enabled the server publishes RFC 9728 protected-resource metadata, and points clients at it from the `WWW-Authenticate` header of a 401. That URL has to be one clients can reach, so it must be the public origin, not the bind address:
+
+```bash
+toolregistry-server mcp --config tools.yaml --transport http \
+  --host 0.0.0.0 --port 8000 \
+  --server-url https://tools.example.com/mcp
+```
+
+Without `--server-url` the URL is derived from `--host`/`--port`. That is correct only when clients reach the server directly: binding `0.0.0.0` (the usual container/proxy setup) advertises `http://0.0.0.0:8000/...`, which no client can resolve — and which tells unauthenticated callers how the server is bound. The server logs a warning at startup when that is what would be advertised.
+
+The reverse proxy also has to forward the discovery paths, since clients fetch them from the same origin: `/.well-known/oauth-protected-resource/mcp` alongside `/mcp`.
 
 ## MCP Client Configuration
 
