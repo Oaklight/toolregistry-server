@@ -6,6 +6,10 @@
 
 ## [未发布]
 
+### 新增
+
+- **MCP 工具注解与标题**（#280）：`tools/list` 现在会带上 `Tool.metadata.title` 对应的 `title`，以及来自 `Tool.execution_hints` 的 `annotations`（`readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint`）。未声明的提示保持缺省，因此没有做出任何声明的工具仍保持最小的 `{name, description, inputSchema}` 定义。同时兼容 MCP SDK v1（camelCase 字段）与 v2（snake_case 字段）。
+
 ## [0.6.0] - 2026-09-15
 
 ### 新增
