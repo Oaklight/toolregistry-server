@@ -30,6 +30,7 @@ from .app import App, serve_mcp, serve_openapi
 from .auth import load_tokens
 from .identity import ServerIdentity
 from .registry_builder import (
+    PROFILE_DISABLE_REASON,
     PROFILE_DISABLE_TAGS,
     apply_config,
     apply_profile,
@@ -45,6 +46,7 @@ from .session import SessionContext
 __all__ = [
     "App",
     "__version__",
+    "PROFILE_DISABLE_REASON",
     "PROFILE_DISABLE_TAGS",
     "ServerIdentity",
     "RouteEntry",
