@@ -28,7 +28,7 @@ One-shot usage (standalone server)::
 """
 
 import importlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ._vendor.structlog import get_logger
 
@@ -148,6 +148,31 @@ def register_python_source(
         logger.info(f"Loaded module tools from {source.module_path}")
 
 
+def _source_filter_kwargs(source: object) -> dict[str, Any]:
+    """Return the ``include``/``exclude`` kwargs a source declares.
+
+    ``toolregistry`` core gained these filters on ``MCPSource`` and
+    ``OpenAPISource``; the server config loader parses them, but only a
+    core that has the fields can have parsed them.  Reading with
+    ``getattr`` keeps this working against an older core (no fields, no
+    kwargs, unchanged behaviour) and forwards the value untouched where it
+    exists — including an explicit empty tuple, which means "match
+    nothing" and is not the same as an unset filter (#88).
+
+    Args:
+        source: The parsed source configuration.
+
+    Returns:
+        A dict with ``include`` and/or ``exclude`` when set, else empty.
+    """
+    filters: dict[str, Any] = {}
+    for name in ("include", "exclude"):
+        value = getattr(source, name, None)
+        if value is not None:
+            filters[name] = value
+    return filters
+
+
 def register_mcp_source(
     registry: "ToolRegistry",
     source: "MCPSource",
@@ -176,6 +201,7 @@ def register_mcp_source(
         namespace=ns,
         persistent=source.persistent,
         headers=source.headers,
+        **_source_filter_kwargs(source),
     )
     logger.info(f"Loaded MCP tools from {source.url or ' '.join(source.command or [])}")
 
@@ -210,7 +236,13 @@ def register_openapi_source(
         base_url = servers[0].get("url", "") if servers else ""
 
     client = HttpClientConfig(base_url=base_url, headers=headers)
-    registry.register_from_openapi(client, spec, namespace=ns, persistent=True)
+    registry.register_from_openapi(
+        client,
+        spec,
+        namespace=ns,
+        persistent=True,
+        **_source_filter_kwargs(source),
+    )
     logger.info(f"Loaded OpenAPI tools from {source.url}")
 
 
