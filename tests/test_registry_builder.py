@@ -709,3 +709,118 @@ class TestProfileDisableReason:
             assert "fs_tool" not in {item["name"] for item in result}
         finally:
             registry.disable_tool_discovery()
+
+
+# ---------------------------------------------------------------------------
+# Source-level include/exclude forwarding (#88)
+# ---------------------------------------------------------------------------
+
+
+def _supports_source_filters(source_cls) -> bool:
+    """Whether the installed core's source type declares include/exclude."""
+    import dataclasses
+
+    names = {f.name for f in dataclasses.fields(source_cls)}
+    return {"include", "exclude"} <= names
+
+
+class TestSourceFilterForwarding:
+    """Config-level filters must reach the core registration call (#88)."""
+
+    def test_unset_filters_produce_no_kwargs(self):
+        from types import SimpleNamespace
+
+        from toolregistry_server.registry_builder import _source_filter_kwargs
+
+        assert _source_filter_kwargs(SimpleNamespace()) == {}
+
+    def test_explicit_empty_include_is_forwarded(self):
+        """An empty tuple means "match nothing", not "no filter"."""
+        from types import SimpleNamespace
+
+        from toolregistry_server.registry_builder import _source_filter_kwargs
+
+        assert _source_filter_kwargs(SimpleNamespace(include=())) == {"include": ()}
+
+    def test_exclude_is_forwarded(self):
+        from types import SimpleNamespace
+
+        from toolregistry_server.registry_builder import _source_filter_kwargs
+
+        assert _source_filter_kwargs(SimpleNamespace(exclude=("drop",))) == {
+            "exclude": ("drop",)
+        }
+
+    def test_mcp_source_forwards_include(self):
+        if not _supports_source_filters(MCPSource):
+            pytest.skip("installed toolregistry predates source filters")
+
+        registry = MagicMock()
+        source = MCPSource(
+            transport="sse",
+            url="http://mcp.example.com/sse",
+            namespace="hub",
+            include=("hub-bash_execute",),
+        )
+
+        register_mcp_source(registry, source)
+
+        kwargs = registry.register_from_mcp.call_args.kwargs
+        assert kwargs["include"] == ("hub-bash_execute",)
+        assert "exclude" not in kwargs
+
+    def test_mcp_source_forwards_exclude(self):
+        if not _supports_source_filters(MCPSource):
+            pytest.skip("installed toolregistry predates source filters")
+
+        registry = MagicMock()
+        source = MCPSource(
+            transport="sse",
+            url="http://mcp.example.com/sse",
+            exclude=("dangerous",),
+        )
+
+        register_mcp_source(registry, source)
+
+        kwargs = registry.register_from_mcp.call_args.kwargs
+        assert kwargs["exclude"] == ("dangerous",)
+        assert "include" not in kwargs
+
+    @patch("toolregistry.integrations.openapi.load_openapi_spec")
+    def test_openapi_source_forwards_include(self, mock_load):
+        from toolregistry.config import OpenAPISource
+
+        if not _supports_source_filters(OpenAPISource):
+            pytest.skip("installed toolregistry predates source filters")
+
+        mock_load.return_value = MINIMAL_SPEC
+        registry = MagicMock()
+        source = OpenAPISource(
+            url="http://example.com/openapi.json",
+            include=("listPets",),
+        )
+
+        register_openapi_source(registry, source)
+
+        kwargs = registry.register_from_openapi.call_args.kwargs
+        assert kwargs["include"] == ("listPets",)
+        assert "exclude" not in kwargs
+
+    @patch("toolregistry.integrations.openapi.load_openapi_spec")
+    def test_openapi_source_forwards_exclude(self, mock_load):
+        from toolregistry.config import OpenAPISource
+
+        if not _supports_source_filters(OpenAPISource):
+            pytest.skip("installed toolregistry predates source filters")
+
+        mock_load.return_value = MINIMAL_SPEC
+        registry = MagicMock()
+        source = OpenAPISource(
+            url="http://example.com/openapi.json",
+            exclude=("deletePet",),
+        )
+
+        register_openapi_source(registry, source)
+
+        kwargs = registry.register_from_openapi.call_args.kwargs
+        assert kwargs["exclude"] == ("deletePet",)
