@@ -223,8 +223,25 @@ class TestMain:
             host="127.0.0.1",
             port=9000,
             transport="sse",
+            tokens_path=None,
             server_url=None,
         )
+
+    @patch("toolregistry_server.app.App.serve_mcp")
+    def test_mcp_command_passes_tokens_path(self, mock_serve):
+        """--tokens reaches the adapter, which already knew how to load it (#99)."""
+        main(
+            [
+                "mcp",
+                "--config",
+                "tools.yaml",
+                "--transport",
+                "streamable-http",
+                "--tokens",
+                "/etc/app/tokens.txt",
+            ]
+        )
+        assert mock_serve.call_args.kwargs["tokens_path"] == "/etc/app/tokens.txt"
 
     @patch("toolregistry_server.app.App.serve_mcp")
     def test_mcp_command_passes_server_url(self, mock_serve):
@@ -254,6 +271,7 @@ class TestMain:
             host="127.0.0.1",
             port=8000,
             transport="stdio",
+            tokens_path=None,
             server_url=None,
         )
 
