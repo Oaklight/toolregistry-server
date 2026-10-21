@@ -137,6 +137,27 @@ http://localhost:8000/mcp       # streamable-http
 http://localhost:8000/sse       # SSE
 ```
 
+## Tool Annotations
+
+When a tool's metadata declares a display title or execution hints, `tools/list` carries them as MCP `title` and `annotations`:
+
+- `ToolMetadata.title` → `title`
+- `Tool.execution_hints` → `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`)
+
+Unset hints stay absent: a tool that declares nothing keeps the minimal `{name, description, inputSchema}` definition, so hosts apply their protocol defaults. Set them in code or in the config file:
+
+```yaml
+tool_metadata:
+  datetime-now:
+    title: Current Date and Time
+    read_only_hint: true
+    idempotent_hint: true
+    open_world_hint: false
+```
+
+!!! note "Tags and hints are different layers"
+    Tags (`read_only`, `file_system`, `network`, …) drive local permission rules and deployment profiles: the `remote` profile disables `file_system`, `destructive` and `privileged` tools. Hints describe a single call to an MCP host. A method-level hint does not change profile exposure — a read-only file tool is still hidden from a `remote` deployment.
+
 ## API Reference
 
 See the [MCP API Reference](../reference/api/mcp.md) for detailed documentation.

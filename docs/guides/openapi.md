@@ -155,6 +155,20 @@ The adapter includes `ETagMiddleware` for HTTP caching on `/tools` and `/openapi
 - Clients can send `If-None-Match` for conditional requests
 - Returns `304 Not Modified` when ETag matches
 
+## Operation Extensions
+
+OpenAPI has no standard slot for execution hints, so the same resolved hints that MCP emits as `annotations` are exposed as `x-` extensions on each generated operation:
+
+| Extension | Source |
+|---|---|
+| `x-read-only` | `read_only_hint` |
+| `x-destructive` | `destructive_hint` |
+| `x-idempotent` | `idempotent_hint` |
+| `x-open-world` | `open_world_hint` |
+| `x-title` | `ToolMetadata.title` |
+
+Only declared hints appear: an operation for a tool that declares nothing keeps its previous shape. As on the MCP side, tags gate deployment exposure and hints describe a call, so a method-level hint does not change which tools a profile exposes.
+
 ## API Reference
 
 See the [OpenAPI API Reference](../reference/api/openapi.md) for detailed documentation.
