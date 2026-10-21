@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- **Startup banner no longer corrupts the stdio stream** (#80): `print_banner()` wrote to stdout, which over the MCP stdio transport is the JSON-RPC channel — clients read banner art between their messages, sometimes after the first responses. The banner now goes to stderr, alongside the logs, and `print_banner()` accepts an optional `file` argument. `--no-banner` still suppresses it. The Hub uses the same helper, so it is covered too.
+- **Startup banner no longer corrupts the stdio stream** (#80): `print_banner()` wrote to stdout, which over the MCP stdio transport is the JSON-RPC channel — clients read banner art between their messages, sometimes after the first responses. The banner now goes to stderr, alongside the logs, and `print_banner()` accepts an optional `file` argument. `--no-banner` still suppresses it. The Hub calls the same helper, so it is fixed without a Hub change — but only once its installed `toolregistry-server` crosses the version that carries this.
 
 ### Security
 
