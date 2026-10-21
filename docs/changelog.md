@@ -15,6 +15,7 @@
 
 ### 变更
 
+- **`tools/list` 默认允许缓存**（#83，**行为变更**）：响应现在声明 `ttlMs: 300000`（五分钟，即规范中的示例值）与 `cacheScope: "private"`，而不再是 SDK 默认的 `ttlMs: 0`（「永不缓存」）。路由变更时服务器会推送 `notifications/tools/list_changed`，因此只要客户端监听，缓存列表会被及时更正。可通过新增的 `--tools-list-ttl-ms` 与 `--tools-list-cache-scope` 配置；`--tools-list-ttl-ms 0` 可恢复旧行为。
 - **未知或已禁用的工具属于协议错误**（#81，对 MCP 客户端而言是**行为变更**）：当 `tools/call` 调用的工具不存在或当前处于禁用状态时，现在返回 JSON-RPC 错误 `-32602`（Invalid params），而不再是带 `isError: true` 的 `CallToolResult`。此时请求本身无效，宿主不应把它当作工具结果回传给模型。工具执行失败仍返回 `isError: true`，以便模型读取错误信息并调整做法。该行为在 MCP SDK v1 与 v2 上一致。
 
 ### 修复

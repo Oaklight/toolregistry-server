@@ -24,6 +24,19 @@ MCP 适配器通过 [模型上下文协议](https://modelcontextprotocol.io/) �
 
 MCP 适配器声明了 `tools_changed` 能力，并在路由表发生变更（工具注册、注销、启用或禁用）时自动向所有已连接的会话发送 `notifications/tools/list_changed` 通知。支持此通知的客户端可以重新获取 `tools/list` 以得到最新的工具目录。
 
+### 缓存工具列表
+
+在 SDK v2（MCP 规范 2026-07-28）上，`tools/list` 会携带缓存提示。适配器声明 `ttlMs: 300000` 与 `cacheScope: "private"`——列表值得缓存，但它取决于部署的 profile 与调用方的授权，因此共享代理不应缓存它。上面的 `list_changed` 通知正是让缓存副本保持正确的手段。
+
+```bash
+# 完全关闭缓存
+toolregistry-server mcp --config tools.yaml --transport http --tools-list-ttl-ms 0
+
+# 更长的有效期，仍按调用方区分
+toolregistry-server mcp --config tools.yaml --transport http \
+  --tools-list-ttl-ms 900000 --tools-list-cache-scope private
+```
+
 ## 快速开始
 
 ### 通过 `App`（推荐）
