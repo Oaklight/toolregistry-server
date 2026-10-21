@@ -402,6 +402,21 @@ def _resolve_route_for_call(
     return route
 
 
+#: Default ``ttlMs`` for ``tools/list``.  Zero — the SDK default — means
+#: "never cache".  That is not what we want to ship yet: on MCP SDK v2 the
+#: ``notifications/tools/list_changed`` that would correct a cached list is
+#: never delivered (#107), so a non-zero TTL here would leave a client
+#: showing tools that no longer exist for the whole lifetime.  The cache
+#: hints are configurable now (``--tools-list-ttl-ms``); raise this default
+#: to 300000, the spec's example, once the notification path is verified
+#: end to end.
+DEFAULT_TOOLS_LIST_TTL_MS = 0
+
+#: Default ``cacheScope`` for ``tools/list``.  The served set can differ by
+#: profile and authorization, so it must not be cached by shared proxies.
+DEFAULT_TOOLS_LIST_CACHE_SCOPE: Literal["public", "private"] = "private"
+
+
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
@@ -418,10 +433,14 @@ def route_table_to_mcp_server(
     Args:
         route_table: The RouteTable instance to expose as MCP tools.
         name: Server name for MCP identification.
-        list_tools_ttl_ms: Optional ``tools/list`` cache lifetime in
-            milliseconds (MCP spec 2026-07-28). Only effective on SDK v2.
-        list_tools_cache_scope: Optional ``"public"`` or ``"private"``
-            cache scope for ``tools/list``. Only effective on SDK v2.
+        list_tools_ttl_ms: ``tools/list`` cache lifetime in milliseconds
+            (MCP spec 2026-07-28).  ``None`` uses
+            :data:`DEFAULT_TOOLS_LIST_TTL_MS`; pass ``0`` to advertise
+            "never cache".  Only effective on SDK v2.
+        list_tools_cache_scope: ``"public"`` or ``"private"`` cache scope
+            for ``tools/list``.  ``None`` uses
+            :data:`DEFAULT_TOOLS_LIST_CACHE_SCOPE`.  Only effective on
+            SDK v2.
 
     Returns:
         A configured mcp.server.lowlevel.Server instance.
@@ -543,8 +562,20 @@ def route_table_to_mcp_server(
         list_tools_handler=handle_list_tools,
         call_tool_handler=handle_call_tool,
         call_tool_route_getter=get_enabled_route,
-        list_tools_ttl_ms=list_tools_ttl_ms,
-        list_tools_cache_scope=list_tools_cache_scope,
+        # ``None`` means "use the server default", not "omit the hint".  The
+        # default is 0 — clients must not cache until #107 is fixed — which
+        # happens to match the SDK's own default; an explicit 0 is preserved
+        # rather than treated as unset (#83).
+        list_tools_ttl_ms=(
+            DEFAULT_TOOLS_LIST_TTL_MS
+            if list_tools_ttl_ms is None
+            else list_tools_ttl_ms
+        ),
+        list_tools_cache_scope=(
+            DEFAULT_TOOLS_LIST_CACHE_SCOPE
+            if list_tools_cache_scope is None
+            else list_tools_cache_scope
+        ),
         session_tracker=_sessions,
     )
 
