@@ -137,6 +137,27 @@ http://localhost:8000/mcp       # streamable-http
 http://localhost:8000/sse       # SSE
 ```
 
+## 工具注解
+
+当工具元数据声明了显示标题或执行提示时，`tools/list` 会以 MCP 的 `title` 与 `annotations` 字段返回：
+
+- `ToolMetadata.title` → `title`
+- `Tool.execution_hints` → `annotations`（`readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint`）
+
+未声明的提示保持缺省：没有做出任何声明的工具仍保持最小的 `{name, description, inputSchema}` 定义，由宿主套用协议默认值。可在代码中或配置文件中设置：
+
+```yaml
+tool_metadata:
+  datetime-now:
+    title: Current Date and Time
+    read_only_hint: true
+    idempotent_hint: true
+    open_world_hint: false
+```
+
+!!! note "标签与提示是两个层次"
+    标签（`read_only`、`file_system`、`network` 等）驱动本地权限规则与部署 profile：`remote` profile 会禁用 `file_system`、`destructive` 与 `privileged` 工具。提示描述的是面向 MCP 宿主的单次调用。方法级提示不会改变 profile 的暴露范围——只读的文件工具在 `remote` 部署下仍会被隐藏。
+
 ## API 参考
 
 参见 [MCP API 参考](../reference/api/mcp.md) 获取详细文档。
