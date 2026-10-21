@@ -92,6 +92,23 @@ _v2_request_ctx: contextvars.ContextVar[Any] = contextvars.ContextVar(
 
 _STDIO_SESSION_KEY = "stdio-singleton"
 
+# The v1 pre-dispatch hook resolves the route to turn protocol errors into
+# JSON-RPC errors.  Carrying that result to the handler keeps a call to a
+# single resolution: with two lookups, a disable landing between them made
+# v1 return an isError result where v2 returns -32602 (#97).
+_prevalidated_route: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "_prevalidated_route", default=None
+)
+
+
+def get_prevalidated_route() -> Any | None:
+    """Return the route resolved earlier in this request, if any.
+
+    Set by the SDK v1 pre-dispatch hook; ``None`` when the handler has to
+    resolve the route itself (SDK v2, or a server built without the hook).
+    """
+    return _prevalidated_route.get()
+
 
 def get_mcp_session_info() -> tuple[Any, Any | None, Any] | None:
     """Return ``(mcp_session, request, session_key)`` for the current request.
@@ -167,6 +184,8 @@ def create_mcp_server(
         call_tool_handler: ``async (name, arguments) -> list[ContentBlock]``
         call_tool_route_getter: Synchronous route lookup used to preserve
             protocol errors in SDK v1, whose call-tool decorator catches them.
+            The returned route is carried to the handler, so a call resolves
+            its route once.
         list_tools_ttl_ms: Optional cache lifetime in milliseconds for
             ``tools/list`` responses (MCP spec 2026-07-28). Ignored on v1.
         list_tools_cache_scope: Cache scope for ``tools/list``. Ignored on v1.
@@ -241,8 +260,13 @@ def _create_server_v1(
         inner_handler = server.request_handlers[CallToolRequest]
 
         async def _handle_call_tool_request(request: CallToolRequest) -> Any:
-            call_tool_route_getter(request.params.name)
-            return await inner_handler(request)
+            # Hand the resolved route down so the handler does not look it
+            # up a second time (#97).
+            token = _prevalidated_route.set(call_tool_route_getter(request.params.name))
+            try:
+                return await inner_handler(request)
+            finally:
+                _prevalidated_route.reset(token)
 
         server.request_handlers[CallToolRequest] = _handle_call_tool_request
 
@@ -553,6 +577,7 @@ __all__ = [
     "supports_list_tools_cache",
     "tools_changed_notification_options",
     "get_field",
+    "get_prevalidated_route",
     "CompatProxy",
     "create_test_client",
 ]

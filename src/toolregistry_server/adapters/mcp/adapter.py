@@ -8,6 +8,7 @@ at request time (no drift).
 import inspect
 import json
 import weakref
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from toolregistry.tool import Tool as _Tool
@@ -373,6 +374,34 @@ def _setup_tools_changed_notifications(
     route_table.add_listener(_on_route_change)
 
 
+def _resolve_route_for_call(
+    tool_name: str,
+    get_enabled_route: "Callable[[str], Any]",
+) -> Any:
+    """Return the route for a ``tools/call``, resolving it at most once.
+
+    SDK v1 resolves the route in a pre-dispatch hook so that protocol
+    errors become JSON-RPC errors; that result arrives here.  Reusing it
+    keeps a call to one lookup, so a disable landing mid-call cannot make
+    v1 and v2 answer the same request differently (#97).  The route is
+    matched by name so a nested call cannot borrow another route.
+
+    Args:
+        tool_name: The tool named by the request.
+        get_enabled_route: Fallback lookup that raises for an unknown or
+            disabled tool.
+
+    Returns:
+        The resolved route entry.
+    """
+    from ._compat import get_prevalidated_route
+
+    route = get_prevalidated_route()
+    if route is None or getattr(route, "tool_name", None) != tool_name:
+        return get_enabled_route(tool_name)
+    return route
+
+
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
@@ -468,7 +497,9 @@ def route_table_to_mcp_server(
         Raises:
             McpErrorClass: If the tool is disabled or not found.
         """
-        route = get_enabled_route(tool_name)
+        # Reuse the route the v1 pre-dispatch hook already resolved, so a
+        # call has one lookup and one outcome on both SDK generations (#97).
+        route = _resolve_route_for_call(tool_name, get_enabled_route)
 
         # --- Session context & notification tracking ---
         session_ctx = _get_session_context(session_mgr)
