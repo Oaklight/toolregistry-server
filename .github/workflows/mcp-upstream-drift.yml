@@ -69,7 +69,7 @@ jobs:
         if: failure() || steps.sdk.outputs.outside_range == 'true'
         uses: actions/github-script@v7
         env:
-          MCP_SDK_VERSION: ${{ steps.sdk.outputs.version }}
+          MCP_SDK_VERSION: ${{ steps.sdk.outputs.version || 'unknown' }}
           OUTSIDE_RANGE: ${{ steps.sdk.outputs.outside_range }}
           TEST_OUTCOME: ${{ steps.tests.outcome }}
         with:
@@ -149,8 +149,8 @@ jobs:
         if: steps.upstream.outputs.tag != steps.local.outputs.version
         uses: actions/github-script@v7
         env:
-          LOCAL_SPEC: ${{ steps.local.outputs.version }}
-          UPSTREAM_SPEC: ${{ steps.upstream.outputs.tag }}
+          LOCAL_SPEC: ${{ steps.local.outputs.version || 'unknown' }}
+          UPSTREAM_SPEC: ${{ steps.upstream.outputs.tag || 'unknown' }}
         with:
           script: |
             const local = process.env.LOCAL_SPEC;
