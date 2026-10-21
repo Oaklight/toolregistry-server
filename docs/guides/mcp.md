@@ -160,14 +160,18 @@ tool_metadata:
 
 ## 错误语义
 
-`tools/call` 会区分「请求有误」与「工具执行失败」：
+`tools/call` 以「模型能否自行修复」为界：服务端无法派发的名字属于请求错误，而模型可以修正或能从中获得信息的情况则保持为工具结果：
 
 | 情形 | 客户端看到的内容 |
 |------|------------------|
 | 工具名不存在，或工具处于禁用状态 | JSON-RPC 错误 `-32602`（Invalid params） |
+| 参数不合法（缺少必填字段、类型错误） | `CallToolResult`，其中 `isError: true`，错误文本作为 content |
 | 工具在执行过程中抛出异常 | `CallToolResult`，其中 `isError: true`，错误文本作为 content |
+| `call_deferred` 的 `_target_tool` 不存在 | `CallToolResult`，其中 `isError: true` |
 
 协议错误意味着调用本身无效，因此不应作为工具结果回传给模型。执行错误则对模型可见：LLM 可以读到错误信息并重试或换一种做法。被禁用的工具会在错误信息中给出禁用原因。
+
+参数不合法同样属于请求层面的问题，但这里刻意**不**作为协议错误返回：错误文本（`Expected int at 'a', got str`）正是模型自我纠正的依据。同理，`call_deferred` 分发器的回复也保持为工具结果——它的文本是面向模型的提示（`tool 'ghost' not found in registry. Did you mean: …`）。因此，如果宿主以 `-32602` 作为判断依据，直接调用时「这个名字在这里不是工具」是一种形态，而经 `call_deferred` 分发时则是另一种形态。
 
 ## API 参考
 
