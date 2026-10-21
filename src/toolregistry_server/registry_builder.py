@@ -403,6 +403,14 @@ PROFILE_DISABLE_TAGS: dict[str, frozenset[str]] = {
     "local": _NETWORK_TAGS,
 }
 
+#: Disable reason stored on profile-filtered tools.  It is deliberately
+#: neutral: the stored reason travels to external callers — the MCP adapter
+#: puts it in the ``tools/call`` error, and core embeds it in the
+#: ``RuntimeError`` raised for a disabled tool — so it must not name the
+#: deployment's profile.  The profile is recorded in the log line
+#: :func:`apply_profile` emits instead.
+PROFILE_DISABLE_REASON = "not available on this server"
+
 
 def apply_profile(
     registry: "ToolRegistry",
@@ -432,6 +440,12 @@ def apply_profile(
     - ``local``: disables tools tagged ``network`` — keeps only
       filesystem, shell, and other local-only tools.
 
+    Disabled tools get the neutral :data:`PROFILE_DISABLE_REASON` rather
+    than one naming the profile: the reason is stored on the tool and
+    reaches external callers through the MCP ``tools/call`` error and core's
+    ``RuntimeError`` for a disabled tool, so it must not disclose the
+    deployment's profile.  The profile name is logged here instead.
+
     Args:
         registry: The registry to filter in-place.
         profile: Profile name (e.g. ``"remote"`` or ``"local"``).
@@ -454,7 +468,7 @@ def apply_profile(
             disabled = registry.disable_by_tags(
                 tag_enums,
                 match="any",
-                reason=f"Disabled by profile '{profile}'",
+                reason=PROFILE_DISABLE_REASON,
             )
             logger.info(
                 f"Profile '{profile}': disabled {len(disabled)} tool(s) "
@@ -470,7 +484,7 @@ def apply_profile(
 
         # Apply name-based disable overrides
         for name in profile_cfg.disable:
-            registry.disable(name, reason=f"Disabled by profile '{profile}'")
+            registry.disable(name, reason=PROFILE_DISABLE_REASON)
             logger.info(f"Profile '{profile}': force-disabled '{name}'")
 
     elif profile in PROFILE_DISABLE_TAGS:
@@ -484,7 +498,7 @@ def apply_profile(
         disabled = registry.disable_by_tags(
             tag_enums,
             match="any",
-            reason=f"Disabled by profile '{profile}'",
+            reason=PROFILE_DISABLE_REASON,
         )
         logger.info(
             f"Profile '{profile}': disabled {len(disabled)} tool(s) "

@@ -7,12 +7,15 @@ apply_config with MCP/OpenAPI sources, and multi-source config loading.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
+import pytest
 from toolregistry.config import (
     AuthConfig,
     MCPSource,
     OpenAPISource,
+    ProfileConfig,
     PythonSource,
     ToolConfig,
 )
@@ -547,3 +550,151 @@ class TestApplyConfigMultiSource:
 
         registry.register_from_mcp.assert_not_called()
         registry.register_from_openapi.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Profile filtering: what external callers are told, and what discovery sees
+# ---------------------------------------------------------------------------
+
+
+def _tagged_registry(tags, name: str = "fs_tool"):
+    """Return a registry holding one tool carrying *tags*."""
+    from toolregistry import ToolRegistry
+    from toolregistry.tool import Tool, ToolMetadata
+
+    def fs_tool() -> str:
+        """Read a file from disk."""
+        return "fs"
+
+    registry = ToolRegistry()
+    registry._tools[name] = Tool.from_function(
+        fs_tool, name=name, metadata=ToolMetadata(tags=set(tags))
+    )
+    return registry
+
+
+def _discovery_skips_disabled_tools() -> bool:
+    """Probe whether the installed core drops disabled tools from discovery.
+
+    Core only started invalidating the search index on disable events in
+    the 0.19 line, so on older cores a profile-filtered tool is still
+    discoverable.  Server CI installs the released core, hence the probe.
+    """
+    from toolregistry.tool import ToolTag
+
+    registry = _tagged_registry({ToolTag.FILE_SYSTEM})
+    registry.enable_tool_discovery()
+    try:
+        registry.disable("fs_tool", reason="probe")
+        result = registry._tool_discovery.discover("read a file", top_k=5)
+        if isinstance(result, dict):  # core < 0.19 shape
+            result = result.get("results", [])
+        return "fs_tool" not in {item["name"] for item in result}
+    finally:
+        registry.disable_tool_discovery()
+
+
+class TestProfileDisableReason:
+    """The disable reason is client-visible, so it must stay neutral (#84)."""
+
+    def test_builtin_profile_reason_does_not_name_the_profile(self):
+        from toolregistry.tool import ToolTag
+
+        from toolregistry_server.registry_builder import (
+            PROFILE_DISABLE_REASON,
+            apply_profile,
+        )
+
+        registry = _tagged_registry({ToolTag.FILE_SYSTEM})
+        apply_profile(registry, "remote")
+
+        reason = registry.get_disable_reason("fs_tool")
+        assert reason == PROFILE_DISABLE_REASON
+        assert "remote" not in reason
+        assert "profile" not in reason.lower()
+
+    def test_config_profile_reason_does_not_name_the_profile(self):
+        from toolregistry.tool import ToolTag
+
+        from toolregistry_server.registry_builder import (
+            PROFILE_DISABLE_REASON,
+            apply_profile,
+        )
+
+        registry = _tagged_registry({ToolTag.NETWORK})
+        config = ToolConfig(profiles={"edge": ProfileConfig(disable_tags=("network",))})
+        apply_profile(registry, "edge", config)
+
+        reason = registry.get_disable_reason("fs_tool")
+        assert reason == PROFILE_DISABLE_REASON
+        assert "edge" not in reason
+
+    def test_config_profile_force_disable_reason_is_neutral(self):
+        from toolregistry.tool import ToolTag
+
+        from toolregistry_server.registry_builder import (
+            PROFILE_DISABLE_REASON,
+            apply_profile,
+        )
+
+        registry = _tagged_registry({ToolTag.NETWORK})
+        config = ToolConfig(profiles={"edge": ProfileConfig(disable=("fs_tool",))})
+        apply_profile(registry, "edge", config)
+
+        assert registry.get_disable_reason("fs_tool") == PROFILE_DISABLE_REASON
+
+    def test_mcp_client_error_does_not_leak_the_profile(self):
+        """The message an MCP client sees stays free of the profile name."""
+        from toolregistry.tool import ToolTag
+
+        pytest.importorskip("mcp")
+
+        from toolregistry_server.adapters.mcp import route_table_to_mcp_server
+        from toolregistry_server.adapters.mcp._compat import (
+            McpErrorClass,
+            create_test_client,
+        )
+        from toolregistry_server.registry_builder import apply_profile
+        from toolregistry_server.route_table import RouteTable
+
+        registry = _tagged_registry({ToolTag.FILE_SYSTEM})
+        apply_profile(registry, "remote")
+        server = route_table_to_mcp_server(RouteTable(registry))
+
+        async def _call():
+            async with create_test_client(server) as client:
+                return await client.call_tool("fs_tool", {})
+
+        try:
+            result = asyncio.run(_call())
+        except McpErrorClass as e:
+            # With the protocol-error pre-check the client gets a JSON-RPC
+            # error; without it the SDK turns it into an isError result.
+            message = str(e)
+        else:
+            message = result.content[0].text
+
+        assert "remote" not in message
+        assert "disabled" in message.lower()
+
+    @pytest.mark.skipif(
+        not _discovery_skips_disabled_tools(),
+        reason="needs a core that invalidates the discovery index on disable",
+    )
+    def test_profile_disabled_tool_is_not_discoverable(self):
+        """A tool the profile disables must not be discoverable (#84)."""
+        from toolregistry.tool import ToolTag
+
+        from toolregistry_server.registry_builder import apply_profile
+
+        registry = _tagged_registry({ToolTag.FILE_SYSTEM})
+        registry.enable_tool_discovery()
+        try:
+            apply_profile(registry, "remote")
+
+            result = registry._tool_discovery.discover("read a file", top_k=5)
+            if isinstance(result, dict):  # core < 0.19 shape
+                result = result.get("results", [])
+            assert "fs_tool" not in {item["name"] for item in result}
+        finally:
+            registry.disable_tool_discovery()
