@@ -24,6 +24,19 @@ Deferred tools (those with `metadata.defer=True`) are excluded from `tools/list`
 
 The MCP adapter advertises `tools_changed` capability and automatically sends `notifications/tools/list_changed` to all connected sessions when the route table changes (tools registered, unregistered, enabled, or disabled). Clients that support this notification can re-fetch `tools/list` to get the updated tool catalog.
 
+### Caching the tool list
+
+On SDK v2 (MCP spec 2026-07-28) `tools/list` carries cache hints. The adapter advertises `ttlMs: 300000` and `cacheScope: "private"` — the list is worth caching, but it depends on the deployment's profile and the caller's authorization, so a shared proxy must not serve it. The `list_changed` notification above is what keeps a cached copy correct.
+
+```bash
+# disable caching entirely
+toolregistry-server mcp --config tools.yaml --transport http --tools-list-ttl-ms 0
+
+# longer lifetime, still per-caller
+toolregistry-server mcp --config tools.yaml --transport http \
+  --tools-list-ttl-ms 900000 --tools-list-cache-scope private
+```
+
 ## Quick Start
 
 ### Via `App` (recommended)
