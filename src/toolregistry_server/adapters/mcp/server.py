@@ -164,6 +164,45 @@ async def run_sse(
         logger.info("MCP SSE server shutdown requested (CancelledError)")
 
 
+def resolve_public_url(
+    server_url: str | None,
+    host: str,
+    port: int,
+    path: str,
+) -> str:
+    """Return the URL to advertise in Protected Resource Metadata.
+
+    The advertised URL has to be reachable from the client side.  Falling
+    back to the bind address only works when the server is reached
+    directly: a deployment behind a reverse proxy binds ``0.0.0.0`` (or
+    ``::``) and is published under some other origin, so the bind address
+    is neither routable nor a valid client origin — and it leaks internal
+    topology to unauthenticated callers (#78).  When that is what would be
+    advertised, say so loudly rather than shipping a URL no client can
+    follow.
+
+    Args:
+        server_url: Public URL configured by the operator, if any.
+        host: Host address the server binds to.
+        port: Port the server binds to.
+        path: URL path of the MCP endpoint.
+
+    Returns:
+        The URL to advertise.
+    """
+    if server_url:
+        return server_url
+
+    advertised = f"http://{host}:{port}{path}"
+    if host in {"0.0.0.0", "::", "[::]", ""}:  # noqa: S104 - comparing, not binding
+        logger.warning(
+            f"OAuth protected-resource metadata will advertise {advertised}, "
+            "which no client can reach. Set --server-url to the public URL "
+            "(e.g. https://tools.example.com/mcp)."
+        )
+    return advertised
+
+
 async def run_streamable_http(
     server: "Server",
     host: str = "127.0.0.1",
@@ -257,7 +296,7 @@ async def run_streamable_http(
         token_verifier = StaticTokenVerifier(valid_tokens)
 
         # Resolve the public server URL
-        resolved_url = server_url or f"http://{host}:{port}{path}"
+        resolved_url = resolve_public_url(server_url, host, port, path)
         resource_url = AnyHttpUrl(resolved_url)
 
         # The issuer_url points to ourselves; we don't run a real AS,
