@@ -2,6 +2,7 @@
 
 import pytest
 from toolregistry import ToolRegistry
+from toolregistry.tool import Tool, ToolMetadata
 
 from toolregistry_server import RouteTable
 from toolregistry_server.adapters.openapi import create_openapi_app
@@ -646,3 +647,89 @@ class TestAddETagMiddleware:
         # Conditional request
         response2 = client.get("/tools", headers={"If-None-Match": etag})
         assert response2.status_code == 304
+
+
+# ============== Execution hint extensions (#280) ==============
+
+
+def _core_has_execution_hints() -> bool:
+    """Whether the installed toolregistry defines the hint metadata fields."""
+    from dataclasses import fields
+
+    return "read_only_hint" in {f.name for f in fields(ToolMetadata)}
+
+
+@pytest.mark.skipif(
+    not _core_has_execution_hints(),
+    reason="installed toolregistry predates execution hints",
+)
+class TestOperationExtensions:
+    """Resolved hints are exposed as ``x-`` extensions on operations."""
+
+    @pytest.fixture
+    def annotated_table(self) -> RouteTable:
+        registry = ToolRegistry()
+
+        def current_time() -> str:
+            """Return the current time."""
+            return "now"
+
+        def remove_file(path: str) -> str:
+            """Remove a file."""
+            return path
+
+        def plain(value: int) -> int:
+            """Echo a value."""
+            return value
+
+        registry.register(
+            Tool.from_function(
+                current_time,
+                metadata=ToolMetadata(
+                    title="Current Time",
+                    read_only_hint=True,
+                    idempotent_hint=True,
+                    open_world_hint=False,
+                ),
+            )
+        )
+        registry.register(
+            Tool.from_function(
+                remove_file,
+                metadata=ToolMetadata(
+                    destructive_hint=True,
+                    idempotent_hint=False,
+                ),
+            )
+        )
+        registry.register(Tool.from_function(plain))
+        return RouteTable(registry)
+
+    @staticmethod
+    def _operation(table: RouteTable, tool_name: str) -> dict:
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(table)
+        schema = TestClient(app).get("/openapi.json").json()
+        return schema["paths"][f"/tools/default/{tool_name}"]["post"]
+
+    def test_read_only_extensions(self, annotated_table: RouteTable) -> None:
+        op = self._operation(annotated_table, "current_time")
+        assert op["x-read-only"] is True
+        assert op["x-destructive"] is False
+        assert op["x-idempotent"] is True
+        assert op["x-open-world"] is False
+        assert op["x-title"] == "Current Time"
+
+    def test_destructive_extensions(self, annotated_table: RouteTable) -> None:
+        op = self._operation(annotated_table, "remove_file")
+        assert op["x-destructive"] is True
+        assert op["x-idempotent"] is False
+        # Unset stays unset; the extension is absent, not fabricated.
+        assert "x-read-only" not in op
+
+    def test_unannotated_operation_has_no_extensions(
+        self, annotated_table: RouteTable
+    ) -> None:
+        op = self._operation(annotated_table, "plain")
+        assert not [key for key in op if key.startswith("x-")]

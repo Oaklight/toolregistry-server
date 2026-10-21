@@ -199,6 +199,31 @@ def _strip_framework_fields(raw: dict[str, Any], route: RouteEntry) -> dict[str,
 # ---------------------------------------------------------------------------
 
 
+def _openapi_extensions(route: RouteEntry) -> dict[str, Any] | None:
+    """Map a tool's execution hints onto ``x-`` operation extensions.
+
+    MCP carries these claims as ``annotations``; OpenAPI has no standard
+    slot, so the same resolved, transport-neutral hints are exposed as
+    vendor extensions (``x-read-only``, ``x-destructive``,
+    ``x-idempotent``, ``x-open-world``), plus ``x-title`` for a declared
+    display title.  Returns ``None`` when the tool declares nothing, so
+    unannotated operations keep their schema byte-for-byte.
+
+    Args:
+        route: The route whose tool metadata should be serialized.
+
+    Returns:
+        Extension mapping, or ``None`` when there is nothing to add.
+    """
+    extensions: dict[str, Any] = {
+        f"x-{hint.removesuffix('_hint').replace('_', '-')}": value
+        for hint, value in route.execution_hints.items()
+    }
+    if route.title is not None:
+        extensions["x-title"] = route.title
+    return extensions or None
+
+
 def _add_route_from_entry(
     router: "APIRouter",
     route: RouteEntry,
@@ -236,6 +261,7 @@ def _add_route_from_entry(
     request_model = _schema_to_pydantic(model_name, route.parameters_schema)
 
     summary = (route.description or "")[:120]
+    extensions = _openapi_extensions(route)
     # Use the top-level segment of the namespace as the tag for grouping
     # e.g. "web/brave_search" → tag "web", "calculator" → tag "calculator"
     namespace = route.namespace
@@ -286,6 +312,7 @@ def _add_route_from_entry(
             operation_id=route.tool_name,
             summary=summary,
             tags=tags,
+            openapi_extra=extensions,
         )
     else:
 
@@ -323,6 +350,7 @@ def _add_route_from_entry(
             operation_id=route.tool_name,
             summary=summary,
             tags=tags,
+            openapi_extra=extensions,
         )
 
 

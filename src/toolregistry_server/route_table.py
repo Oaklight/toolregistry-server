@@ -127,6 +127,25 @@ class RouteEntry:
         return bool(getattr(metadata, "defer", False))
 
     @property
+    def title(self) -> str | None:
+        """Human-readable display title, or ``None`` when none is declared."""
+        metadata = getattr(self.tool, "metadata", None)
+        title = getattr(metadata, "title", None)
+        return title if isinstance(title, str) and title else None
+
+    @property
+    def execution_hints(self) -> dict[str, bool]:
+        """Resolved execution hints for the tool.
+
+        Returns the transport-neutral mapping exposed by
+        ``Tool.execution_hints`` (snake_case keys, unset hints absent).
+        Empty when the tool declares none or predates the metadata fields,
+        so adapters can serialize it without a version check.
+        """
+        hints = getattr(self.tool, "execution_hints", None)
+        return hints if isinstance(hints, dict) else {}
+
+    @property
     def schema_hash(self) -> str:
         """Content hash of the tool's parameter schema."""
         metadata = getattr(self.tool, "metadata", None)
