@@ -491,6 +491,49 @@ class TestCallTool:
 # ---------------------------------------------------------------------------
 
 
+class TestSingleRouteResolution:
+    """A call resolves its route once (#97).
+
+    With two lookups, a disable landing between them produced an ``isError``
+    result on SDK v1 (the second lookup raises inside the decorator) and a
+    ``-32602`` protocol error on v2.  Carrying the resolved route down makes
+    both generations see the same state.
+    """
+
+    async def test_disable_between_lookups_does_not_change_the_answer(
+        self, route_table_with_tools: RouteTable, monkeypatch
+    ) -> None:
+        import inspect
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+
+        reads = {"n": 0}
+
+        def _on_call_path() -> bool:
+            # tools/list reads the same field; only the call path is under
+            # test here.
+            return any(
+                frame.function in {"get_enabled_route", "handle_call_tool"}
+                for frame in inspect.stack()
+            )
+
+        def flaky_enabled(self) -> bool:
+            if not _on_call_path():
+                return True
+            reads["n"] += 1
+            return reads["n"] == 1
+
+        # Patch after the server is built: only call-path reads count.
+        monkeypatch.setattr(RouteEntry, "enabled", property(flaky_enabled))
+
+        async with create_test_client(server) as client:
+            result = await client.call_tool("add", {"a": 1, "b": 2})
+
+        assert reads["n"] == 1, "the route was resolved more than once"
+        assert get_field(result, "is_error", "isError") is False
+        assert result.content[0].text == "3"
+
+
 class TestSyncAsyncTools:
     """Tests for both synchronous and asynchronous tool execution."""
 
