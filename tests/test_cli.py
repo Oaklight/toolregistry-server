@@ -2,13 +2,14 @@
 
 import argparse
 import dataclasses
+import io
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from toolregistry_server.cli import CLI, main
+from toolregistry_server.cli import CLI, main, print_banner
 
 
 class TestCreateParser:
@@ -241,6 +242,51 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             main(["openapi", "--port", "9000"])
         assert exc_info.value.code == 1
+
+
+class TestBannerStream:
+    """The startup banner must never reach stdout (#80).
+
+    Over the MCP stdio transport stdout is the JSON-RPC channel; a client
+    reading it strictly would see banner art between its messages.
+    """
+
+    def test_print_banner_writes_to_stderr(self, capsys):
+        """print_banner() keeps stdout clean and uses stderr."""
+        print_banner(version="1.2.3", banner_art="X")
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Version 1.2.3" in captured.err
+
+    def test_print_banner_accepts_explicit_stream(self, capsys):
+        """Callers can redirect the banner to another stream."""
+        buffer = io.StringIO()
+        print_banner(version="1.2.3", banner_art="X", file=buffer)
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+        assert "Version 1.2.3" in buffer.getvalue()
+
+    @patch("toolregistry_server.app.App.serve_mcp")
+    def test_stdio_mcp_startup_leaves_stdout_empty(self, mock_serve, capsys):
+        """A stdio MCP launch writes nothing but JSON-RPC to stdout."""
+        main(["mcp", "--config", "tools.yaml", "--transport", "stdio"])
+
+        mock_serve.assert_called_once()
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Version" in captured.err
+
+    @patch("toolregistry_server.app.App.serve_mcp")
+    def test_no_banner_silences_both_streams(self, mock_serve, capsys):
+        """--no-banner still suppresses the banner entirely."""
+        main(["--no-banner", "mcp", "--config", "tools.yaml"])
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Version" not in captured.err
 
 
 class TestAppServe:
