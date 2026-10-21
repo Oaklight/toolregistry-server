@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Unknown or disabled tools are protocol errors** (#81, **behavior change** for MCP clients): `tools/call` for a tool that does not exist, or that is currently disabled, now returns JSON-RPC error `-32602` (Invalid params) instead of a `CallToolResult` with `isError: true`. The request itself was invalid, so hosts should not hand it back to the model as a tool result. Tool execution failures keep returning `isError: true` so the model can read the message and adapt. Works on both MCP SDK v1 and v2.
 
+### Fixed
+
+- **Startup banner no longer corrupts the stdio stream** (#80): `print_banner()` wrote to stdout, which over the MCP stdio transport is the JSON-RPC channel — clients read banner art between their messages, sometimes after the first responses. The banner now goes to stderr, alongside the logs, and `print_banner()` accepts an optional `file` argument. `--no-banner` still suppresses it. The Hub uses the same helper, so it is covered too.
+
 ## [0.6.0] - 2026-09-15
 
 ### Added
