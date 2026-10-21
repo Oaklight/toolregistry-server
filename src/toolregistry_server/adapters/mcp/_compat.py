@@ -262,11 +262,54 @@ def _create_server_v2(
 # ---------------------------------------------------------------------------
 
 
+_ANNOTATION_NAMES: dict[str, str] = {
+    "read_only_hint": "readOnlyHint",
+    "destructive_hint": "destructiveHint",
+    "idempotent_hint": "idempotentHint",
+    "open_world_hint": "openWorldHint",
+}
+
+
+def make_tool_annotations(hints: dict[str, bool]) -> Any:
+    """Build MCP tool annotations from resolved execution hints.
+
+    Args:
+        hints: Map of snake_case ``ToolMetadata`` field names to resolved
+            values, as returned by ``Tool.execution_hints``.  Unset hints
+            are absent from the mapping and stay absent here, so a host
+            sees "unset" rather than a fabricated default.
+
+    Returns:
+        A ``ToolAnnotations`` instance, or ``None`` when no hint is set.
+        ``None`` keeps the tool definition at the minimal
+        ``{name, description, inputSchema}`` shape it had before.
+    """
+    values = {
+        core_name: hints[core_name]
+        for core_name in _ANNOTATION_NAMES
+        if hints.get(core_name) is not None
+    }
+    if not values:
+        return None
+
+    from mcp.types import ToolAnnotations
+
+    if MCP_VERSION >= 2:
+        # v2 renamed the fields to snake_case (serialized with camelCase
+        # aliases).
+        return ToolAnnotations(**values)
+    return ToolAnnotations(
+        **{_ANNOTATION_NAMES[name]: value for name, value in values.items()}
+    )
+
+
 def make_mcp_tool(
     name: str,
     description: str,
     schema: dict,
     output_schema: dict | None = None,
+    title: str | None = None,
+    annotations: Any | None = None,
 ) -> Any:
     """Create an MCP Tool with the correct field names for the SDK version."""
     from mcp.types import Tool
@@ -279,6 +322,10 @@ def make_mcp_tool(
         kwargs = {"inputSchema": schema}
         if output_schema is not None:
             kwargs["outputSchema"] = output_schema
+    if title is not None:
+        kwargs["title"] = title
+    if annotations is not None:
+        kwargs["annotations"] = annotations
     return Tool(name=name, description=description, **kwargs)
 
 

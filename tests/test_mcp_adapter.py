@@ -1423,3 +1423,109 @@ class TestCompatProxy:
         """__bool__ delegates to the wrapped object."""
         assert bool(CompatProxy([1]))
         assert not bool(CompatProxy([]))
+
+
+# ---------------------------------------------------------------------------
+# 9. Tool annotations and title
+# ---------------------------------------------------------------------------
+
+
+class TestToolAnnotations:
+    """MCP ``title`` / ``annotations`` derived from ToolMetadata (#280)."""
+
+    @pytest.fixture
+    def annotated_table(self) -> RouteTable:
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolMetadata, ToolTag
+
+        registry = ToolRegistry()
+
+        def current_time() -> str:
+            """Return the current time."""
+            return "now"
+
+        def remove_file(path: str) -> str:
+            """Remove a file."""
+            return path
+
+        def tagged_reader() -> str:
+            """Read state declared through tags only."""
+            return "state"
+
+        def plain(value: int) -> int:
+            """Echo a value."""
+            return value
+
+        registry.register(
+            Tool.from_function(
+                current_time,
+                metadata=ToolMetadata(title="Current Time", read_only_hint=True),
+            )
+        )
+        registry.register(
+            Tool.from_function(
+                remove_file,
+                metadata=ToolMetadata(destructive_hint=True, idempotent_hint=False),
+            )
+        )
+        registry.register(
+            Tool.from_function(
+                tagged_reader, metadata=ToolMetadata(tags={ToolTag.READ_ONLY})
+            )
+        )
+        registry.register(Tool.from_function(plain))
+        return RouteTable(registry)
+
+    @staticmethod
+    async def _tools_by_name(table: RouteTable) -> dict:
+        server = route_table_to_mcp_server(table)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            return {t.name: t for t in result.tools}
+
+    @pytest.mark.asyncio
+    async def test_title_is_exported(self, annotated_table: RouteTable) -> None:
+        tools = await self._tools_by_name(annotated_table)
+        assert get_field(tools["current_time"], "title", "title") == "Current Time"
+
+    @pytest.mark.asyncio
+    async def test_read_only_hint(self, annotated_table: RouteTable) -> None:
+        tools = await self._tools_by_name(annotated_table)
+        annotations = tools["current_time"].annotations
+        assert get_field(annotations, "read_only_hint", "readOnlyHint") is True
+        # A read-only tool that declared no destructive signal resolves to
+        # destructiveHint=false rather than the protocol default.
+        assert get_field(annotations, "destructive_hint", "destructiveHint") is False
+
+    @pytest.mark.asyncio
+    async def test_destructive_and_idempotent_hints(
+        self, annotated_table: RouteTable
+    ) -> None:
+        tools = await self._tools_by_name(annotated_table)
+        annotations = tools["remove_file"].annotations
+        assert get_field(annotations, "destructive_hint", "destructiveHint") is True
+        assert get_field(annotations, "idempotent_hint", "idempotentHint") is False
+        # Unset stays unset; the adapter must not fabricate a default.
+        assert get_field(annotations, "read_only_hint", "readOnlyHint") is None
+
+    @pytest.mark.asyncio
+    async def test_tag_derived_hints(self, annotated_table: RouteTable) -> None:
+        tools = await self._tools_by_name(annotated_table)
+        annotations = tools["tagged_reader"].annotations
+        assert get_field(annotations, "read_only_hint", "readOnlyHint") is True
+        assert get_field(annotations, "destructive_hint", "destructiveHint") is False
+
+    @pytest.mark.asyncio
+    async def test_unannotated_tool_keeps_minimal_shape(
+        self, annotated_table: RouteTable
+    ) -> None:
+        tools = await self._tools_by_name(annotated_table)
+        plain = tools["plain"]
+        assert plain.annotations is None
+        assert get_field(plain, "title", "title") is None
+        assert plain.description == "Echo a value."
+
+    def test_make_tool_annotations_returns_none_without_hints(self) -> None:
+        from toolregistry_server.adapters.mcp._compat import make_tool_annotations
+
+        assert make_tool_annotations({}) is None
