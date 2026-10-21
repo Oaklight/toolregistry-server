@@ -158,6 +158,17 @@ tool_metadata:
 !!! note "标签与提示是两个层次"
     标签（`read_only`、`file_system`、`network` 等）驱动本地权限规则与部署 profile：`remote` profile 会禁用 `file_system`、`destructive` 与 `privileged` 工具。提示描述的是面向 MCP 宿主的单次调用。方法级提示不会改变 profile 的暴露范围——只读的文件工具在 `remote` 部署下仍会被隐藏。
 
+## 错误语义
+
+`tools/call` 会区分「请求有误」与「工具执行失败」：
+
+| 情形 | 客户端看到的内容 |
+|------|------------------|
+| 工具名不存在，或工具处于禁用状态 | JSON-RPC 错误 `-32602`（Invalid params） |
+| 工具在执行过程中抛出异常 | `CallToolResult`，其中 `isError: true`，错误文本作为 content |
+
+协议错误意味着调用本身无效，因此不应作为工具结果回传给模型。执行错误则对模型可见：LLM 可以读到错误信息并重试或换一种做法。被禁用的工具会在错误信息中给出禁用原因。
+
 ## API 参考
 
 参见 [MCP API 参考](../reference/api/mcp.md) 获取详细文档。
