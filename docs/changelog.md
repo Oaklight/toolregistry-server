@@ -8,6 +8,7 @@
 
 ### 新增
 
+- **不依赖 FastAPI 的 OpenAPI 文档构建器**：`toolregistry_server.adapters.openapi.spec.build_openapi_schema(route_table)` 直接从 `RouteTable` 生成 OpenAPI 3.1 文档，为每个启用路由输出一个 `POST` operation，其 `operationId`、`summary`（描述截断到 120 字符）、命名空间标签、内联参数 schema、`x-*` 执行提示扩展，以及 `/tools` 与 `/events` 两个 meta operation 均与 FastAPI 应用发布的一致。被禁用的路由直接不出现，因此无需事后再过滤。这是从适配器中移除 FastAPI 的文档生成部分（epic #101）；在移植完成前 `/openapi.json` 仍由 FastAPI 提供。另有一个逐路径比对的测试校验两者文档一致。
 - **MCP 工具注解与标题**（#280）：`tools/list` 现在会带上 `Tool.metadata.title` 对应的 `title`，以及来自 `Tool.execution_hints` 的 `annotations`（`readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint`）。未声明的提示保持缺省，因此没有做出任何声明的工具仍保持最小的 `{name, description, inputSchema}` 定义。MCP SDK v1（camelCase）与 v2（snake_case）的 Python 字段拼写不同，但两者序列化后都是规范中的 camelCase JSON 键。
 - **OpenAPI 操作扩展与路由访问器**（#280）：生成的 operation 会带上 `x-read-only`、`x-destructive`、`x-idempotent`、`x-open-world` 与 `x-title`，与 MCP 的 `annotations` 保持一致；未声明的提示不会输出。`RouteEntry` 新增 `title` 与 `execution_hints` 属性，使两个适配器读取同一份元数据，而不再直接访问 `route.tool`。
 - **MCP 子命令新增 `--server-url`**（#78）：用于设置 OAuth protected-resource 元数据中的公网 URL。此前只能通过 `adapter.run(server_url=...)` 传入，因此用 CLI 部署在反向代理之后的实例无法声明一个客户端可访问的源，只能退回监听地址。此外，当即将声明的 URL 来自通配监听地址（`0.0.0.0`、`::`）时，服务器会在启动时输出警告。
