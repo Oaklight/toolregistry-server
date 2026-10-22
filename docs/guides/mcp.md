@@ -38,13 +38,28 @@ Deferred tools (those with `metadata.defer=True`) are excluded from `tools/list`
 
 ## Live Tool Updates
 
-The MCP adapter advertises `tools_changed` capability and automatically sends `notifications/tools/list_changed` to all connected sessions when the route table changes (tools registered, unregistered, enabled, or disabled). Clients that support this notification can re-fetch `tools/list` to get the updated tool catalog.
+The MCP adapter advertises `tools_changed` capability and notifies clients when the route table changes (tools registered, unregistered, enabled, or disabled).
+
+How the notification travels depends on the protocol era:
+
+- **Handshake-era clients** (through `2025-11-25`): the adapter sends `notifications/tools/list_changed` on every connected session. Clients that handle it can re-fetch `tools/list`.
+- **Modern-era clients** (`2026-07-28`, SDK v2): the wire has no standing server→client channel, so a notification sent on the connection is dropped. Instead the adapter serves `subscriptions/listen` (SEP-2575); a client opens a listen stream requesting `tools_list_changed` and receives the event there.
+
+A modern-era client that wants to see live updates should therefore open a listen stream once, and refetch `tools/list` when the event arrives:
+
+```python
+from mcp.client.subscriptions import listen
+
+async with listen(session, tools_list_changed=True) as sub:
+    async for event in sub:
+        tools = await session.list_tools()
+```
 
 ### Caching the tool list
 
 On SDK v2 (MCP spec 2026-07-28) `tools/list` carries cache hints. The default is `ttlMs: 0` — clients refetch every time — with `cacheScope: "private"`, because the served set depends on the deployment's profile and the caller's authorization.
 
-Caching is opt-in until `notifications/tools/list_changed` is verified on SDK v2 (#107): without a notification a client would keep a stale list for the whole lifetime.
+Caching remains opt-in: a client that does not subscribe to changes keeps a cached list for the whole TTL. With a `subscriptions/listen` stream open, the event invalidates the cache (the SDK client evicts `tools/list` on the notification) and the next `list_tools()` refetches.
 
 ```bash
 # opt into a five-minute cache, still per-caller
