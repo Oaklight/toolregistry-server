@@ -13,6 +13,7 @@
 - **MCP 子命令新增 `--server-url`**（#78）：用于设置 OAuth protected-resource 元数据中的公网 URL。此前只能通过 `adapter.run(server_url=...)` 传入，因此用 CLI 部署在反向代理之后的实例无法声明一个客户端可访问的源，只能退回监听地址。此外，当即将声明的 URL 来自通配监听地址（`0.0.0.0`、`::`）时，服务器会在启动时输出警告。
 - **MCP 子命令新增 `--tokens`**（#99）：适配器本来就接受 `tokens_path`，文档也写明了该参数，但只有 `openapi` 子命令定义了它，导致 `mcp --transport http --tokens tokens.txt` 在 argparse 阶段直接失败。`API_BEARER_TOKEN` 环境变量的用法保持不变。
 - **MCP `serverInfo` 带上版本号与使用说明**（#79）：`initialize` 返回的 `serverInfo.version` 一直是空的，因为适配器从未向 SDK 传入版本。现在会填入当前安装的 `toolregistry-server` 版本，嵌入方也可以传入自己的版本——`App` 与 CLI 会转发 `ServerIdentity.version`，因此 Hub 声明的是 Hub 的版本而非 server 库的版本。当服务提供 `discover_tools` 时，响应还会带上 `instructions`，说明「先 `discover_tools` 再 `call_deferred`」的两步延迟工具流程——此前客户端只能从工具描述中自行推断。
+- **MCP SDK v2 上开始提供 `subscriptions/listen`**（#107）：2026-07-28 协议没有常驻通知通道，SDK 会丢弃在连接上发送的 `notifications/tools/list_changed`，因此 modern era 客户端永远不知道工具列表发生了变化。适配器现在注册 SDK 的监听 handler 并挂接进程内总线，每次路由表变更都会发布 tools-list-changed 事件，打开监听流（SEP-2575）的客户端即可收到并重新拉取 `tools/list`。旧版协议客户端仍走原有的 session 通知路径；没有监听钩子的 SDK 版本不受影响。
 
 ### 变更
 

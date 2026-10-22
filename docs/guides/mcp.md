@@ -44,7 +44,7 @@ MCP 适配器声明了 `tools_changed` 能力，并在路由表发生变更（�
 
 在 SDK v2（MCP 规范 2026-07-28）上，`tools/list` 会携带缓存提示。默认 `ttlMs: 0`——客户端每次都重新获取——`cacheScope` 为 `"private"`，因为实际提供的工具集合取决于部署的 profile 与调用方的授权。
 
-在 `notifications/tools/list_changed` 于 SDK v2 上得到验证之前（#107），缓存需要显式开启：若失效通知不可用，客户端会在整个缓存期内持有过期列表。
+缓存仍需显式开启：没有订阅变更的客户端会在整个 TTL 内使用缓存列表。一旦打开 `subscriptions/listen` 流，事件会使缓存失效（SDK 客户端会在收到通知时清除 `tools/list` 缓存），下一次 `list_tools()` 会重新获取。
 
 ```bash
 # 显式开启五分钟缓存，仍按调用方区分
