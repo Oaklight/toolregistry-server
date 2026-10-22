@@ -195,6 +195,8 @@ def create_mcp_server(
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
     session_tracker: MutableSet | None = None,
+    version: str = "",
+    instructions: str | None = None,
 ) -> Server:
     """Create an MCP lowlevel Server with handlers registered.
 
@@ -215,6 +217,10 @@ def create_mcp_server(
         session_tracker: Optional mutable set (``set`` or ``WeakSet``) to
             collect active ``ServerSession`` objects for sending
             ``notifications/tools/list_changed``.
+        version: Implementation version reported in ``serverInfo``.
+            ``""`` leaves it empty, which is what the SDK default does but
+            makes deployments indistinguishable in client logs (#79).
+        instructions: Optional usage guidance returned from ``initialize``.
 
     Returns:
         A configured ``mcp.server.lowlevel.Server``.
@@ -227,6 +233,8 @@ def create_mcp_server(
             list_tools_ttl_ms,
             list_tools_cache_scope,
             session_tracker,
+            version,
+            instructions,
         )
     else:
         return _create_server_v1(
@@ -235,6 +243,8 @@ def create_mcp_server(
             call_tool_handler,
             call_tool_route_getter,
             session_tracker,
+            version,
+            instructions,
         )
 
 
@@ -244,10 +254,12 @@ def _create_server_v1(
     call_tool_handler: CallToolHandler,
     call_tool_route_getter: CallToolRouteGetter | None = None,
     session_tracker: MutableSet | None = None,
+    version: str = "",
+    instructions: str | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
 
-    server = Server(name)
+    server = Server(name, version=version or None, instructions=instructions)
 
     @server.list_tools()
     async def _list_tools() -> list:
@@ -303,6 +315,8 @@ def _create_server_v2(
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
     session_tracker: MutableSet | None = None,
+    version: str = "",
+    instructions: str | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
     from mcp.types import INVALID_PARAMS, CallToolResult, ListToolsResult
@@ -355,6 +369,8 @@ def _create_server_v2(
 
     return Server(  # type: ignore[call-arg]
         name,
+        version=version,
+        instructions=instructions,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )

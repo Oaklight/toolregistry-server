@@ -402,6 +402,21 @@ def _resolve_route_for_call(
     return route
 
 
+#: Tool registered by ``ToolRegistry.enable_tool_discovery()``.  Used only to
+#: decide whether the deferred-tool guidance applies.
+_DISCOVERY_TOOL = "discover_tools"
+
+#: Instructions returned from ``initialize`` when discovery is served.  This
+#: is the two-line model of the server that a client would otherwise have to
+#: rediscover by reading tool descriptions (#79).
+DEFAULT_INSTRUCTIONS = (
+    "This server exposes tools through ToolRegistry. "
+    "`discover_tools` returns schemas for tools that are not listed by "
+    "`tools/list` (deferred tools); invoke them with `call_deferred`, "
+    "passing the tool name as `_target_tool` and its parameters as keyword "
+    "arguments."
+)
+
 #: Default ``ttlMs`` for ``tools/list``.  Zero — the SDK default — means
 #: "never cache".  That is not what we want to ship yet: on MCP SDK v2 the
 #: ``notifications/tools/list_changed`` that would correct a cached list is
@@ -417,12 +432,43 @@ DEFAULT_TOOLS_LIST_TTL_MS = 0
 DEFAULT_TOOLS_LIST_CACHE_SCOPE: Literal["public", "private"] = "private"
 
 
+def _resolve_server_info(
+    route_table: "RouteTable",
+    version: str | None,
+    instructions: str | None,
+) -> tuple[str, str | None]:
+    """Fill in the ``serverInfo`` defaults (#79).
+
+    Args:
+        route_table: The routes being served.
+        version: Caller-supplied version, or ``None`` for the default.
+        instructions: Caller-supplied instructions, or ``None`` for the
+            default.
+
+    Returns:
+        The effective ``(version, instructions)`` pair.  The version falls
+        back to this package's version; the instructions fall back to
+        :data:`DEFAULT_INSTRUCTIONS` only when ``discover_tools`` is served,
+        because that is the one thing a client cannot infer from
+        ``tools/list`` alone.
+    """
+    if version is None:
+        from ... import __version__ as server_version
+
+        version = server_version
+    if instructions is None and route_table.get_route(_DISCOVERY_TOOL) is not None:
+        instructions = DEFAULT_INSTRUCTIONS
+    return version, instructions
+
+
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
     *,
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
+    version: str | None = None,
+    instructions: str | None = None,
 ) -> "Server":
     """Create an MCP low-level Server from a RouteTable.
 
@@ -441,6 +487,12 @@ def route_table_to_mcp_server(
             for ``tools/list``.  ``None`` uses
             :data:`DEFAULT_TOOLS_LIST_CACHE_SCOPE`.  Only effective on
             SDK v2.
+        version: Implementation version reported in ``serverInfo``.
+            ``None`` uses the installed ``toolregistry-server`` version;
+            an empty string leaves it blank.
+        instructions: Usage guidance returned from ``initialize``.  ``None``
+            uses :data:`DEFAULT_INSTRUCTIONS` when tool discovery is served,
+            and no instructions otherwise.
 
     Returns:
         A configured mcp.server.lowlevel.Server instance.
@@ -557,8 +609,12 @@ def route_table_to_mcp_server(
     # notifications when the route table changes.
     _sessions: weakref.WeakSet[Any] = weakref.WeakSet()
 
+    version, instructions = _resolve_server_info(route_table, version, instructions)
+
     server = create_mcp_server(
         name,
+        version=version,
+        instructions=instructions,
         list_tools_handler=handle_list_tools,
         call_tool_handler=handle_call_tool,
         call_tool_route_getter=get_enabled_route,
