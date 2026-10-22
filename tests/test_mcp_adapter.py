@@ -1065,9 +1065,120 @@ class TestResultSerialization:
             parsed = json.loads(result.content[0].text)
             assert parsed == [1, 2, 3]
 
+    # ---------------------------------------------------------------------------
+    # 7. Exception handling tests
+    @pytest.mark.asyncio
+    async def test_dataclass_list_is_serialized_as_objects(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Dataclass results must not degrade to repr strings (#187, #192)."""
+        import dataclasses
 
-# ---------------------------------------------------------------------------
-# 7. Exception handling tests
+        @dataclasses.dataclass
+        class SearchResult:
+            title: str
+            url: str
+            content: str
+            score: float = 1.0
+
+        def search(query: str) -> list:
+            """Return dataclass results."""
+            return [
+                SearchResult("A", "https://a.example", "alpha", 0.9),
+                SearchResult("B", "https://b.example", "beta"),
+            ]
+
+        tool = MagicMock()
+        tool.name = "search"
+        tool.namespace = "default"
+        tool.method_name = "search"
+        tool.description = "Search."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = search
+        tool.is_async = False
+        mock_registry._tools = {"search": tool}
+
+        server = route_table_to_mcp_server(RouteTable(mock_registry))
+        async with create_test_client(server) as client:
+            result = await client.call_tool("search", {"query": "q"})
+
+        parsed = json.loads(result.content[0].text)
+        assert parsed == [
+            {
+                "title": "A",
+                "url": "https://a.example",
+                "content": "alpha",
+                "score": 0.9,
+            },
+            {
+                "title": "B",
+                "url": "https://b.example",
+                "content": "beta",
+                "score": 1.0,
+            },
+        ]
+        assert "SearchResult(" not in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_nested_dataclass_and_common_types(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Nested dataclasses, datetimes, enums, paths and sets stay structured."""
+        import dataclasses
+        import datetime
+        import enum
+        import pathlib
+
+        class Colour(enum.Enum):
+            RED = "red"
+
+        @dataclasses.dataclass
+        class Inner:
+            when: datetime.datetime
+            colour: Colour
+            path: pathlib.Path
+
+        @dataclasses.dataclass
+        class Outer:
+            inner: Inner
+            tags: set
+
+        def build() -> Outer:
+            """Return a nested dataclass."""
+            return Outer(
+                inner=Inner(
+                    when=datetime.datetime(2026, 10, 22, 1, 2, 3),
+                    colour=Colour.RED,
+                    path=pathlib.Path("/tmp/x"),
+                ),
+                tags={"b", "a"},
+            )
+
+        tool = MagicMock()
+        tool.name = "build"
+        tool.namespace = "default"
+        tool.method_name = "build"
+        tool.description = "Build."
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = build
+        tool.is_async = False
+        mock_registry._tools = {"build": tool}
+
+        server = route_table_to_mcp_server(RouteTable(mock_registry))
+        async with create_test_client(server) as client:
+            result = await client.call_tool("build", {})
+
+        parsed = json.loads(result.content[0].text)
+        assert parsed == {
+            "inner": {
+                "when": "2026-10-22T01:02:03",
+                "colour": "red",
+                "path": "/tmp/x",
+            },
+            "tags": ["a", "b"],
+        }
+
+
 # ---------------------------------------------------------------------------
 
 

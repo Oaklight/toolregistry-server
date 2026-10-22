@@ -5,8 +5,12 @@ ensuring tool enable/disable state is always read directly from the route table
 at request time (no drift).
 """
 
+import dataclasses
+import datetime
+import enum
 import inspect
 import json
+import pathlib
 import weakref
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
@@ -93,12 +97,45 @@ def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None
     return ctx
 
 
+def _json_default(value: Any) -> Any:
+    """Encode a tool-result value that ``json.dumps`` does not know.
+
+    ``default=str`` turns a dataclass into its ``repr``, so
+    ``list[SearchResult]`` reached the model as a JSON array of Python repr
+    strings — not machine-readable, and impossible for a client to index by
+    field (#187, #192).  Structured values are encoded structurally; ``str``
+    remains only the last resort.
+
+    Args:
+        value: A value the standard JSON encoder rejected.
+
+    Returns:
+        A JSON-encodable representation of *value*.
+    """
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, (datetime.date, datetime.time)):
+        # ``datetime.datetime`` is a ``date`` subclass; isoformat covers all.
+        return value.isoformat()
+    if isinstance(value, pathlib.PurePath):
+        return str(value)
+    if isinstance(value, enum.Enum):
+        return value.value
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=str)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def _serialize_result(result: Any) -> str:
     """Convert tool result to a string for MCP TextContent.
 
     Handles:
     - str → returned directly
-    - dict/list/Pydantic model → JSON-serialized
+    - dict/list/Pydantic model/dataclass → JSON-serialized
     - Other types → str() fallback
 
     Args:
@@ -114,9 +151,15 @@ def _serialize_result(result: Any) -> str:
     try:
         if hasattr(result, "model_dump"):
             # Pydantic model
-            return json.dumps(result.model_dump(), ensure_ascii=False, default=str)
+            return json.dumps(
+                result.model_dump(), ensure_ascii=False, default=_json_default
+            )
+        elif dataclasses.is_dataclass(result) and not isinstance(result, type):
+            return json.dumps(
+                dataclasses.asdict(result), ensure_ascii=False, default=_json_default
+            )
         elif isinstance(result, (dict, list)):
-            return json.dumps(result, ensure_ascii=False, default=str)
+            return json.dumps(result, ensure_ascii=False, default=_json_default)
         else:
             return str(result)
     except (TypeError, ValueError):
@@ -194,7 +237,9 @@ def _result_to_mcp_content(result: Any) -> "list[MCPContentBlock]":
                 content.append(
                     TextContent(
                         type="text",
-                        text=json.dumps(block, ensure_ascii=False, default=str),
+                        text=json.dumps(
+                            block, ensure_ascii=False, default=_json_default
+                        ),
                     )
                 )
         if content:
