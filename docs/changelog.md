@@ -23,6 +23,7 @@
 
 ### 修复
 
+- **dataclass 工具结果按结构化形式序列化**（#187、#192）：`_serialize_result` 原先使用 `json.dumps(..., default=str)`，返回 `list[SearchResult]` 的工具因此把 Python `repr` 字符串数组交给模型——既不可机器解析，也无法按字段索引。现在 dataclass（顶层或嵌套）、datetime、enum、Path、bytes 与 set 都会编码为对应的 JSON 形式，`str` 仅作为最后兜底。
 - **一次 `tools/call` 只解析一次路由**（#97）：此前路由被解析两次——一次在 SDK v1 的预分发钩子中，一次在 handler 中。若两次解析之间工具被禁用，两代 SDK 会对同一请求给出不同答案：v1 返回 `isError` 结果，v2 返回 `-32602` 协议错误。现在钩子解析出的路由会传递给 handler。
 - **工具列表变更通知改为跟踪连接而非单次请求**（#108）：在 MCP SDK v2 上，每个请求都会得到一个新的 `ServerSession`，因此 `list_tools` 登记的 session 在任何变更事件发生前就已被回收，跟踪集合始终为空。现在记录的是底层连接，其生命周期与客户端一致。面向 modern era 连接的推送仍需要回传通道（#107），所以这是前置修复而非完整修复。
 - **只跟踪真正能收到变更事件的连接**（#111）：自 #108 起 `tools/list` handler 跟踪 `session._connection`，但在 2026-07-28 路径上该对象是每个请求新建的，且没有变更通知通道，因此每次 `tools/list` 都会留下一条永远不会释放的死记录。现在会跳过 modern era 连接（单次交换 HTTP 与 modern duplex 均是如此）；这些客户端由 `subscriptions/listen` 服务（#110）。握手时代客户端仍会被跟踪。
