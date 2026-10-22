@@ -25,6 +25,7 @@
 - **一次 `tools/call` 只解析一次路由**（#97）：此前路由被解析两次——一次在 SDK v1 的预分发钩子中，一次在 handler 中。若两次解析之间工具被禁用，两代 SDK 会对同一请求给出不同答案：v1 返回 `isError` 结果，v2 返回 `-32602` 协议错误。现在钩子解析出的路由会传递给 handler。
 - **工具列表变更通知改为跟踪连接而非单次请求**（#108）：在 MCP SDK v2 上，每个请求都会得到一个新的 `ServerSession`，因此 `list_tools` 登记的 session 在任何变更事件发生前就已被回收，跟踪集合始终为空。现在记录的是底层连接，其生命周期与客户端一致。面向 modern era 连接的推送仍需要回传通道（#107），所以这是前置修复而非完整修复。
 - **只跟踪真正能收到变更事件的连接**（#111）：自 #108 起 `tools/list` handler 跟踪 `session._connection`，但在 2026-07-28 路径上该对象是每个请求新建的，且没有变更通知通道，因此每次 `tools/list` 都会留下一条永远不会释放的死记录。现在会跳过 modern era 连接（单次交换 HTTP 与 modern duplex 均是如此）；这些客户端由 `subscriptions/listen` 服务（#110）。握手时代客户端仍会被跟踪。
+- **事件循环之外的路由变更不再遗留未等待的协程**（#117）：通知调度器在检查是否存在运行中的事件循环之前就创建了协程，因此在同步代码中构建服务器或修改路由表会触发 `RuntimeWarning: coroutine ... was never awaited`。现在只有存在可运行的事件循环时才会创建协程。
 - **`initialize` 不再宣传已禁用的发现工具链**（#112、#113）：只要路由表中存在 `discover_tools` 就会附带默认 `instructions`，即使某个 profile 已将其禁用，客户端因此被告知去调用一个会返回 `-32602` 的工具。现在要求 `discover_tools` 与 `call_deferred` 均处于启用状态。
 - **源级 `include`/`exclude` 过滤会下传**（#88）：配置加载器会解析这两个字段，但 `register_mcp_source()` 与 `register_openapi_source()` 从未把它们传下去，导致配置了过滤的远程源仍会注册全部工具。现在原样下传（显式空元组仍表示「什么都不匹配」）。生效前提是所安装的 `toolregistry` 提供这些字段；在旧版 core 上服务器行为保持不变。
 - **MCP extra 的下限提高到 `mcp>=1.22.0`**（#95）：低于 1.22 的 SDK 版本会导入一个 pydantic 2.12+ 已移除的内部符号（`eval_type_backport`），因此依赖解析落在 1.17–1.21 时，安装出来的包在执行 `import mcp.server.lowlevel` 时会直接失败。1.21 失败、1.22 可导入，因此下限取在该边界上。`test-mcp-v1` CI 任务现在安装声明的下限版本，并打印实际测试到的版本。
