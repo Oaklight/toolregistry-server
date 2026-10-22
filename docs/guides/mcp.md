@@ -26,15 +26,14 @@ MCP 适配器声明了 `tools_changed` 能力，并在路由表发生变更（�
 
 ### 缓存工具列表
 
-在 SDK v2（MCP 规范 2026-07-28）上，`tools/list` 会携带缓存提示。适配器声明 `ttlMs: 300000` 与 `cacheScope: "private"`——列表值得缓存，但它取决于部署的 profile 与调用方的授权，因此共享代理不应缓存它。上面的 `list_changed` 通知正是让缓存副本保持正确的手段。
+在 SDK v2（MCP 规范 2026-07-28）上，`tools/list` 会携带缓存提示。默认 `ttlMs: 0`——客户端每次都重新获取——`cacheScope` 为 `"private"`，因为实际提供的工具集合取决于部署的 profile 与调用方的授权。
+
+在 `notifications/tools/list_changed` 于 SDK v2 上得到验证之前（#107），缓存需要显式开启：若失效通知不可用，客户端会在整个缓存期内持有过期列表。
 
 ```bash
-# 完全关闭缓存
-toolregistry-server mcp --config tools.yaml --transport http --tools-list-ttl-ms 0
-
-# 更长的有效期，仍按调用方区分
+# 显式开启五分钟缓存，仍按调用方区分
 toolregistry-server mcp --config tools.yaml --transport http \
-  --tools-list-ttl-ms 900000 --tools-list-cache-scope private
+  --tools-list-ttl-ms 300000 --tools-list-cache-scope private
 ```
 
 ## 快速开始
