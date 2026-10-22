@@ -11,6 +11,22 @@ MCP 适配器通过 [模型上下文协议](https://modelcontextprotocol.io/) �
 - 透明处理异步和同步工具
 - 提供阻塞式 (`run`) 和异步 (`run_async`) 两种入口
 
+## 服务器标识与使用说明
+
+`initialize` 的 `serverInfo.version` 报告当前安装的 `toolregistry-server` 版本。需要自定义品牌的嵌入方会保留自己的版本：`App` 与 CLI 会转发 `ServerIdentity.version`，因此 Hub 声明的是 Hub 的版本。
+
+当服务提供 `discover_tools`（见下文）时，`initialize` 响应还会带上 `instructions`，说明两步式延迟工具流程，客户端无需再从工具描述中自行推断。这两个字段都可以直接指定：
+
+```python
+from toolregistry_server.adapters.mcp import MCPAdapter
+
+adapter = MCPAdapter(
+    route_table,
+    version="1.2.3",
+    instructions="数学工具可直接使用，其余工具为延迟工具。",
+)
+```
+
 ## 延迟工具与 `call_deferred`
 
 当底层 `ToolRegistry` 启用了工具发现（通过 `enable_tool_discovery()`）时，两个基础设施工具会自动通过 MCP 适配器暴露：
