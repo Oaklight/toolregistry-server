@@ -26,15 +26,14 @@ The MCP adapter advertises `tools_changed` capability and automatically sends `n
 
 ### Caching the tool list
 
-On SDK v2 (MCP spec 2026-07-28) `tools/list` carries cache hints. The adapter advertises `ttlMs: 300000` and `cacheScope: "private"` — the list is worth caching, but it depends on the deployment's profile and the caller's authorization, so a shared proxy must not serve it. The `list_changed` notification above is what keeps a cached copy correct.
+On SDK v2 (MCP spec 2026-07-28) `tools/list` carries cache hints. The default is `ttlMs: 0` — clients refetch every time — with `cacheScope: "private"`, because the served set depends on the deployment's profile and the caller's authorization.
+
+Caching is opt-in until `notifications/tools/list_changed` is verified on SDK v2 (#107): without a notification a client would keep a stale list for the whole lifetime.
 
 ```bash
-# disable caching entirely
-toolregistry-server mcp --config tools.yaml --transport http --tools-list-ttl-ms 0
-
-# longer lifetime, still per-caller
+# opt into a five-minute cache, still per-caller
 toolregistry-server mcp --config tools.yaml --transport http \
-  --tools-list-ttl-ms 900000 --tools-list-cache-scope private
+  --tools-list-ttl-ms 300000 --tools-list-cache-scope private
 ```
 
 ## Quick Start
