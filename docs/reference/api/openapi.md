@@ -8,6 +8,10 @@
 
 ::: toolregistry_server.openapi.adapter
 
+## 文档构建器
+
+::: toolregistry_server.adapters.openapi.spec
+
 ## 中间件
 
 ::: toolregistry_server.openapi.middleware

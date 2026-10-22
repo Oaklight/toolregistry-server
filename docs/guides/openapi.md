@@ -14,6 +14,19 @@ OpenAPI 适配器使用 [FastAPI](https://fastapi.tiangolo.com/) 将 `ToolRegist
 - 实现基于 ETag 的 HTTP 缓存
 - 支持 `additionalProperties: true` 的 schema（如 `call_deferred` 的 `**kwargs`），通过 Pydantic `extra="allow"` 实现
 
+## 不使用 FastAPI 构建文档
+
+`RouteTable` 已经持有 API 契约，因此可以直接由它生成 OpenAPI 文档：
+
+```python
+from toolregistry_server import RouteTable
+from toolregistry_server.adapters.openapi.spec import build_openapi_schema
+
+document = build_openapi_schema(RouteTable(registry), title="My Tools", version="2.0.0")
+```
+
+输出与服务端 `/openapi.json` 为已启用工具发布的内容一致——相同的 `operationId`、摘要、命名空间标签、参数 schema 与 `x-*` 执行提示扩展——被禁用的工具直接不出现，无需事后过滤。只想要工具路由时，可用 `include_meta=False` 省略 `/tools` 与 `/events` 两个 operation。
+
 ## 快速开始
 
 ### 通过 `App`（推荐）
