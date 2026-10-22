@@ -101,6 +101,29 @@ _prevalidated_route: contextvars.ContextVar[Any] = contextvars.ContextVar(
 )
 
 
+def trackable_session(ctx: Any) -> Any:
+    """Return the object a route-change notification should be sent through.
+
+    On SDK v2 the handler receives a **per-request** ``ServerSession`` — the
+    SDK builds one per inbound message and it dies with the request — so
+    holding it in the session set leaves nothing to notify later.  The
+    connection-scoped object is the session's ``_connection``; both expose
+    ``send_tool_list_changed()``, so callers do not care which they hold.
+
+    Falls back to the session itself when there is no ``_connection`` (SDK
+    v1, or a shape we do not know), which keeps the v1 path and any future
+    SDK change working.
+
+    Args:
+        ctx: The v2 request context handed to a handler.
+
+    Returns:
+        The object to track for ``tools/list_changed``.
+    """
+    session = ctx.session
+    return getattr(session, "_connection", None) or session
+
+
 def get_prevalidated_route() -> Any | None:
     """Return the route resolved earlier in this request, if any.
 
@@ -288,7 +311,8 @@ def _create_server_v2(
 
     async def on_list_tools(ctx: Any, params: Any) -> Any:
         if session_tracker is not None:
-            session_tracker.add(ctx.session)
+            # The per-request session dies with this request (#107).
+            session_tracker.add(trackable_session(ctx))
         tools = await list_tools_handler()
         extra: dict[str, Any] = {}
         if list_tools_ttl_ms is not None and _cache_supported:
@@ -578,6 +602,7 @@ __all__ = [
     "tools_changed_notification_options",
     "get_field",
     "get_prevalidated_route",
+    "trackable_session",
     "CompatProxy",
     "create_test_client",
 ]
