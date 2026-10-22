@@ -428,6 +428,10 @@ def _resolve_route_for_call(
 #: decide whether the deferred-tool guidance applies.
 _DISCOVERY_TOOL = "discover_tools"
 
+#: Proxy tool registered alongside discovery.  The default instructions name
+#: it too, so it must be enabled for the guidance to be true.
+_CALL_DEFERRED_TOOL = "call_deferred"
+
 #: Instructions returned from ``initialize`` when discovery is served.  This
 #: is the two-line model of the server that a client would otherwise have to
 #: rediscover by reading tool descriptions (#79).
@@ -478,9 +482,29 @@ def _resolve_server_info(
         from ... import __version__ as server_version
 
         version = server_version
-    if instructions is None and route_table.get_route(_DISCOVERY_TOOL) is not None:
+    if instructions is None and _discovery_available(route_table):
         instructions = DEFAULT_INSTRUCTIONS
     return version, instructions
+
+
+def _discovery_available(route_table: "RouteTable") -> bool:
+    """Whether the deferred-tool flow the default instructions describe works.
+
+    ``get_route`` returns disabled routes too, so checking presence alone told
+    clients to use ``discover_tools``/``call_deferred`` even when the profile
+    had disabled them — advice that leads straight to a ``-32602`` (#112).
+
+    Args:
+        route_table: The routes being served.
+
+    Returns:
+        True only when both tools the guidance names exist and are enabled.
+    """
+    for name in (_DISCOVERY_TOOL, _CALL_DEFERRED_TOOL):
+        route = route_table.get_route(name)
+        if route is None or not route.enabled:
+            return False
+    return True
 
 
 def route_table_to_mcp_server(
