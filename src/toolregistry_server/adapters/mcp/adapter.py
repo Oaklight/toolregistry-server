@@ -375,23 +375,29 @@ def _setup_tools_changed_notifications(
         except Exception:
             logger.warning("failed to publish tools/list_changed", exc_info=True)
 
-    def _schedule(coro: Any) -> None:
-        """Run *coro* on the current loop, keeping it alive until done."""
+    def _schedule(make_coro: Any) -> None:
+        """Create and run the coroutine on the current loop, if there is one.
+
+        Takes a factory, not a coroutine: a route change outside a running
+        loop is normal (building a server, mutating a table in a script), and
+        creating the coroutine before the loop check would leave it unawaited
+        and emit ``RuntimeWarning: coroutine was never awaited``.
+        """
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             # No running event loop — nothing can be listening either.
             return
-        task = loop.create_task(coro)
+        task = loop.create_task(make_coro())
         _pending_tasks.add(task)
         task.add_done_callback(_pending_tasks.discard)
 
     def _on_route_change(tool_name: str, event: str) -> None:
         """Send tool-list-changed to all tracked MCP sessions."""
         for session in list(sessions):
-            _schedule(_send_tool_list_changed(session))
+            _schedule(lambda session=session: _send_tool_list_changed(session))
         if subscription_bus is not None:
-            _schedule(_publish_tool_list_changed(subscription_bus))
+            _schedule(lambda: _publish_tool_list_changed(subscription_bus))
 
     route_table.add_listener(_on_route_change)
 

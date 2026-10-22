@@ -1383,6 +1383,27 @@ class TestSubscriptionsListen:
                     pytest.fail("unexpected event on an unchanged table")
 
 
+class TestRouteChangeOutsideLoop:
+    """A route change with no running loop must not leave a coroutine behind."""
+
+    def test_no_unawaited_coroutine_warning(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """Building or mutating a server from sync code is normal (#110)."""
+        import gc
+        import warnings
+
+        route_table_to_mcp_server(route_table_with_tools)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            route_table_with_tools.refresh_all()
+            gc.collect()
+
+        never_awaited = [w for w in caught if "was never awaited" in str(w.message)]
+        assert not never_awaited, never_awaited
+
+
 # ---------------------------------------------------------------------------
 # 10. outputSchema / structuredContent (MCP spec 2026-07-28)
 # ---------------------------------------------------------------------------
