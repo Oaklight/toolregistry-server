@@ -449,15 +449,14 @@ DEFAULT_INSTRUCTIONS = (
     "arguments."
 )
 
-#: Default ``ttlMs`` for ``tools/list``.  Zero — the SDK default — means
-#: "never cache".  That is not what we want to ship yet: on MCP SDK v2 the
-#: ``notifications/tools/list_changed`` that would correct a cached list is
-#: never delivered (#107), so a non-zero TTL here would leave a client
-#: showing tools that no longer exist for the whole lifetime.  The cache
-#: hints are configurable now (``--tools-list-ttl-ms``); raise this default
-#: to 300000, the spec's example, once the notification path is verified
-#: end to end.
-DEFAULT_TOOLS_LIST_TTL_MS = 0
+#: Default ``ttlMs`` for ``tools/list``: five minutes, the MCP spec's
+#: example.  A cached list is only safe when the client can be told it went
+#: stale; since #110 the server serves ``subscriptions/listen`` and publishes
+#: a change event for every route-table change, so a modern-era client that
+#: listens invalidates its cache.  A client that does *not* listen keeps the
+#: list for up to this TTL, so the value bounds staleness rather than
+#: eliminating it.  ``--tools-list-ttl-ms 0`` disables caching.
+DEFAULT_TOOLS_LIST_TTL_MS = 300_000
 
 #: Default ``cacheScope`` for ``tools/list``.  The served set can differ by
 #: profile and authorization, so it must not be cached by shared proxies.
