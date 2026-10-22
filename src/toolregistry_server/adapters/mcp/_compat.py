@@ -101,7 +101,7 @@ _prevalidated_route: contextvars.ContextVar[Any] = contextvars.ContextVar(
 )
 
 
-def trackable_session(ctx: Any) -> Any:
+def trackable_session(ctx: Any) -> Any | None:
     """Return the object a route-change notification should be sent through.
 
     On SDK v2 the handler receives a **per-request** ``ServerSession`` — the
@@ -109,6 +109,16 @@ def trackable_session(ctx: Any) -> Any:
     holding it in the session set leaves nothing to notify later.  The
     connection-scoped object is the session's ``_connection``; both expose
     ``send_tool_list_changed()``, so callers do not care which they hold.
+
+    Only objects that can actually deliver the notification are returned:
+
+    - A modern-era connection (2026-07-28) has no usable channel for change
+      notifications — ``from_envelope`` gives it a no-channel outbound, and
+      the dual-era loop wraps duplex connections so ``notify`` drops them.
+      Those clients are served by ``subscriptions/listen`` instead (#110).
+    - Tracking such a connection is worse than useless: on the modern HTTP
+      path it is created **per request**, so the set gains one dead entry per
+      ``tools/list`` call (#111).
 
     Falls back to the session itself when there is no ``_connection`` (SDK
     v1, or a shape we do not know), which keeps the v1 path and any future
@@ -118,10 +128,50 @@ def trackable_session(ctx: Any) -> Any:
         ctx: The v2 request context handed to a handler.
 
     Returns:
-        The object to track for ``tools/list_changed``.
+        The object to track for ``tools/list_changed``, or ``None`` when this
+        connection cannot receive one.
     """
     session = ctx.session
-    return getattr(session, "_connection", None) or session
+    target = getattr(session, "_connection", None) or session
+    return None if _is_modern_connection(target) else target
+
+
+def _is_modern_connection(connection: Any) -> bool:
+    """Whether *connection* speaks the 2026-07-28 wire.
+
+    At that era change notifications only reach a client through a
+    ``subscriptions/listen`` stream, never the connection, so such an object
+    must not be tracked for delivery.  The check is deliberately
+    structural-first: a missing back-channel settles it without reading any
+    version, and the modern-version set is the fallback.
+    """
+    has_channel = getattr(connection, "has_standalone_channel", None)
+    if has_channel is False:
+        return True
+
+    version = getattr(connection, "protocol_version", None)
+    if not isinstance(version, str):
+        return False
+    try:
+        from mcp_types.version import MODERN_PROTOCOL_VERSIONS
+    except ImportError:  # pragma: no cover - mcp_types ships with SDK v2
+        return False
+    return version in MODERN_PROTOCOL_VERSIONS
+
+
+def track_session(session_tracker: MutableSet | None, ctx: Any) -> None:
+    """Record the connection behind *ctx* when it can receive a change event.
+
+    Args:
+        session_tracker: The set of notifiable objects, or ``None`` when the
+            server was created without one.
+        ctx: The v2 request context handed to ``tools/list``.
+    """
+    if session_tracker is None:
+        return
+    trackable = trackable_session(ctx)
+    if trackable is not None:
+        session_tracker.add(trackable)
 
 
 def get_prevalidated_route() -> Any | None:
@@ -330,9 +380,9 @@ def _create_server_v2(
     _cache_supported = supports_list_tools_cache()
 
     async def on_list_tools(ctx: Any, params: Any) -> Any:
-        if session_tracker is not None:
-            # The per-request session dies with this request (#107).
-            session_tracker.add(trackable_session(ctx))
+        # The per-request session dies with this request (#107); modern
+        # connections cannot receive the notification at all (#111).
+        track_session(session_tracker, ctx)
         tools = await list_tools_handler()
         extra: dict[str, Any] = {}
         if list_tools_ttl_ms is not None and _cache_supported:
@@ -682,6 +732,7 @@ __all__ = [
     "get_field",
     "get_prevalidated_route",
     "trackable_session",
+    "track_session",
     "supports_subscriptions",
     "make_subscription_bus",
     "publish_tools_changed",

@@ -242,12 +242,13 @@ class TestServerInfo:
 
         route = route_table_with_tools.get_route("add")
         assert route is not None
-        route_table_with_tools._routes["discover_tools"] = RouteEntry(
-            tool=route.tool,
-            path="/tools/discover_tools",
-            handler=route.handler,
-            is_async=route.is_async,
-        )
+        for name in ("discover_tools", "call_deferred"):
+            route_table_with_tools._routes[name] = RouteEntry(
+                tool=route.tool,
+                path=f"/tools/{name}",
+                handler=route.handler,
+                is_async=route.is_async,
+            )
 
         server = route_table_to_mcp_server(route_table_with_tools)
         assert server.instructions == DEFAULT_INSTRUCTIONS
@@ -262,6 +263,38 @@ class TestServerInfo:
             route_table_with_tools, instructions="Use the math tools."
         )
         assert server.instructions == "Use the math tools."
+
+    def _discovery_route_table(self) -> RouteTable:
+        """A real registry with tool discovery enabled."""
+        from toolregistry import ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(add)
+        registry.enable_tool_discovery()
+        return RouteTable(registry)
+
+    def test_instructions_hidden_when_discovery_is_disabled(self) -> None:
+        """Disabling the tool must retract the guidance that names it (#112)."""
+        route_table = self._discovery_route_table()
+        route_table.disable("discover_tools", "probe")
+
+        server = route_table_to_mcp_server(route_table)
+        assert server.instructions is None
+
+    def test_instructions_hidden_when_call_deferred_is_disabled(self) -> None:
+        """The guidance names call_deferred too; it must be callable as well."""
+        route_table = self._discovery_route_table()
+        route_table.disable("call_deferred", "probe")
+
+        server = route_table_to_mcp_server(route_table)
+        assert server.instructions is None
+
+    def test_instructions_present_for_an_enabled_discovery_stack(self) -> None:
+        """The control case: both tools enabled ⇒ guidance is sent."""
+        from toolregistry_server.adapters.mcp.adapter import DEFAULT_INSTRUCTIONS
+
+        server = route_table_to_mcp_server(self._discovery_route_table())
+        assert server.instructions == DEFAULT_INSTRUCTIONS
 
     def test_adapter_accepts_version_and_instructions(
         self, route_table_with_tools: RouteTable
@@ -1910,11 +1943,52 @@ class TestTrackableSession:
 
         assert trackable_session(ctx) is session
 
+    def test_skips_a_connection_without_a_channel(self):
+        """A connection that cannot push is not tracked (#111)."""
+        from types import SimpleNamespace
+
+        from toolregistry_server.adapters.mcp._compat import trackable_session
+
+        connection = SimpleNamespace(has_standalone_channel=False)
+        ctx = SimpleNamespace(session=SimpleNamespace(_connection=connection))
+
+        assert trackable_session(ctx) is None
+
+    @pytest.mark.skipif(MCP_VERSION < 2, reason="modern era is SDK v2 only")
+    def test_skips_a_modern_connection_even_with_a_channel(self):
+        """Modern-era change notifications only ride listen streams (#110)."""
+        from types import SimpleNamespace
+
+        from toolregistry_server.adapters.mcp._compat import trackable_session
+
+        connection = SimpleNamespace(
+            has_standalone_channel=True, protocol_version="2026-07-28"
+        )
+        ctx = SimpleNamespace(session=SimpleNamespace(_connection=connection))
+
+        assert trackable_session(ctx) is None
+
+    @pytest.mark.skipif(MCP_VERSION < 2, reason="modern era is SDK v2 only")
+    def test_tracks_a_handshake_connection(self):
+        """Handshake-era clients still receive the notification (#107)."""
+        from types import SimpleNamespace
+
+        from toolregistry_server.adapters.mcp._compat import trackable_session
+
+        connection = SimpleNamespace(
+            has_standalone_channel=True, protocol_version="2025-11-25"
+        )
+        ctx = SimpleNamespace(session=SimpleNamespace(_connection=connection))
+
+        assert trackable_session(ctx) is connection
+
     @pytest.mark.skipif(MCP_VERSION < 2, reason="v2-only per-request sessions")
-    async def test_v2_tracks_the_connection_not_the_session(
+    async def test_v2_handshake_client_tracks_the_connection(
         self, route_table_with_tools: RouteTable, monkeypatch
     ) -> None:
-        """The object handed to the tracker outlives the request (#107)."""
+        """A handshake-era client is tracked through its connection (#107)."""
+        from mcp.client import Client
+
         from toolregistry_server.adapters.mcp import _compat as compat
 
         server = route_table_to_mcp_server(route_table_with_tools)
@@ -1930,8 +2004,37 @@ class TestTrackableSession:
 
         monkeypatch.setattr(compat, "trackable_session", _spy)
 
-        async with create_test_client(server) as client:
+        # "legacy" pins the initialize handshake; the default "auto" mode
+        # negotiates the modern era, which has no connection-level channel.
+        async with Client(server, mode="legacy") as client:
             await client.list_tools()
 
         assert seen, "no session was tracked on tools/list"
         assert hasattr(seen[-1], "send_tool_list_changed")
+
+    @pytest.mark.skipif(MCP_VERSION < 2, reason="modern era is SDK v2 only")
+    async def test_v2_modern_client_is_not_tracked(
+        self, route_table_with_tools: RouteTable, monkeypatch
+    ) -> None:
+        """A modern client would add one dead entry per request (#111)."""
+        from mcp.client import Client
+
+        from toolregistry_server.adapters.mcp import _compat as compat
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+
+        seen: list[Any] = []
+        real = compat.trackable_session
+
+        def _spy(ctx: Any) -> Any:
+            tracked = real(ctx)
+            seen.append(tracked)
+            return tracked
+
+        monkeypatch.setattr(compat, "trackable_session", _spy)
+
+        async with Client(server, mode="2026-07-28") as client:
+            await client.list_tools()
+
+        assert seen, "trackable_session was not consulted"
+        assert seen[-1] is None, "a modern connection must not be tracked"
