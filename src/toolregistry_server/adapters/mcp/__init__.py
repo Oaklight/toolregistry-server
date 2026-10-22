@@ -50,6 +50,8 @@ def route_table_to_mcp_server(
     *,
     list_tools_ttl_ms: int | None = None,
     list_tools_cache_scope: Literal["public", "private"] | None = None,
+    version: str | None = None,
+    instructions: str | None = None,
 ) -> "Server":
     """Create an MCP low-level server from a RouteTable.
 
@@ -63,6 +65,10 @@ def route_table_to_mcp_server(
         list_tools_ttl_ms: Optional ``ttlMs`` cache hint for ``tools/list``.
         list_tools_cache_scope: Optional ``cacheScope`` hint for
             ``tools/list``.
+        version: Implementation version for ``serverInfo``.  ``None`` uses
+            the installed ``toolregistry-server`` version.
+        instructions: Usage guidance for ``initialize``.  ``None`` uses the
+            deferred-tool hint when discovery is served.
 
     Returns:
         A configured MCP Server instance.
@@ -77,6 +83,8 @@ def route_table_to_mcp_server(
         name,
         list_tools_ttl_ms=list_tools_ttl_ms,
         list_tools_cache_scope=list_tools_cache_scope,
+        version=version,
+        instructions=instructions,
     )
 
 
@@ -154,6 +162,10 @@ class MCPAdapter(Adapter):
         list_tools_ttl_ms: Optional ``ttlMs`` cache hint for ``tools/list``.
         list_tools_cache_scope: Optional ``cacheScope`` hint for
             ``tools/list``.
+        version: Implementation version for ``serverInfo``.  Defaults to the
+            installed ``toolregistry-server`` version.
+        instructions: Usage guidance for ``initialize``.  Defaults to the
+            deferred-tool hint when discovery is served.
     """
 
     def __init__(
@@ -163,6 +175,8 @@ class MCPAdapter(Adapter):
         name: str = "ToolRegistry-Server",
         list_tools_ttl_ms: int | None = None,
         list_tools_cache_scope: Literal["public", "private"] | None = None,
+        version: str | None = None,
+        instructions: str | None = None,
     ) -> None:
         super().__init__(route_table)
         self._server = route_table_to_mcp_server(
@@ -170,6 +184,8 @@ class MCPAdapter(Adapter):
             name,
             list_tools_ttl_ms=list_tools_ttl_ms,
             list_tools_cache_scope=list_tools_cache_scope,
+            version=version,
+            instructions=instructions,
         )
 
     @property
@@ -335,6 +351,8 @@ class MCPAdapter(Adapter):
             name=name,
             list_tools_ttl_ms=kwargs.pop("tools_list_ttl_ms", None),
             list_tools_cache_scope=kwargs.pop("tools_list_cache_scope", None),
+            version=identity.version,
+            instructions=kwargs.pop("instructions", None),
         )
         adapter.run(**kwargs)
 

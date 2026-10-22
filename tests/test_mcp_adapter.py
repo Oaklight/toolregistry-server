@@ -198,6 +198,110 @@ class TestRouteTableToMcpServer:
         assert server.name == "Custom-Server"
 
 
+class TestServerInfo:
+    """Tests for serverInfo.version and initialize instructions (#79)."""
+
+    def test_version_defaults_to_package_version(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """serverInfo.version is filled instead of left empty."""
+        import toolregistry_server
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+        assert server.version == toolregistry_server.__version__
+        assert server.version
+
+    def test_version_is_overridable(self, route_table_with_tools: RouteTable) -> None:
+        """Hub and other embedders can report their own version."""
+        server = route_table_to_mcp_server(
+            route_table_with_tools, version="2.3.4-custom"
+        )
+        assert server.version == "2.3.4-custom"
+
+    def test_empty_version_stays_empty(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """An explicit empty string suppresses the default."""
+        server = route_table_to_mcp_server(route_table_with_tools, version="")
+        assert not server.version
+
+    def test_no_instructions_without_discovery(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """Without discover_tools there is nothing extra to explain."""
+        server = route_table_to_mcp_server(route_table_with_tools)
+        assert server.instructions is None
+
+    def test_instructions_explain_deferred_tools(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """Serving discovery adds the call_deferred hint to initialize."""
+        from toolregistry_server.adapters.mcp.adapter import DEFAULT_INSTRUCTIONS
+
+        route = route_table_with_tools.get_route("add")
+        assert route is not None
+        route_table_with_tools._routes["discover_tools"] = RouteEntry(
+            tool=route.tool,
+            path="/tools/discover_tools",
+            handler=route.handler,
+            is_async=route.is_async,
+        )
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+        assert server.instructions == DEFAULT_INSTRUCTIONS
+        assert "discover_tools" in DEFAULT_INSTRUCTIONS
+        assert "call_deferred" in DEFAULT_INSTRUCTIONS
+
+    def test_instructions_are_overridable(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """An embedder can replace the default guidance."""
+        server = route_table_to_mcp_server(
+            route_table_with_tools, instructions="Use the math tools."
+        )
+        assert server.instructions == "Use the math tools."
+
+    def test_adapter_accepts_version_and_instructions(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """MCPAdapter forwards both fields to the underlying server."""
+        from toolregistry_server.adapters.mcp import MCPAdapter
+
+        adapter = MCPAdapter(
+            route_table_with_tools, version="9.9.9", instructions="Hello."
+        )
+        assert adapter.server.version == "9.9.9"
+        assert adapter.server.instructions == "Hello."
+
+    def test_adapter_defaults_version_to_identity(self) -> None:
+        """create_and_run reports the identity version (#79)."""
+        from toolregistry_server.adapters.mcp import MCPAdapter
+        from toolregistry_server.identity import ServerIdentity
+
+        registry = MagicMock()
+        registry._tools = {}
+        registry.is_enabled = MagicMock(return_value=True)
+        registry.get_disable_reason = MagicMock(return_value=None)
+        route_table = RouteTable(registry)
+
+        captured = {}
+
+        def fake_run(self, **kwargs):  # noqa: ANN001
+            captured["server"] = self.server
+
+        original_run = MCPAdapter.run
+        MCPAdapter.run = fake_run
+        try:
+            MCPAdapter.create_and_run(
+                route_table, identity=ServerIdentity(name="X", version="4.5.6")
+            )
+        finally:
+            MCPAdapter.run = original_run
+
+        assert captured["server"].name == "X"
+        assert captured["server"].version == "4.5.6"
+
+
 # ---------------------------------------------------------------------------
 # 2. list_tools handler
 # ---------------------------------------------------------------------------
