@@ -11,6 +11,22 @@ The adapter:
 - Handles async and sync tools transparently
 - Provides both blocking (`run`) and async (`run_async`) entry points
 
+## Server Identity and Instructions
+
+`initialize` reports `serverInfo.version` as the installed `toolregistry-server` version. Embedders that brand the server keep their own version instead: `App` and the CLI forward `ServerIdentity.version`, so the Hub advertises the Hub version.
+
+When `discover_tools` is served (see below), the `initialize` response also carries `instructions` describing the two-step deferred-tool flow, so a client does not have to infer it from tool descriptions. Both fields can be set directly:
+
+```python
+from toolregistry_server.adapters.mcp import MCPAdapter
+
+adapter = MCPAdapter(
+    route_table,
+    version="1.2.3",
+    instructions="Use the math tools; other tools are deferred.",
+)
+```
+
 ## Deferred Tools and `call_deferred`
 
 When the underlying `ToolRegistry` has tool discovery enabled (via `enable_tool_discovery()`), two infrastructure tools are automatically exposed through the MCP adapter:
