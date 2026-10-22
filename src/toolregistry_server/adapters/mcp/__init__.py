@@ -319,10 +319,11 @@ class MCPAdapter(Adapter):
             default=None,
             metavar="MS",
             help=(
-                "ttlMs cache hint for tools/list. Default 0: clients must not "
-                "cache the list, because notifications/tools/list_changed is "
-                "not delivered on SDK v2 yet (#107). Set a positive value "
-                "(e.g. 300000) to let clients cache it"
+                "ttlMs cache hint for tools/list, in milliseconds "
+                "(default: 300000 — five minutes). Clients that open a "
+                "subscriptions/listen stream have their cache invalidated on "
+                "every change; clients that do not will keep the list for up "
+                "to the TTL. Set 0 to disable caching"
             ),
         )
         parser.add_argument(

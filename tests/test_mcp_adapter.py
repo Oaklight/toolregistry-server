@@ -1272,18 +1272,22 @@ class TestListToolsCacheHints:
                 assert get_field(result, "cache_scope", "cacheScope") == "public"
 
     @pytest.mark.asyncio
-    async def test_default_cache_hints_keep_the_list_uncached(
+    async def test_default_cache_hints_allow_five_minutes(
         self, route_table_with_tools: RouteTable
     ) -> None:
-        """ttlMs stays 0 until list_changed works on v2 (#83, #107)."""
+        """listen streams can invalidate the cache, so the default is non-zero."""
         from toolregistry_server.adapters.mcp._compat import supports_list_tools_cache
+        from toolregistry_server.adapters.mcp.adapter import (
+            DEFAULT_TOOLS_LIST_TTL_MS,
+        )
 
+        assert DEFAULT_TOOLS_LIST_TTL_MS == 300_000
         server = route_table_to_mcp_server(route_table_with_tools)
         async with create_test_client(server) as client:
             result = await client.list_tools()
             assert len(result.tools) > 0
             if supports_list_tools_cache():
-                assert get_field(result, "ttl_ms", "ttlMs") == 0
+                assert get_field(result, "ttl_ms", "ttlMs") == 300_000
                 assert get_field(result, "cache_scope", "cacheScope") == "private"
 
     @pytest.mark.asyncio
@@ -1294,12 +1298,12 @@ class TestListToolsCacheHints:
         from toolregistry_server.adapters.mcp._compat import supports_list_tools_cache
 
         server = route_table_to_mcp_server(
-            route_table_with_tools, list_tools_ttl_ms=300_000
+            route_table_with_tools, list_tools_ttl_ms=120_000
         )
         async with create_test_client(server) as client:
             result = await client.list_tools()
             if supports_list_tools_cache():
-                assert get_field(result, "ttl_ms", "ttlMs") == 300_000
+                assert get_field(result, "ttl_ms", "ttlMs") == 120_000
                 assert get_field(result, "cache_scope", "cacheScope") == "private"
 
     @pytest.mark.asyncio
@@ -1362,6 +1366,69 @@ class TestSubscriptionsListen:
                 async for event in sub:
                     assert isinstance(event, ToolsListChanged)
                     break
+
+    @pytest.mark.asyncio
+    async def test_default_ttl_is_stale_for_a_client_that_does_not_listen(
+        self,
+    ) -> None:
+        """Documents the trade-off of a non-zero default (#114).
+
+        A client that never opens a listen stream keeps the cached list for
+        up to ``ttlMs``.  That is the cost of the five-minute default; the
+        knob exists so an operator can set ``0`` for such clients.
+        """
+        from mcp.client import Client
+        from toolregistry import ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(add)
+        registry.register(multiply)
+        route_table = RouteTable(registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with Client(server, mode="2026-07-28") as client:
+            first = await client.list_tools()
+            assert {t.name for t in first.tools} == {"add", "multiply"}
+
+            route_table.disable("add", "probe")
+
+            second = await client.list_tools()
+            assert {t.name for t in second.tools} == {"add", "multiply"}
+
+    @pytest.mark.asyncio
+    async def test_listen_event_invalidates_a_cached_tool_list(self) -> None:
+        """The five-minute default is safe for a client that listens (#114).
+
+        The SDK client caches ``tools/list`` for the served ``ttlMs`` and
+        evicts it when a listen-stream event arrives, so a listening client
+        sees a disabled tool disappear immediately rather than after five
+        minutes.
+        """
+        import anyio
+        from mcp.client import Client
+        from toolregistry import ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(add)
+        registry.register(multiply)
+        route_table = RouteTable(registry)
+        server = route_table_to_mcp_server(route_table)
+
+        async with (
+            Client(server, mode="2026-07-28") as client,
+            client.listen(tools_list_changed=True) as sub,
+        ):
+            first = await client.list_tools()
+            assert {t.name for t in first.tools} == {"add", "multiply"}
+
+            route_table.disable("add", "probe")
+
+            with anyio.fail_after(5):
+                async for _event in sub:
+                    break
+
+            second = await client.list_tools()
+            assert {t.name for t in second.tools} == {"multiply"}
 
     @pytest.mark.asyncio
     async def test_no_event_without_a_change(
