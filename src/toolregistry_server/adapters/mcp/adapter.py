@@ -315,6 +315,7 @@ def _setup_tools_changed_notifications(
     server: "Server",
     route_table: "RouteTable",
     sessions: "weakref.WeakSet[Any]",
+    subscription_bus: Any | None = None,
 ) -> None:
     """Wire up MCP tools/list_changed notifications.
 
@@ -322,11 +323,17 @@ def _setup_tools_changed_notifications(
     tools_changed=True, and registers a RouteTable listener that sends
     send_tool_list_changed() to all tracked sessions on change.
 
+    On SDK builds that serve ``subscriptions/listen`` the same change is
+    also published on ``subscription_bus``: the 2026-07-28 wire has no
+    standing channel, so a modern client only ever learns about a change
+    through a listen stream it opened (#107).
+
     Args:
         server: The MCP Server instance to patch.
         route_table: The RouteTable to listen for changes.
         sessions: The session tracker WeakSet (populated by session_tracker
             in create_mcp_server).
+        subscription_bus: Optional bus for ``subscriptions/listen`` streams.
     """
     import asyncio
 
@@ -359,17 +366,32 @@ def _setup_tools_changed_notifications(
         except Exception:
             sessions.discard(session)
 
+    async def _publish_tool_list_changed(bus: Any) -> None:
+        """Publish the change to every open ``subscriptions/listen`` stream."""
+        from ._compat import publish_tools_changed
+
+        try:
+            await publish_tools_changed(bus)
+        except Exception:
+            logger.warning("failed to publish tools/list_changed", exc_info=True)
+
+    def _schedule(coro: Any) -> None:
+        """Run *coro* on the current loop, keeping it alive until done."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running event loop — nothing can be listening either.
+            return
+        task = loop.create_task(coro)
+        _pending_tasks.add(task)
+        task.add_done_callback(_pending_tasks.discard)
+
     def _on_route_change(tool_name: str, event: str) -> None:
         """Send tool-list-changed to all tracked MCP sessions."""
         for session in list(sessions):
-            try:
-                loop = asyncio.get_running_loop()
-                task = loop.create_task(_send_tool_list_changed(session))
-                _pending_tasks.add(task)
-                task.add_done_callback(_pending_tasks.discard)
-            except RuntimeError:
-                # No running event loop — skip silently
-                pass
+            _schedule(_send_tool_list_changed(session))
+        if subscription_bus is not None:
+            _schedule(_publish_tool_list_changed(subscription_bus))
 
     route_table.add_listener(_on_route_change)
 
@@ -518,6 +540,10 @@ def route_table_to_mcp_server(
 
     session_mgr = SessionManager()
 
+    from ._compat import make_subscription_bus
+
+    subscription_bus = make_subscription_bus()
+
     def get_enabled_route(tool_name: str) -> "RouteEntry":
         route = route_table.get_route(tool_name)
         if route is None:
@@ -633,9 +659,12 @@ def route_table_to_mcp_server(
             else list_tools_cache_scope
         ),
         session_tracker=_sessions,
+        subscription_bus=subscription_bus,
     )
 
-    _setup_tools_changed_notifications(server, route_table, _sessions)
+    _setup_tools_changed_notifications(
+        server, route_table, _sessions, subscription_bus=subscription_bus
+    )
 
     logger.info(
         f"MCP server '{name}' created with {len(route_table.list_routes())} "

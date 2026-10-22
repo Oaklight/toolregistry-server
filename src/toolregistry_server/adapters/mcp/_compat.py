@@ -197,6 +197,7 @@ def create_mcp_server(
     session_tracker: MutableSet | None = None,
     version: str = "",
     instructions: str | None = None,
+    subscription_bus: Any | None = None,
 ) -> Server:
     """Create an MCP lowlevel Server with handlers registered.
 
@@ -221,6 +222,9 @@ def create_mcp_server(
             ``""`` leaves it empty, which is what the SDK default does but
             makes deployments indistinguishable in client logs (#79).
         instructions: Optional usage guidance returned from ``initialize``.
+        subscription_bus: Optional ``SubscriptionBus`` for the modern
+            ``subscriptions/listen`` stream (MCP spec 2026-07-28).  Ignored
+            on v1, and on SDK builds that predate the listen handler.
 
     Returns:
         A configured ``mcp.server.lowlevel.Server``.
@@ -235,6 +239,7 @@ def create_mcp_server(
             session_tracker,
             version,
             instructions,
+            subscription_bus,
         )
     else:
         return _create_server_v1(
@@ -317,6 +322,7 @@ def _create_server_v2(
     session_tracker: MutableSet | None = None,
     version: str = "",
     instructions: str | None = None,
+    subscription_bus: Any | None = None,
 ) -> Server:
     from mcp.server.lowlevel import Server
     from mcp.types import INVALID_PARAMS, CallToolResult, ListToolsResult
@@ -367,12 +373,19 @@ def _create_server_v2(
         finally:
             _v2_request_ctx.reset(token)
 
+    extra: dict[str, Any] = {}
+    if subscription_bus is not None and supports_subscriptions():
+        from mcp.server.subscriptions import ListenHandler
+
+        extra["on_subscriptions_listen"] = ListenHandler(subscription_bus)
+
     return Server(  # type: ignore[call-arg]
         name,
         version=version,
         instructions=instructions,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
+        **extra,
     )
 
 
@@ -608,6 +621,56 @@ def tools_changed_notification_options():
     return NotificationOptions(tools_changed=True)
 
 
+def supports_subscriptions() -> bool:
+    """Whether this SDK serves ``subscriptions/listen`` streams (2026-07-28).
+
+    The modern wire has no standing notification channel: a client receives
+    server-initiated change events only through a ``subscriptions/listen``
+    request whose response is the stream (SEP-2575).  Support arrived as a
+    lowlevel ``Server(on_subscriptions_listen=...)`` hook, so probe both the
+    module and the constructor parameter rather than guessing a version.
+
+    Returns:
+        True when the installed SDK can fan events out to listen streams.
+    """
+    import importlib.util
+    import inspect
+
+    try:
+        if importlib.util.find_spec("mcp.server.subscriptions") is None:
+            return False
+        from mcp.server.lowlevel.server import Server as _Server
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+    params = inspect.signature(_Server.__init__).parameters
+    return "on_subscriptions_listen" in params
+
+
+def make_subscription_bus() -> Any | None:
+    """Create the in-process bus for ``subscriptions/listen``, if supported.
+
+    Returns:
+        An ``InMemorySubscriptionBus``, or ``None`` when the installed SDK
+        predates the listen handler.
+    """
+    if not supports_subscriptions():
+        return None
+    from mcp.server.subscriptions import InMemorySubscriptionBus
+
+    return InMemorySubscriptionBus()
+
+
+async def publish_tools_changed(bus: Any) -> None:
+    """Publish a tools list-changed event to every open listen stream.
+
+    Args:
+        bus: The ``SubscriptionBus`` created by :func:`make_subscription_bus`.
+    """
+    from mcp.server.subscriptions import ToolsListChanged
+
+    await bus.publish(ToolsListChanged())
+
+
 __all__ = [
     "MCP_VERSION",
     "McpErrorClass",
@@ -619,6 +682,9 @@ __all__ = [
     "get_field",
     "get_prevalidated_route",
     "trackable_session",
+    "supports_subscriptions",
+    "make_subscription_bus",
+    "publish_tools_changed",
     "CompatProxy",
     "create_test_client",
 ]
