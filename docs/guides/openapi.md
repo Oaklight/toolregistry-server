@@ -14,6 +14,19 @@ The adapter automatically:
 - Implements ETag-based HTTP caching
 - Supports `additionalProperties: true` schemas (e.g. `call_deferred`'s `**kwargs`) via Pydantic `extra="allow"`
 
+## Building the document without FastAPI
+
+`RouteTable` already owns the API contract, so the OpenAPI document can be built from it directly:
+
+```python
+from toolregistry_server import RouteTable
+from toolregistry_server.adapters.openapi.spec import build_openapi_schema
+
+document = build_openapi_schema(RouteTable(registry), title="My Tools", version="2.0.0")
+```
+
+The output matches what the served `/openapi.json` publishes for enabled tools — the same `operationId`, summary, namespace tag, parameter schema and `x-*` execution-hint extensions — and a disabled tool is simply absent, with no post-filtering. `include_meta=False` omits the `/tools` and `/events` operations when only the tool routes are wanted.
+
 ## Quick Start
 
 ### Via `App` (recommended)

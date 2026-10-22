@@ -8,6 +8,10 @@
 
 ::: toolregistry_server.openapi.adapter
 
+## Spec Builder
+
+::: toolregistry_server.adapters.openapi.spec
+
 ## Middleware
 
 ::: toolregistry_server.openapi.middleware
