@@ -202,6 +202,98 @@ class TestExtensions:
         assert "x-read-only" not in operation
 
 
+def _resolve_refs(node, components):
+    """Resolve local ``#/components/schemas/...`` references in place."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+            name = ref.rsplit("/", 1)[-1]
+            return _resolve_refs(components.get(name, {}), components)
+        return {key: _resolve_refs(value, components) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_resolve_refs(value, components) for value in node]
+    return node
+
+
+def _strip_titles(node):
+    """Drop pydantic's ``title`` keys; they carry no contract."""
+    if isinstance(node, dict):
+        return {
+            key: _strip_titles(value) for key, value in node.items() if key != "title"
+        }
+    if isinstance(node, list):
+        return [_strip_titles(value) for value in node]
+    return node
+
+
+class TestResponseBodies:
+    def test_success_response_uses_the_declared_output_schema(self):
+        output = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+        }
+        registry = ToolRegistry()
+
+        def ping() -> dict:
+            """Return a status object."""
+            return {"ok": True}
+
+        registry.register(
+            Tool.from_function(
+                ping, metadata=ToolMetadata(extra={"output_schema": output})
+            )
+        )
+
+        document = build_openapi_schema(RouteTable(registry), include_meta=False)
+        schema = _operation(document, "ping")["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]
+
+        assert schema == output
+
+    def test_success_response_is_empty_when_nothing_is_declared(
+        self, route_table: RouteTable
+    ):
+        schema = _operation(build_openapi_schema(route_table), "add")["responses"][
+            "200"
+        ]["content"]["application/json"]["schema"]
+
+        assert schema == {}
+
+    def test_validation_error_body_is_described(self, route_table: RouteTable):
+        schema = _operation(build_openapi_schema(route_table), "add")["responses"][
+            "422"
+        ]["content"]["application/json"]["schema"]
+
+        assert schema["type"] == "object"
+        detail = schema["properties"]["detail"]
+        assert detail["type"] == "array"
+        assert set(detail["items"]["required"]) == {"loc", "msg", "type"}
+
+
+class TestSecurity:
+    def test_security_schemes_and_requirements_are_emitted(
+        self, route_table: RouteTable
+    ):
+        document = build_openapi_schema(
+            route_table,
+            security_schemes={"HTTPBearer": {"type": "http", "scheme": "bearer"}},
+            security=[{"HTTPBearer": []}],
+        )
+
+        assert document["components"]["securitySchemes"]["HTTPBearer"] == {
+            "type": "http",
+            "scheme": "bearer",
+        }
+        assert document["security"] == [{"HTTPBearer": []}]
+
+    def test_no_security_section_when_none_is_given(self, route_table: RouteTable):
+        document = build_openapi_schema(route_table)
+
+        assert "components" not in document
+        assert "security" not in document
+
+
 class TestParityWithFastAPI:
     """The builder must describe the same API FastAPI published."""
 
@@ -215,6 +307,7 @@ class TestParityWithFastAPI:
         legacy = TestClient(create_openapi_app(route_table)).get("/openapi.json").json()
         document = build_openapi_schema(route_table)
 
+        components = legacy.get("components", {}).get("schemas", {})
         assert set(document["paths"]) == set(legacy["paths"])
         for path, operations in legacy["paths"].items():
             for method, legacy_op in operations.items():
@@ -225,6 +318,18 @@ class TestParityWithFastAPI:
                 for key, value in legacy_op.items():
                     if key.startswith("x-"):
                         assert built[key] == value
+
+                # The machine-readable half: request and response bodies,
+                # with FastAPI's $refs resolved and pydantic titles dropped.
+                if "requestBody" in legacy_op:
+                    assert _strip_titles(
+                        _resolve_refs(built["requestBody"], components)
+                    ) == _strip_titles(
+                        _resolve_refs(legacy_op["requestBody"], components)
+                    )
+                assert _strip_titles(_resolve_refs(built["responses"], components)) == (
+                    _strip_titles(_resolve_refs(legacy_op["responses"], components))
+                )
 
     def test_disabled_routes_are_omitted_like_the_filtered_document(
         self, route_table: RouteTable
