@@ -1284,6 +1284,73 @@ class TestListToolsCacheHints:
 
 
 # ---------------------------------------------------------------------------
+# 9b. subscriptions/listen (MCP spec 2026-07-28, SEP-2575)
+# ---------------------------------------------------------------------------
+
+
+def _supports_subscriptions() -> bool:
+    """Whether the installed SDK can serve ``subscriptions/listen``."""
+    from toolregistry_server.adapters.mcp._compat import supports_subscriptions
+
+    return supports_subscriptions()
+
+
+@pytest.mark.skipif(
+    not _supports_subscriptions(),
+    reason="installed MCP SDK has no subscriptions/listen support",
+)
+class TestSubscriptionsListen:
+    """Modern-era clients learn about route changes over a listen stream.
+
+    The 2026-07-28 wire has no standing notification channel, so a
+    ``tools/list_changed`` sent on ``Connection`` is dropped.  The event
+    must instead reach the client through the ``subscriptions/listen``
+    request whose response is the stream (#107).
+    """
+
+    @pytest.mark.asyncio
+    async def test_route_change_reaches_listen_stream(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """A change published for the route table arrives on the stream."""
+        import anyio
+        from mcp.client.client import Client
+        from mcp.client.subscriptions import ToolsListChanged, listen
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+
+        async with (
+            Client(server, mode="2026-07-28") as client,
+            listen(client.session, tools_list_changed=True) as sub,
+        ):
+            # Any route-table change must fan out to open listen streams.
+            route_table_with_tools.refresh_all()
+            with anyio.fail_after(5):
+                async for event in sub:
+                    assert isinstance(event, ToolsListChanged)
+                    break
+
+    @pytest.mark.asyncio
+    async def test_no_event_without_a_change(
+        self, route_table_with_tools: RouteTable
+    ) -> None:
+        """The stream stays quiet until something actually changes."""
+        import anyio
+        from mcp.client.client import Client
+        from mcp.client.subscriptions import listen
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+
+        async with (
+            Client(server, mode="2026-07-28") as client,
+            listen(client.session, tools_list_changed=True) as sub,
+        ):
+            with anyio.move_on_after(0.2):
+                async for _event in sub:  # pragma: no cover - must not run
+                    pytest.fail("unexpected event on an unchanged table")
+
+
+# ---------------------------------------------------------------------------
 # 10. outputSchema / structuredContent (MCP spec 2026-07-28)
 # ---------------------------------------------------------------------------
 
