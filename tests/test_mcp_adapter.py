@@ -5,6 +5,7 @@ for end-to-end testing of list_tools and call_tool handlers.
 """
 
 import json
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,6 +16,7 @@ from toolregistry.tool import Tool
 from toolregistry_server import RouteEntry, RouteTable
 from toolregistry_server.adapters.mcp import route_table_to_mcp_server
 from toolregistry_server.adapters.mcp._compat import (
+    MCP_VERSION,
     CompatProxy,
     McpErrorClass,
     create_test_client,
@@ -1707,3 +1709,58 @@ def test_annotation_serialization_uses_camel_case() -> None:
         "idempotentHint": True,
         "openWorldHint": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Session tracking for tools/list_changed (#107)
+# ---------------------------------------------------------------------------
+
+
+class TestTrackableSession:
+    """v2 handlers see a per-request session; notifications need the connection."""
+
+    def test_prefers_the_connection(self):
+        from types import SimpleNamespace
+
+        from toolregistry_server.adapters.mcp._compat import trackable_session
+
+        connection = object()
+        ctx = SimpleNamespace(session=SimpleNamespace(_connection=connection))
+
+        assert trackable_session(ctx) is connection
+
+    def test_falls_back_to_the_session(self):
+        from types import SimpleNamespace
+
+        from toolregistry_server.adapters.mcp._compat import trackable_session
+
+        session = SimpleNamespace()
+        ctx = SimpleNamespace(session=session)
+
+        assert trackable_session(ctx) is session
+
+    @pytest.mark.skipif(MCP_VERSION < 2, reason="v2-only per-request sessions")
+    async def test_v2_tracks_the_connection_not_the_session(
+        self, route_table_with_tools: RouteTable, monkeypatch
+    ) -> None:
+        """The object handed to the tracker outlives the request (#107)."""
+        from toolregistry_server.adapters.mcp import _compat as compat
+
+        server = route_table_to_mcp_server(route_table_with_tools)
+
+        seen: list[Any] = []
+        real = compat.trackable_session
+
+        def _spy(ctx: Any) -> Any:
+            tracked = real(ctx)
+            seen.append(tracked)
+            assert tracked is not ctx.session, "tracked the per-request session"
+            return tracked
+
+        monkeypatch.setattr(compat, "trackable_session", _spy)
+
+        async with create_test_client(server) as client:
+            await client.list_tools()
+
+        assert seen, "no session was tracked on tools/list"
+        assert hasattr(seen[-1], "send_tool_list_changed")
