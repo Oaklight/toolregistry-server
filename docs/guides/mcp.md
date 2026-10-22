@@ -57,14 +57,17 @@ async with listen(session, tools_list_changed=True) as sub:
 
 ### Caching the tool list
 
-On SDK v2 (MCP spec 2026-07-28) `tools/list` carries cache hints. The default is `ttlMs: 0` — clients refetch every time — with `cacheScope: "private"`, because the served set depends on the deployment's profile and the caller's authorization.
+On SDK v2 (MCP spec 2026-07-28) `tools/list` carries cache hints. The default is `ttlMs: 300000` — five minutes — with `cacheScope: "private"`, because the served set depends on the deployment's profile and the caller's authorization.
 
-Caching remains opt-in: a client that does not subscribe to changes keeps a cached list for the whole TTL. With a `subscriptions/listen` stream open, the event invalidates the cache (the SDK client evicts `tools/list` on the notification) and the next `list_tools()` refetches.
+A modern-era client that opens a `subscriptions/listen` stream gets the cache invalidated on every change (the SDK client evicts `tools/list` on the event), so it always sees the current set. A client that does **not** listen keeps the list for up to the TTL — that is the trade-off the default makes, and it is why the value is bounded rather than unlimited.
 
 ```bash
-# opt into a five-minute cache, still per-caller
+# turn caching off for clients that never listen
+toolregistry-server mcp --config tools.yaml --transport http --tools-list-ttl-ms 0
+
+# a shorter, still per-caller cache
 toolregistry-server mcp --config tools.yaml --transport http \
-  --tools-list-ttl-ms 300000 --tools-list-cache-scope private
+  --tools-list-ttl-ms 60000 --tools-list-cache-scope private
 ```
 
 ## Quick Start

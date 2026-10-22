@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **`tools/list` is cached for five minutes by default** (#114, **behavior change**): with `subscriptions/listen` served (#110), a listening client's cache is invalidated on every change, so `ttlMs` now defaults to the spec's example (`300000`) instead of `0`. A client that does not listen keeps the list for up to five minutes; `--tools-list-ttl-ms 0` restores refetch-every-time. `cacheScope` remains `private`.
 - **`tools/list` cache hints are configurable** (#83): `--tools-list-ttl-ms` and `--tools-list-cache-scope` set the `ttlMs` / `cacheScope` hints on `tools/list` (SDK v2), which previously could only be passed as adapter kwargs and never were. The default stays `ttlMs: 0` ("never cache") until `notifications/tools/list_changed` is verified on SDK v2 (#107) — caching without a working invalidation would leave clients showing tools that no longer exist. `cacheScope` defaults to `private`, since the served set depends on profile and authorization.
 - **Unknown or disabled tools are protocol errors** (#81, **behavior change** for MCP clients): `tools/call` for a tool that does not exist, or that is currently disabled, now returns JSON-RPC error `-32602` (Invalid params) instead of a `CallToolResult` with `isError: true`. The request itself was invalid, so hosts should not hand it back to the model as a tool result. Tool execution failures keep returning `isError: true` so the model can read the message and adapt. Works on both MCP SDK v1 and v2.
 
