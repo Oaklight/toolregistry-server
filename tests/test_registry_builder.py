@@ -587,27 +587,6 @@ def _error_text(exc: BaseException) -> str:
     return " ".join(parts)
 
 
-def _discovery_skips_disabled_tools() -> bool:
-    """Probe whether the installed core drops disabled tools from discovery.
-
-    Core only started invalidating the search index on disable events in
-    the 0.19 line, so on older cores a profile-filtered tool is still
-    discoverable.  Server CI installs the released core, hence the probe.
-    """
-    from toolregistry.tool import ToolTag
-
-    registry = _tagged_registry({ToolTag.FILE_SYSTEM})
-    registry.enable_tool_discovery()
-    try:
-        registry.disable("fs_tool", reason="probe")
-        result = registry._tool_discovery.discover("read a file", top_k=5)
-        if isinstance(result, dict):  # core < 0.19 shape
-            result = result.get("results", [])
-        return "fs_tool" not in {item["name"] for item in result}
-    finally:
-        registry.disable_tool_discovery()
-
-
 class TestProfileDisableReason:
     """The disable reason is client-visible, so it must stay neutral (#84)."""
 
@@ -688,10 +667,6 @@ class TestProfileDisableReason:
         assert "remote" not in message
         assert "disabled" in message.lower()
 
-    @pytest.mark.skipif(
-        not _discovery_skips_disabled_tools(),
-        reason="needs a core that invalidates the discovery index on disable",
-    )
     def test_profile_disabled_tool_is_not_discoverable(self):
         """A tool the profile disables must not be discoverable (#84)."""
         from toolregistry.tool import ToolTag
@@ -704,8 +679,6 @@ class TestProfileDisableReason:
             apply_profile(registry, "remote")
 
             result = registry._tool_discovery.discover("read a file", top_k=5)
-            if isinstance(result, dict):  # core < 0.19 shape
-                result = result.get("results", [])
             assert "fs_tool" not in {item["name"] for item in result}
         finally:
             registry.disable_tool_discovery()
