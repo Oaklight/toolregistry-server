@@ -1,0 +1,26 @@
+{
+  "generated_by": "zerodep 2026.10.23.1",
+  "lock_version": 1,
+  "modules": {
+    "dotenv": {
+      "files": {
+        "dotenv.py": "fe0a0cc7959c591c921a135ed6fb558590f3bb011eb8636327fa2f2b58fcab0d"
+      },
+      "requested": true,
+      "upstream_hash": "96a25bac569969a26f9ca83869855b6480ca3aae433bd8873ec9f81f57d04a21",
+      "version": "0.3.1"
+    },
+    "structlog": {
+      "files": {
+        "structlog.py": "6340d09bd07480fc691a61a64b323ba8d736c2c8fa5596ae3b455ac3fffc9d93"
+      },
+      "requested": true,
+      "upstream_hash": "d2616b1a69fe42b1367d413888c69dd2026c00e58c36e1e83acda77fd3633ed6",
+      "version": "0.3.0"
+    }
+  },
+  "source": {
+    "ref": "v2026.10.23.1",
+    "repo": "Oaklight/zerodep"
+  }
+}
