@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenAPI requests are validated without pydantic models** (#123, epic #101): `_schema_to_pydantic`, `_resolve_type` and the `__annotations__` patching are gone. Bodies now go through `Tool.validate_parameters()` for signature-derived tools — the same coercion and unknown-key filtering `invoke` applies — and the vendored `jsonschema.schema_validate()` for proxy tools (MCP / OpenAPI / LangChain), which have no `parameters_model`. Both paths surface the existing 422 `{"detail": [...]}` envelope with `loc` / `msg` / `type`, so client-side error handling is unchanged. Bodies that are not JSON objects (arrays, strings, numbers, `null`, form posts) return 422 instead of failing in argument handling.
+- **`/openapi.json` is produced by the `RouteTable` builder** (#124, epic #101): the document is built by `build_openapi_schema(route_table)` instead of FastAPI's `get_openapi()` over the generated pydantic models, so what the app publishes and what the standalone builder emits can no longer drift. Disabled routes are absent by construction.
+
 ## [0.7.0] - 2026-10-23
 
 ### Added
