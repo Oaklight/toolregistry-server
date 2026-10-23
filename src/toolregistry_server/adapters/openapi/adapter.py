@@ -7,169 +7,17 @@ and dynamically creating Pydantic request models and route handlers.
 
 import logging
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from toolregistry import ValidationError
 
-from ...route_table import RouteEntry, RouteTable, normalize_parameters_schema
+from ..._vendor.jsonschema import SchemaValidationError, schema_validate
+from ...route_table import RouteEntry, RouteTable
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import APIRouter, FastAPI
-
-# ---------------------------------------------------------------------------
-# JSON Schema type → Python type mapping
-# ---------------------------------------------------------------------------
-
-_JSON_TYPE_MAP: dict[str, type] = {
-    "string": str,
-    "integer": int,
-    "number": float,
-    "boolean": bool,
-    "array": list,
-    "object": dict,
-}
-
-
-# ---------------------------------------------------------------------------
-# Helper: resolve a single field schema to a Python type
-# ---------------------------------------------------------------------------
-
-
-def _resolve_type(field_schema: dict[str, Any]) -> type:
-    """Resolve a JSON Schema field description to a Python type.
-
-    Handles basic types, ``array`` with ``items``, nested ``object`` with
-    ``properties`` (recursively creates a Pydantic model), ``enum`` via
-    ``Literal``, and falls back to ``Any`` for unknown schemas.
-
-    Args:
-        field_schema: A single-field JSON Schema dict (e.g.
-            ``{"type": "string"}`` or ``{"type": "array", "items": {...}}``).
-
-    Returns:
-        The resolved Python type suitable for use in a Pydantic model field.
-    """
-    # Handle enum → Literal
-    if "enum" in field_schema:
-        from typing import Literal  # noqa: UP035 – needed at runtime
-
-        values = tuple(field_schema["enum"])
-        return Literal[values]  # ty: ignore[invalid-type-form]
-
-    json_type = field_schema.get("type")
-
-    if json_type == "array":
-        items_schema = field_schema.get("items")
-        if items_schema:
-            inner = _resolve_type(items_schema)
-            return list[inner]  # ty: ignore[invalid-type-form]
-        return list
-
-    if json_type == "object" and "properties" in field_schema:
-        # Recursively build a nested Pydantic model
-        return _schema_to_pydantic("NestedModel", field_schema)
-
-    if json_type is not None:
-        return _JSON_TYPE_MAP.get(json_type, Any)
-
-    # anyOf / oneOf patterns (e.g. Optional fields from toolregistry)
-    any_of = field_schema.get("anyOf") or field_schema.get("oneOf")
-    if any_of:
-        non_null = [s for s in any_of if s.get("type") != "null"]
-        if len(non_null) == 1:
-            return _resolve_type(non_null[0])
-
-    return Any
-
-
-# ---------------------------------------------------------------------------
-# JSON Schema → Pydantic model
-# ---------------------------------------------------------------------------
-
-
-def _schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseModel]:
-    """Convert a JSON Schema ``object`` definition into a dynamic Pydantic model.
-
-    When the schema declares ``additionalProperties: true`` (e.g. for
-    proxy tools that accept ``**kwargs``), the generated model is
-    configured with ``extra="allow"`` so that undeclared fields are
-    accepted and included in ``model_dump()``.
-
-    Field names starting with ``_`` are mapped via Pydantic aliases
-    (since Pydantic forbids leading underscores in field names).
-    Use ``model_dump(by_alias=True)`` to recover the original names.
-
-    Args:
-        name: The class name for the generated model.
-        schema: A JSON Schema dict with ``properties`` (and optionally
-            ``required``).
-
-    Returns:
-        A dynamically created :class:`pydantic.BaseModel` subclass whose
-        fields mirror the schema properties.
-    """
-    schema = normalize_parameters_schema(schema)
-    properties: dict[str, Any] = schema["properties"]
-    allow_extra = bool(schema.get("additionalProperties"))
-    has_aliases = False
-
-    config_parts: dict[str, Any] = {}
-    if allow_extra:
-        config_parts["extra"] = "allow"
-
-    if not properties:
-        if config_parts:
-            return create_model(name, __config__=ConfigDict(**config_parts))
-        return create_model(name)
-
-    required_fields: list[str] = schema.get("required", [])
-    field_definitions: dict[str, tuple[type, Any]] = {}
-
-    for field_name, field_schema in properties.items():
-        py_type = _resolve_type(field_schema)
-        description = field_schema.get("description")
-
-        is_required = field_name in required_fields
-        default_value = field_schema.get("default", ... if is_required else None)
-
-        field_kwargs: dict[str, Any] = {}
-        if description:
-            field_kwargs["description"] = description
-
-        # Pydantic forbids field names with leading underscores; use an
-        # alias so the model accepts the original JSON key while storing
-        # the value under a valid Python name.
-        model_field_name = field_name
-        if field_name.startswith("_"):
-            model_field_name = field_name[1:] or f"field_{hash(field_name) % 10000}"
-            field_kwargs["alias"] = field_name
-            has_aliases = True
-
-        if model_field_name in field_definitions:
-            raise ValueError(
-                f"Alias collision: '{field_name}' maps to "
-                f"'{model_field_name}' which already exists"
-            )
-
-        if default_value is ...:
-            field_definitions[model_field_name] = (py_type, Field(**field_kwargs))
-        else:
-            field_definitions[model_field_name] = (
-                py_type,
-                Field(default=default_value, **field_kwargs),
-            )
-
-    if has_aliases:
-        config_parts["populate_by_name"] = True
-
-    kwargs: dict[str, Any] = dict(field_definitions)
-    if config_parts:
-        kwargs["__config__"] = ConfigDict(**config_parts)
-
-    return create_model(name, **kwargs)  # ty: ignore[no-matching-overload]
-
 
 # ---------------------------------------------------------------------------
 # Argument coercion
@@ -192,6 +40,66 @@ def _strip_framework_fields(raw: dict[str, Any], route: RouteEntry) -> dict[str,
         A dict of arguments suitable for passing to the handler.
     """
     return {k: v for k, v in raw.items() if k != "toolcall_reason"}
+
+
+def _validation_details(exc: Exception) -> list[dict[str, Any]]:
+    """Render a validation error as the 422 ``{"detail": [...]}`` envelope."""
+    details: list[dict[str, Any]] = []
+    for err in getattr(exc, "errors", []) or []:
+        path = getattr(err, "path", "") or ""
+        loc = ["body", *(part for part in path.split(".") if part)]
+        details.append(
+            {
+                "loc": loc,
+                "msg": getattr(err, "message", str(err)),
+                "type": getattr(err, "validator", None) or "value_error",
+            }
+        )
+    if not details:
+        details.append({"loc": ["body"], "msg": str(exc), "type": "value_error"})
+    return details
+
+
+def _validate_arguments(route: RouteEntry, raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate a request body and return the arguments for the tool call.
+
+    Signature-derived tools go through ``Tool.validate_parameters`` so the
+    body gets the same coercion and unknown-key filtering the tool applies
+    when called directly. Proxy tools (MCP / OpenAPI / LangChain, which have
+    no ``parameters_model``) are checked against their own JSON Schema.
+
+    Args:
+        route: The route being called.
+        raw: The decoded JSON request body.
+
+    Returns:
+        Arguments to pass to the handler.
+
+    Raises:
+        fastapi.HTTPException: 422 when validation fails.
+    """
+    from fastapi import HTTPException
+
+    payload = _strip_framework_fields(raw, route)
+    tool = route.tool
+    if getattr(tool, "parameters_model", None) is not None:
+        try:
+            return tool.validate_parameters(payload)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422, detail=_validation_details(exc)
+            ) from exc
+
+    try:
+        schema_validate(payload, route.parameters_schema)
+    except SchemaValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_details(exc)) from exc
+
+    schema = route.parameters_schema or {}
+    if not schema.get("additionalProperties"):
+        declared = set((schema.get("properties") or {}).keys())
+        payload = {k: v for k, v in payload.items() if k in declared}
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +155,7 @@ def _add_route_from_entry(
         route_table: The :class:`~toolregistry_server.RouteTable` used for
             runtime enable/disable checks.
     """
-    from fastapi import HTTPException
+    from fastapi import Body, HTTPException
 
     def _wrap_tool_error(tname: str, e: Exception) -> HTTPException:
         """Convert an unhandled tool exception into a structured HTTP 500."""
@@ -256,12 +164,15 @@ def _add_route_from_entry(
             detail=f"Tool '{tname}' execution failed: {e}",
         )
 
-    # Determine request model from parameters schema
-    model_name = f"{route.tool_name.replace('-', '_').title().replace('_', '')}Request"
-    request_model = _schema_to_pydantic(model_name, route.parameters_schema)
-
     summary = (route.description or "")[:120]
-    extensions = _openapi_extensions(route)
+    extensions = _openapi_extensions(route) or {}
+    # FastAPI no longer derives the request schema from a Pydantic model;
+    # publish the tool's own JSON Schema so /openapi.json keeps describing
+    # the body exactly as the tool declares it.
+    extensions["requestBody"] = {
+        "required": True,
+        "content": {"application/json": {"schema": route.parameters_schema}},
+    }
     # Use the top-level segment of the namespace as the tag for grouping
     # e.g. "web/brave_search" → tag "web", "calculator" → tag "calculator"
     namespace = route.namespace
@@ -273,27 +184,24 @@ def _add_route_from_entry(
     tool_name = route.tool_name
     handler = route.handler
 
-    # Use factory functions to capture route, RequestModel, route_table, and
-    # tool_name per iteration via closure.
+    # Use factory functions to capture the handler, route_table, and tool_name
+    # per iteration via closure.
 
     if route.is_async:
 
         def _make_async_endpoint(
             h: Any = handler,
-            model: type[BaseModel] = request_model,
             rt: RouteTable = route_table,
             tname: str = tool_name,
         ):
-            async def _endpoint(data: Any) -> Any:
+            async def _endpoint(data: Annotated[Any, Body()]) -> Any:
                 current_route = rt.get_route(tname)
                 if current_route is None or not current_route.enabled:
                     raise HTTPException(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _strip_framework_fields(
-                    data.model_dump(by_alias=True), current_route
-                )
+                arguments = _validate_arguments(current_route, data)
                 try:
                     return await h(**arguments)
                 except HTTPException:
@@ -301,8 +209,6 @@ def _add_route_from_entry(
                 except Exception as e:
                     raise _wrap_tool_error(tname, e) from e
 
-            # Patch annotations so FastAPI/Pydantic sees the concrete model
-            _endpoint.__annotations__["data"] = model
             return _endpoint
 
         router.add_api_route(
@@ -318,20 +224,17 @@ def _add_route_from_entry(
 
         def _make_sync_endpoint(
             h: Any = handler,
-            model: type[BaseModel] = request_model,
             rt: RouteTable = route_table,
             tname: str = tool_name,
         ):
-            def _endpoint(data: Any) -> Any:
+            def _endpoint(data: Annotated[Any, Body()]) -> Any:
                 current_route = rt.get_route(tname)
                 if current_route is None or not current_route.enabled:
                     raise HTTPException(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _strip_framework_fields(
-                    data.model_dump(by_alias=True), current_route
-                )
+                arguments = _validate_arguments(current_route, data)
                 try:
                     return h(**arguments)
                 except HTTPException:
@@ -339,8 +242,6 @@ def _add_route_from_entry(
                 except Exception as e:
                     raise _wrap_tool_error(tname, e) from e
 
-            # Patch annotations so FastAPI/Pydantic sees the concrete model
-            _endpoint.__annotations__["data"] = model
             return _endpoint
 
         router.add_api_route(
