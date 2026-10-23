@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-23
+
 ### Added
 
 - **A FastAPI-free OpenAPI document builder**: `toolregistry_server.adapters.openapi.spec.build_openapi_schema(route_table)` returns the OpenAPI 3.1 document straight from the `RouteTable`, emitting one `POST` per enabled route with the same `operationId`, `summary` (description truncated at 120 characters), namespace tag, inlined parameter schema, `x-*` execution-hint extensions and the `/tools` + `/events` meta operations as the FastAPI app publishes. Disabled routes are simply absent, so no post-filtering step is needed. Each operation also carries its response contract — `200` with the tool's declared `outputSchema` (or an empty schema) and `422` with the inlined `{"detail": [...]}` validation envelope — and `security_schemes` / `security` arguments emit `components.securitySchemes` and the document-level requirement, so bearer auth survives the port. This is the spec half of removing FastAPI from the adapter (epic #101); the app still serves `/openapi.json` through FastAPI until the port lands. The parity test resolves FastAPI's `$ref`s, drops pydantic `title` keys, and compares request and response bodies path by path.
@@ -18,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Core floor is `toolregistry>=0.19.0` and the discovery/profile regression test is enforced** (#115): the server now requires the core line that invalidates the discovery index on disable events, so `apply_profile()` can no longer leave a disabled tool discoverable. The test no longer probes the installed core and skips on older releases; it runs unconditionally.
 - **`tools/list` is cached for five minutes by default** (#114, **behavior change**): with `subscriptions/listen` served (#110), a listening client's cache is invalidated on every change, so `ttlMs` now defaults to the spec's example (`300000`) instead of `0`. A client that does not listen keeps the list for up to five minutes; `--tools-list-ttl-ms 0` restores refetch-every-time. `cacheScope` remains `private`.
 - **`tools/list` cache hints are configurable** (#83): `--tools-list-ttl-ms` and `--tools-list-cache-scope` set the `ttlMs` / `cacheScope` hints on `tools/list` (SDK v2), which previously could only be passed as adapter kwargs and never were. The default stays `ttlMs: 0` ("never cache") until `notifications/tools/list_changed` is verified on SDK v2 (#107) — caching without a working invalidation would leave clients showing tools that no longer exist. `cacheScope` defaults to `private`, since the served set depends on profile and authorization.
 - **Unknown or disabled tools are protocol errors** (#81, **behavior change** for MCP clients): `tools/call` for a tool that does not exist, or that is currently disabled, now returns JSON-RPC error `-32602` (Invalid params) instead of a `CallToolResult` with `isError: true`. The request itself was invalid, so hosts should not hand it back to the model as a tool result. Tool execution failures keep returning `isError: true` so the model can read the message and adapt. Works on both MCP SDK v1 and v2.
