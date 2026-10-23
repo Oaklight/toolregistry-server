@@ -216,6 +216,12 @@ class TestResultEncoding:
         expected = json.dumps(value, cls=ToolResultJSONEncoder)
         assert json.loads(body) == json.loads(expected)
 
+    def test_body_is_compact_like_fastapi(self):
+        """Byte-level parity: FastAPI's JSONResponse uses compact separators."""
+        status, body = _serve_result(Point(1, 2))
+        assert status == 200
+        assert body == b'{"x":1,"y":2}'
+
     def test_bytes_are_base64_encoded(self):
         """Core's deliberate choice: bytes become base64, not UTF-8 text."""
         status, body = _serve_result(b"hi")

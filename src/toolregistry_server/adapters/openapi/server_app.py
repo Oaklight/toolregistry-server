@@ -110,7 +110,14 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
             return _error(500, f"Tool '{tool_name}' execution failed: {exc}")
 
         try:
-            body = json.dumps(result, cls=ToolResultJSONEncoder)
+            # Compact separators and no ASCII escaping match FastAPI's
+            # JSONResponse byte for byte.
+            body = json.dumps(
+                result,
+                cls=ToolResultJSONEncoder,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         except TypeError as exc:  # unserialisable tool result
             return _error(500, f"Tool '{tool_name}' result is not serialisable: {exc}")
         return Response(body, content_type="application/json; charset=utf-8")
