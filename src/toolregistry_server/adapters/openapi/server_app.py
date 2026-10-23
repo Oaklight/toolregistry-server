@@ -28,12 +28,13 @@ Example:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+from toolregistry.utils import ToolResultJSONEncoder
 
 from ..._vendor.httpserver import App, JSONResponse, Response, StreamingResponse
 from ..._vendor.structlog import get_logger
@@ -86,8 +87,8 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
                 422,
                 [
                     {
-                        "loc": ["body"],
-                        "msg": "Input should be a valid JSON document",
+                        "loc": ["body", 1],
+                        "msg": "JSON decode error",
                         "type": "json_invalid",
                     }
                 ],
@@ -108,16 +109,13 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
         except Exception as exc:
             return _error(500, f"Tool '{tool_name}' execution failed: {exc}")
 
-        return JSONResponse(_jsonable(result))
+        try:
+            body = json.dumps(result, cls=ToolResultJSONEncoder)
+        except TypeError as exc:  # unserialisable tool result
+            return _error(500, f"Tool '{tool_name}' result is not serialisable: {exc}")
+        return Response(body, content_type="application/json; charset=utf-8")
 
     return _handler
-
-
-def _jsonable(value: Any) -> Any:
-    """Round-trip through the configured encoder, falling back to ``str``."""
-    if value is None or isinstance(value, (bool, int, float, str, list, dict)):
-        return value
-    return json.loads(json.dumps(value, default=str))
 
 
 def _add_tools_route(app: App, route_table: RouteTable) -> None:
@@ -139,13 +137,13 @@ def _add_openapi_route(
 
     @app.get("/openapi.json")
     async def _schema(request) -> Response:
+        etag = route_table.etag
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
         document = build_openapi_schema(
             route_table, title=title, version=version, description=description
         )
-        return JSONResponse(
-            document,
-            headers={"Cache-Control": "no-store"},
-        )
+        return JSONResponse(document, headers={"ETag": etag})
 
 
 def _add_docs_route(app: App, title: str) -> None:
@@ -196,6 +194,7 @@ def _add_events_route(app: App, route_table: RouteTable) -> None:
                 subscribers.discard((queue, loop))
 
     route_table.add_listener(_on_change)
+    app.on_shutdown(lambda: route_table.remove_listener(_on_change))
 
     async def _generate(
         queue: asyncio.Queue[str], loop: asyncio.AbstractEventLoop
@@ -231,22 +230,44 @@ def _add_auth(app: App, tokens: Sequence[str]) -> None:
     async def _require_token(request) -> Response | None:
         header = request.headers.get("authorization", "")
         scheme, _, credential = header.partition(" ")
-        if scheme.lower() != "bearer" or credential not in tokens:
-            return _error(401, "Invalid or missing bearer token")
-        return None
+        if scheme.lower() != "bearer" or not credential:
+            response = _error(401, "Not authenticated")
+        elif credential not in tokens:
+            response = _error(401, "Invalid authentication token")
+        else:
+            return None
+        response.headers["WWW-Authenticate"] = "Bearer"
+        return response
 
 
-def _add_etag(app: App) -> None:
-    """Attach a content hash to successful JSON responses."""
+_ETAG_PATHS = frozenset({"/tools", "/openapi.json"})
+
+
+def _add_etag(app: App, route_table: RouteTable) -> None:
+    """Tenant the ETag on the two cacheable GETs, as the FastAPI middleware did."""
 
     @app.after_request
     async def _etag(request, response):
-        if not isinstance(response, Response):
-            return response  # streaming bodies have no fixed content to hash
-        if response.status_code == 200 and "ETag" not in response.headers:
-            digest = hashlib.sha256(response.body).hexdigest()[:32]
-            response.headers["ETag"] = f'"{digest}"'
+        if (
+            request.method == "GET"
+            and request.path in _ETAG_PATHS
+            and response.status_code == 200
+            and "ETag" not in response.headers
+        ):
+            response.headers["ETag"] = route_table.etag
         return response
+
+
+def _add_framework_errors(app: App) -> None:
+    """Answer unmatched routes and methods with FastAPI's envelope."""
+
+    @app.errorhandler(404)
+    async def _not_found(request, exc):
+        return _error(404, "Not Found")
+
+    @app.errorhandler(405)
+    async def _not_allowed(request, exc):
+        return _error(405, "Method Not Allowed")
 
 
 def create_httpserver_app(
@@ -284,9 +305,10 @@ def create_httpserver_app(
     _add_openapi_route(app, route_table, title, version, description)
     _add_docs_route(app, title)
     _add_events_route(app, route_table)
+    _add_framework_errors(app)
 
     if enable_etag:
-        _add_etag(app)
+        _add_etag(app, route_table)
     if tokens:
         _add_auth(app, tokens)
         logger.info(f"Authentication enabled with {len(tokens)} token(s)")
