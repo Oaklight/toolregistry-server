@@ -60,7 +60,7 @@ def _validation_details(exc: Exception) -> list[dict[str, Any]]:
     return details
 
 
-def _validate_arguments(route: RouteEntry, raw: dict[str, Any]) -> dict[str, Any]:
+def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
     """Validate a request body and return the arguments for the tool call.
 
     Signature-derived tools go through ``Tool.validate_parameters`` so the
@@ -70,7 +70,8 @@ def _validate_arguments(route: RouteEntry, raw: dict[str, Any]) -> dict[str, Any
 
     Args:
         route: The route being called.
-        raw: The decoded JSON request body.
+        raw: The decoded JSON request body. Tool arguments are named, so
+            anything other than a JSON object is rejected.
 
     Returns:
         Arguments to pass to the handler.
@@ -79,6 +80,22 @@ def _validate_arguments(route: RouteEntry, raw: dict[str, Any]) -> dict[str, Any
         fastapi.HTTPException: 422 when validation fails.
     """
     from fastapi import HTTPException
+
+    if not isinstance(raw, dict):
+        # The endpoints accept ``Annotated[Any, Body()]``, so FastAPI no
+        # longer constrains the body to an object. Reject scalars, arrays
+        # and null here instead of failing later inside ``.items()``.
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {
+                    "loc": ["body"],
+                    "msg": "Input should be a valid dictionary or object "
+                    "to extract fields from",
+                    "type": "model_attributes_type",
+                }
+            ],
+        )
 
     payload = _strip_framework_fields(raw, route)
     tool = route.tool

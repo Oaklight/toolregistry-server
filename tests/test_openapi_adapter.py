@@ -94,6 +94,20 @@ class TestValidateArguments:
             _validate_arguments(route, {})
         assert excinfo.value.status_code == 422
 
+    @pytest.mark.parametrize("body", [[], "str", 123, None, True])
+    def test_non_object_body_is_a_422(self, route_table, body):
+        """Scalars, arrays and null are rejected, not crashed on."""
+        from fastapi import HTTPException
+
+        route = route_table.get_route("add")
+        with pytest.raises(HTTPException) as excinfo:
+            _validate_arguments(route, body)
+        assert excinfo.value.status_code == 422
+        detail = excinfo.value.detail
+        assert isinstance(detail, list) and detail
+        assert detail[0]["loc"] == ["body"]
+        assert detail[0]["type"] == "model_attributes_type"
+
 
 # ============== Router Generation Tests ==============
 # ============== Router Generation Tests ==============
@@ -166,6 +180,26 @@ class TestOpenAPIIntegration:
         )
         assert response.status_code == 200
         assert response.json() == 5
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"json": []},
+            {"json": "str"},
+            {"json": 123},
+            {"data": {"a": 1}},
+        ],
+        ids=["array", "string", "number", "form"],
+    )
+    def test_non_object_body_returns_422_not_500(self, route_table: RouteTable, kwargs):
+        """Malformed bodies are client errors, never internal server errors."""
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_openapi_app(route_table))
+        response = client.post("/tools/default/add", **kwargs)
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail[0]["loc"] == ["body"]
 
     def test_async_endpoint(self, route_table: RouteTable):
         """Test calling an async endpoint."""
