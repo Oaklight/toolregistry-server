@@ -1,12 +1,11 @@
 """Build an OpenAPI document from a RouteTable without FastAPI.
 
-The FastAPI-based adapter derives ``/openapi.json`` from the routers it
-registers, which ties the document to the framework and forces the
-workarounds that adapter carries (``get_openapi`` plus an uncached
+The served ``/openapi.json`` used to be derived from the FastAPI routers,
+which tied the document to the framework: ``get_openapi`` plus an uncached
 ``app.openapi`` monkeypatch, and ``_filter_disabled_paths`` to remove
-disabled tools after the fact).  :class:`~toolregistry_server.RouteTable`
-already owns the contract, so the document can be built directly from it:
-disabled routes are simply not emitted.
+disabled tools after the fact.  :class:`~toolregistry_server.RouteTable`
+already owns the contract, so the document is built directly from it —
+disabled routes are simply not emitted — and the adapter serves the result.
 
 The builder emits one ``POST`` operation per enabled route, with the same
 identity the FastAPI adapter produced:
