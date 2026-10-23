@@ -7,8 +7,7 @@ from toolregistry.tool import Tool, ToolMetadata
 from toolregistry_server import RouteTable
 from toolregistry_server.adapters.openapi import create_openapi_app
 from toolregistry_server.adapters.openapi.adapter import (
-    _resolve_type,
-    _schema_to_pydantic,
+    _validate_arguments,
     add_tools_endpoint,
     route_table_to_router,
     setup_dynamic_openapi,
@@ -47,175 +46,56 @@ def route_table(registry: ToolRegistry) -> RouteTable:
     return RouteTable(registry)
 
 
-# ============== Type Resolution Tests ==============
+# ============== Request Validation Tests ==============
 
 
-class TestResolveType:
-    """Tests for _resolve_type function."""
+class TestValidateArguments:
+    """Bodies are validated against the tool's own schema, not a model."""
 
-    def test_string_type(self):
-        """Test resolving string type."""
-        result = _resolve_type({"type": "string"})
-        assert result is str
+    def test_signature_tool_coerces_and_drops_unknown_keys(self, route_table):
+        route = route_table.get_route("add")
+        args = _validate_arguments(route, {"a": "2", "b": 3, "extra": True})
+        assert args == {"a": 2, "b": 3}
 
-    def test_integer_type(self):
-        """Test resolving integer type."""
-        result = _resolve_type({"type": "integer"})
-        assert result is int
+    def test_signature_tool_rejects_a_bad_value(self, route_table):
+        from fastapi import HTTPException
 
-    def test_number_type(self):
-        """Test resolving number type."""
-        result = _resolve_type({"type": "number"})
-        assert result is float
+        route = route_table.get_route("add")
+        with pytest.raises(HTTPException) as excinfo:
+            _validate_arguments(route, {"a": "not-a-number", "b": 1})
+        assert excinfo.value.status_code == 422
+        detail = excinfo.value.detail
+        assert isinstance(detail, list) and detail
+        assert detail[0]["loc"][0] == "body"
 
-    def test_boolean_type(self):
-        """Test resolving boolean type."""
-        result = _resolve_type({"type": "boolean"})
-        assert result is bool
+    def test_proxy_tool_uses_json_schema(self, route_table):
+        from fastapi import HTTPException
+        from toolregistry.tool import Tool
 
-    def test_array_type_simple(self):
-        """Test resolving simple array type."""
-        result = _resolve_type({"type": "array"})
-        assert result is list
+        def proxy(**kwargs):
+            return kwargs
 
-    def test_array_type_with_items(self):
-        """Test resolving array type with items."""
-        result = _resolve_type({"type": "array", "items": {"type": "string"}})
-        assert result == list[str]
-
-    def test_enum_type(self):
-        """Test resolving enum type to Literal."""
-        from typing import get_args
-
-        result = _resolve_type({"enum": ["a", "b", "c"]})
-        # Check it's a Literal type with correct values
-        assert get_args(result) == ("a", "b", "c")
-
-    def test_anyof_optional(self):
-        """Test resolving anyOf with null (Optional pattern)."""
-        result = _resolve_type({"anyOf": [{"type": "string"}, {"type": "null"}]})
-        assert result is str
-
-
-class TestSchemaToPydantic:
-    """Tests for _schema_to_pydantic function."""
-
-    def test_empty_schema(self):
-        """Test creating model from empty schema."""
-        from pydantic import BaseModel
-
-        model = _schema_to_pydantic("EmptyModel", {})
-        assert issubclass(model, BaseModel)
-
-    def test_simple_schema(self):
-        """Test creating model from simple schema."""
-        schema = {
-            "properties": {
-                "name": {"type": "string", "description": "The name"},
-                "age": {"type": "integer"},
+        tool = Tool(
+            name="proxy",
+            description="proxy tool",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
             },
-            "required": ["name"],
-        }
-        model = _schema_to_pydantic("PersonModel", schema)
+            callable=proxy,
+        )
+        route_table._registry.register(tool)  # noqa: SLF001 - test fixture
+        route_table.refresh_all()
+        route = route_table.get_route("proxy")
 
-        # Check fields exist
-        assert "name" in model.model_fields
-        assert "age" in model.model_fields
-
-        # Check required field
-        assert model.model_fields["name"].is_required()
-        assert not model.model_fields["age"].is_required()
-
-    def test_schema_with_defaults(self):
-        """Test creating model with default values."""
-        schema = {
-            "properties": {
-                "count": {"type": "integer", "default": 10},
-            },
-        }
-        model = _schema_to_pydantic("CountModel", schema)
-
-        # Create instance without providing count
-        instance = model()
-        assert instance.count == 10  # ty: ignore[unresolved-attribute]
-
-    def test_non_object_schema_creates_empty_model(self):
-        """Invalid parameter schemas should not break request model generation."""
-        model = _schema_to_pydantic("BadModel", {"type": "string"})
-        assert model.model_fields == {}
-
-    def test_additional_properties_allows_extra_fields(self):
-        """Schema with additionalProperties: true produces a model accepting extra fields."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "_target_tool": {"type": "string"},
-            },
-            "required": ["_target_tool"],
-            "additionalProperties": True,
-        }
-        model = _schema_to_pydantic("ProxyModel", schema)
-        instance = model(**{"_target_tool": "search", "query": "hello", "limit": 10})
-        dumped = instance.model_dump(by_alias=True)
-        assert dumped["_target_tool"] == "search"
-        assert dumped["query"] == "hello"
-        assert dumped["limit"] == 10
-
-    def test_additional_properties_empty_schema(self):
-        """Empty schema with additionalProperties: true accepts arbitrary fields."""
-        schema = {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": True,
-        }
-        model = _schema_to_pydantic("OpenModel", schema)
-        instance = model(foo="bar", baz=42)
-        dumped = instance.model_dump()
-        assert dumped["foo"] == "bar"
-        assert dumped["baz"] == 42
-
-    def test_no_additional_properties_ignores_extra_fields(self):
-        """Schema without additionalProperties ignores extra fields."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-            },
-            "required": ["name"],
-        }
-        model = _schema_to_pydantic("StrictModel", schema)
-        instance = model(name="test", unexpected="field")
-        dumped = instance.model_dump()
-        assert dumped["name"] == "test"
-        assert "unexpected" not in dumped
-
-    def test_underscore_alias_collision_raises(self):
-        """Collision between _foo and foo in properties raises ValueError."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "target": {"type": "string"},
-                "_target": {"type": "string"},
-            },
-            "required": ["target", "_target"],
-        }
-        with pytest.raises(ValueError, match="Alias collision"):
-            _schema_to_pydantic("CollisionModel", schema)
-
-    def test_underscore_alias_collision_reverse_order(self):
-        """Collision detected regardless of iteration order."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "_target": {"type": "string"},
-                "target": {"type": "string"},
-            },
-            "required": ["_target", "target"],
-        }
-        with pytest.raises(ValueError, match="Alias collision"):
-            _schema_to_pydantic("CollisionReverseModel", schema)
+        assert _validate_arguments(route, {"q": "ok", "junk": 1}) == {"q": "ok"}
+        with pytest.raises(HTTPException) as excinfo:
+            _validate_arguments(route, {})
+        assert excinfo.value.status_code == 422
 
 
+# ============== Router Generation Tests ==============
 # ============== Router Generation Tests ==============
 
 
