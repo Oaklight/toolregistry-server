@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [0.7.0] - 2026-10-23
+
 ### 新增
 
 - **不依赖 FastAPI 的 OpenAPI 文档构建器**：`toolregistry_server.adapters.openapi.spec.build_openapi_schema(route_table)` 直接从 `RouteTable` 生成 OpenAPI 3.1 文档，为每个启用路由输出一个 `POST` operation，其 `operationId`、`summary`（描述截断到 120 字符）、命名空间标签、内联参数 schema、`x-*` 执行提示扩展，以及 `/tools` 与 `/events` 两个 meta operation 均与 FastAPI 应用发布的一致。被禁用的路由直接不出现，因此无需事后再过滤。每个 operation 还包含响应契约——`200` 携带工具声明的 `outputSchema`（未声明时为空 schema），`422` 内联 `{"detail": [...]}` 校验错误结构——并可通过 `security_schemes` / `security` 参数输出 `components.securitySchemes` 与文档级的鉴权要求，使 Bearer 鉴权在移植后依然被描述。这是从适配器中移除 FastAPI 的文档生成部分（epic #101）；在移植完成前 `/openapi.json` 仍由 FastAPI 提供。逐路径比对的测试会解析 FastAPI 的 `$ref`、去掉 pydantic 的 `title` 键，并比较请求体与响应体。
@@ -18,6 +20,7 @@
 
 ### 变更
 
+- **核心依赖下限提升到 `toolregistry>=0.19.0`，discovery/profile 回归测试转为强制执行** (#115)：服务端现在要求会在禁用事件时使发现索引失效的那条 core 版本线，因此 `apply_profile()` 之后不会再留下仍可被发现的已禁用工具。测试不再探测已安装的 core 版本、也不再在旧版本上跳过，而是无条件运行。
 - **`tools/list` 默认缓存五分钟**（#114，**行为变更**）：服务器已提供 `subscriptions/listen`（#110），监听变更的客户端会在每次变更时使缓存失效，因此 `ttlMs` 默认值改为规范示例中的 `300000`，而不再是 `0`。不监听变更的客户端会在最多五分钟内使用缓存列表；`--tools-list-ttl-ms 0` 可恢复为每次重新获取。`cacheScope` 仍为 `private`。
 - **`tools/list` 缓存提示可配置**（#83）：新增的 `--tools-list-ttl-ms` 与 `--tools-list-cache-scope` 用于设置 `tools/list`（SDK v2）的 `ttlMs` / `cacheScope` 提示，此前只能通过适配器参数传入且从未有人传过。默认仍为 `ttlMs: 0`（「永不缓存」），直到 `notifications/tools/list_changed` 在 SDK v2 上得到验证（#107）——在失效通知不可用时启用缓存，会让客户端在缓存期内一直显示已不存在的工具。`cacheScope` 默认为 `private`，因为实际提供的工具集合取决于 profile 与授权。
 - **未知或已禁用的工具属于协议错误**（#81，对 MCP 客户端而言是**行为变更**）：当 `tools/call` 调用的工具不存在或当前处于禁用状态时，现在返回 JSON-RPC 错误 `-32602`（Invalid params），而不再是带 `isError: true` 的 `CallToolResult`。此时请求本身无效，宿主不应把它当作工具结果回传给模型。工具执行失败仍返回 `isError: true`，以便模型读取错误信息并调整做法。该行为在 MCP SDK v1 与 v2 上一致。
