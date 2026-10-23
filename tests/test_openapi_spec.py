@@ -298,13 +298,21 @@ class TestParityWithFastAPI:
     """The builder must describe the same API FastAPI published."""
 
     def test_paths_and_operation_identity_match(self, route_table: RouteTable):
-        fastapi = pytest.importorskip("fastapi")
-        assert fastapi  # imported for the side effect of skipping
-        from fastapi.testclient import TestClient
+        pytest.importorskip("fastapi")
+        from fastapi.openapi.utils import get_openapi
 
         from toolregistry_server.adapters.openapi import create_openapi_app
 
-        legacy = TestClient(create_openapi_app(route_table)).get("/openapi.json").json()
+        # The served document now comes from this builder, so compare it with
+        # FastAPI's own generation over the same routes instead of the app's
+        # /openapi.json (which would be the builder output on both sides).
+        app = create_openapi_app(route_table)
+        legacy = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
         document = build_openapi_schema(route_table)
 
         components = legacy.get("components", {}).get("schemas", {})

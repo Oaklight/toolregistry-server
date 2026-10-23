@@ -477,83 +477,28 @@ def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _filter_disabled_paths(
-    paths: dict[str, Any],
-    disabled_operation_ids: set[str],
-) -> dict[str, Any]:
-    """Remove operations for disabled tools from the OpenAPI paths dict.
-
-    Iterates over all path items and their HTTP methods, dropping any
-    operation whose ``operationId`` appears in *disabled_operation_ids*.
-    Path items that become empty after filtering are omitted entirely.
-
-    Args:
-        paths: The ``paths`` section of an OpenAPI schema.
-        disabled_operation_ids: Set of operation IDs to exclude.
-
-    Returns:
-        A new paths dict with disabled operations removed.
-    """
-    filtered_paths: dict[str, Any] = {}
-    for path, path_item in paths.items():
-        filtered_methods: dict[str, Any] = {}
-        for method, operation in path_item.items():
-            if isinstance(operation, dict):
-                op_id = operation.get("operationId", "")
-                if op_id not in disabled_operation_ids:
-                    filtered_methods[method] = operation
-            else:
-                filtered_methods[method] = operation
-        if filtered_methods:
-            filtered_paths[path] = filtered_methods
-    return filtered_paths
-
-
 def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
-    """Configure dynamic OpenAPI schema generation that filters out disabled tools.
+    """Serve ``/openapi.json`` from the RouteTable itself.
 
-    This replaces FastAPI's default cached OpenAPI schema with a dynamic one
-    that checks tool enable/disable status on every request to ``/openapi.json``.
-    Disabled tools are excluded from the schema so they do not appear in
-    ``/docs`` or ``/openapi.json``, and re-enabling them makes them visible
-    again immediately.
+    The document is built by
+    :func:`~toolregistry_server.adapters.openapi.spec.build_openapi_schema`,
+    so disabled tools are absent by construction and no post-filtering or
+    ``get_openapi`` monkeypatching is needed. Nothing is cached: the schema
+    is regenerated on every request, which is what makes enable/disable
+    show up immediately.
 
     Args:
         app: The FastAPI application instance.
-        route_table: The route table used for enable/disable status checks.
+        route_table: The route table to describe.
     """
-    try:
-        from fastapi.openapi.utils import get_openapi
-    except ImportError as e:
-        raise ImportError(
-            "FastAPI is required for OpenAPI support. "
-            "Install with: pip install toolregistry-server[openapi]"
-        ) from e
+    from .spec import build_openapi_schema
 
     def custom_openapi() -> dict[str, Any]:
-        # Generate a fresh OpenAPI schema on every call (no caching)
-        # so it always reflects the current enable/disable state.
-        openapi_schema = get_openapi(
+        return build_openapi_schema(
+            route_table,
             title=app.title,
             version=app.version,
             description=app.description,
-            routes=app.routes,
         )
-
-        # Collect operation_ids of disabled tools
-        disabled_operation_ids: set[str] = set()
-        for route in route_table.list_routes(enabled_only=False):
-            if not route.enabled:
-                disabled_operation_ids.add(route.tool_name)
-
-        # Filter out paths whose operations correspond to disabled tools
-        if disabled_operation_ids and "paths" in openapi_schema:
-            openapi_schema["paths"] = _filter_disabled_paths(
-                openapi_schema["paths"], disabled_operation_ids
-            )
-
-        # Do NOT cache (app.openapi_schema is not set) so the schema
-        # is regenerated on every request, reflecting runtime changes.
-        return openapi_schema
 
     app.openapi = custom_openapi  # ty: ignore[invalid-assignment]
