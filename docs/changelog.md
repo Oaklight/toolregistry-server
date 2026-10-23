@@ -6,6 +6,8 @@
 
 ## [未发布]
 
+## [0.7.1] - 2026-10-23
+
 ### 变更
 
 - **OpenAPI 请求校验不再依赖 pydantic 模型**（#123，epic #101）：`_schema_to_pydantic`、`_resolve_type` 以及 `__annotations__` 的修补全部移除。请求体现在改走两条路径：由函数签名生成的工具直接调用 `Tool.validate_parameters()`——与 `invoke` 相同的类型转换与未声明键过滤；代理工具（MCP / OpenAPI / LangChain，没有 `parameters_model`）则使用内联的 `jsonschema.schema_validate()`。两者都沿用既有的 422 `{"detail": [...]}` 结构（含 `loc` / `msg` / `type`），客户端错误处理无需改动。非 JSON 对象（数组、字符串、数字、`null`、表单提交）现在返回 422，而不是在参数处理阶段失败。
