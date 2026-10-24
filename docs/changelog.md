@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **A zero-dependency HTTP backend for the OpenAPI adapter** (#127, #128, epic #101): `--backend httpserver` (or `OpenAPIAdapter(..., backend="httpserver")`) serves the same wire contract on the vendored `httpserver` — tool routes, `/tools` and `/openapi.json` with ETag/`304`, `/docs`, and `/events` over SSE — with no FastAPI or uvicorn installed. `fastapi` stays the default; `--reload` is reported as unsupported on the new backend. Results are serialised with core's `ToolResultJSONEncoder`, so dataclasses, pydantic models, sets, datetimes and nested containers keep the JSON shapes the FastAPI path produced; `bytes` stays base64 by design.
+- **A differential parity suite between the two backends** (#129): both apps are served over sockets and the same request matrix is sent to each, asserting identical status, `ETag` and body bytes for tool calls, error envelopes, conditional GETs, 404/405, the disabled-tool 503 and the three auth cases.
+
 ## [0.7.1] - 2026-10-23
 
 ### Changed
