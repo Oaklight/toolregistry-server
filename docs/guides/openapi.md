@@ -132,6 +132,28 @@ curl -N http://localhost:8000/events
 
 当工具被注册、注销、启用或禁用时会发出事件。每个事件以 JSON 格式包含工具名称和事件类型。
 
+## HTTP 后端
+
+适配器可以在两种后端上提供服务，两者的线上契约完全一致：
+
+| 后端 | 服务器 | 第三方依赖 |
+|---|---|---|
+| `fastapi`（默认） | uvicorn | FastAPI、uvicorn 及其依赖 |
+| `httpserver` | 内联的 `httpserver` | 无 |
+
+```bash
+toolregistry-server openapi --config tools.yaml --backend httpserver
+```
+
+```python
+OpenAPIAdapter(route_table, backend="httpserver")
+App().serve_openapi(config_path="tools.yaml", backend="httpserver")
+```
+
+`httpserver` 是 epic #101 的零依赖路径：路由、422 `{"detail": [...]}` 结构、`/tools` 与 `/openapi.json` 上的 ETag/`304` 行为、以及 `/events` 的 Server-Sent Events 流都一致。有一组差分测试同时启动两个实现并通过真实 socket 断言状态码、`ETag` 与响应体字节完全相同。`--reload` 是 uvicorn 的特性，在 `httpserver` 后端上只会记录一条告警并被忽略。
+
+有一处刻意的差异：工具返回 `bytes` 时，`httpserver` 后端按 core 编码器做 base64，而 FastAPI 按 UTF-8 文本解码。
+
 ## 认证
 
 通过 token 文件或 `API_BEARER_TOKEN` 环境变量设置 Bearer 认证：
