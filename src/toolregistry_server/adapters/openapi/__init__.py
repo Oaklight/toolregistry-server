@@ -169,6 +169,9 @@ class OpenAPIAdapter(Adapter):
                 f"Unknown OpenAPI backend {backend!r}; choose from {_BACKENDS}"
             )
         self._backend = backend
+        # Two backends produce different app types; the annotation keeps
+        # type checkers from narrowing run() to a union of both.
+        self._app: Any = None
 
         if backend == "httpserver":
             from .server_app import create_httpserver_app
