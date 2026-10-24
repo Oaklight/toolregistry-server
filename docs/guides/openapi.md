@@ -132,6 +132,28 @@ curl -N http://localhost:8000/events
 
 Events are emitted when tools are registered, unregistered, enabled, or disabled. Each event contains the tool name and event type as JSON.
 
+## HTTP Backends
+
+The adapter can serve on either of two backends with the same wire contract:
+
+| Backend | Server | Third-party packages |
+|---|---|---|
+| `fastapi` (default) | uvicorn | FastAPI, uvicorn and their dependencies |
+| `httpserver` | vendored `httpserver` | none |
+
+```bash
+toolregistry-server openapi --config tools.yaml --backend httpserver
+```
+
+```python
+OpenAPIAdapter(route_table, backend="httpserver")
+App().serve_openapi(config_path="tools.yaml", backend="httpserver")
+```
+
+`httpserver` is the zero-dependency path from epic #101. It serves the same routes, the same 422 `{"detail": [...]}` envelope, the same ETag/`304` behaviour on `/tools` and `/openapi.json`, and streams `/events` over Server-Sent Events; a differential test suite exercises both apps over sockets and asserts identical status, `ETag` and body bytes. `--reload` is a uvicorn feature: on `httpserver` it logs a warning and is ignored.
+
+One deliberate difference: a tool that returns `bytes` is base64-encoded by the `httpserver` backend (core's encoder), while FastAPI decodes it as UTF-8 text.
+
 ## Authentication
 
 Pass Bearer tokens via a file or `API_BEARER_TOKEN` env var:
