@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 from toolregistry.utils import ToolResultJSONEncoder
 
-from ..._vendor.httpserver import App, JSONResponse, Response, StreamingResponse
+from ..._vendor.httpserver import App, Response, StreamingResponse
 from ..._vendor.structlog import get_logger
 from .adapter import _validate_arguments
 
@@ -48,9 +48,21 @@ if TYPE_CHECKING:
 logger = get_logger()
 
 
-def _error(status: int, detail: Any) -> JSONResponse:
+def _json_response(data: Any, status: int = 200, headers: dict | None = None):
+    """Serialize *data* the way FastAPI's ``JSONResponse`` does."""
+    return Response(
+        json.dumps(
+            data, cls=ToolResultJSONEncoder, ensure_ascii=False, separators=(",", ":")
+        ),
+        status_code=status,
+        headers=headers,
+        content_type="application/json",
+    )
+
+
+def _error(status: int, detail: Any) -> Response:
     """Build the ``{"detail": ...}`` envelope FastAPI clients expect."""
-    return JSONResponse({"detail": detail}, status_code=status)
+    return _json_response({"detail": detail}, status=status)
 
 
 def _tool_listing(route_table: RouteTable, etag: str) -> dict[str, Any]:
@@ -133,7 +145,7 @@ def _add_tools_route(app: App, route_table: RouteTable) -> None:
         etag = route_table.etag
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers={"ETag": etag})
-        return JSONResponse(_tool_listing(route_table, etag), headers={"ETag": etag})
+        return _json_response(_tool_listing(route_table, etag), headers={"ETag": etag})
 
 
 def _add_openapi_route(
@@ -150,7 +162,7 @@ def _add_openapi_route(
         document = build_openapi_schema(
             route_table, title=title, version=version, description=description
         )
-        return JSONResponse(document, headers={"ETag": etag})
+        return _json_response(document, headers={"ETag": etag})
 
 
 def _add_docs_route(app: App, title: str) -> None:
