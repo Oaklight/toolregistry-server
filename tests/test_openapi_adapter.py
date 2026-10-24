@@ -647,3 +647,47 @@ class TestOperationExtensions:
     ) -> None:
         op = self._operation(annotated_table, "plain")
         assert not [key for key in op if key.startswith("x-")]
+
+
+# ============== Backend Selection Tests ==============
+
+
+class TestBackendSelection:
+    """The adapter can serve on FastAPI (default) or the vendored server."""
+
+    def test_default_backend_is_fastapi(self, route_table: RouteTable) -> None:
+        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+        adapter = OpenAPIAdapter(route_table)
+        assert adapter._backend == "fastapi"  # noqa: SLF001 - test fixture
+
+    def test_httpserver_backend_builds_the_vendored_app(
+        self, route_table: RouteTable
+    ) -> None:
+        from toolregistry_server._vendor.httpserver import App
+        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+        adapter = OpenAPIAdapter(route_table, backend="httpserver")
+        assert isinstance(adapter.app, App)
+
+    def test_unknown_backend_is_rejected(self, route_table: RouteTable) -> None:
+        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+        with pytest.raises(ValueError, match="Unknown OpenAPI backend"):
+            OpenAPIAdapter(route_table, backend="gunicorn")
+
+    def test_cli_parses_the_backend_flag(self) -> None:
+        from toolregistry_server.cli import CLI
+
+        parser = CLI().create_parser()
+        assert parser.parse_args(["openapi"]).backend == "fastapi"
+        assert parser.parse_args(["openapi", "--backend", "httpserver"]).backend == (
+            "httpserver"
+        )
+
+    def test_cli_rejects_an_unknown_backend(self) -> None:
+        from toolregistry_server.cli import CLI
+
+        parser = CLI().create_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["openapi", "--backend", "gunicorn"])

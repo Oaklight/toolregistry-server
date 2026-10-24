@@ -218,6 +218,7 @@ class CLI:
                 port=parsed.port,
                 tokens_path=getattr(parsed, "tokens", None),
                 reload=getattr(parsed, "reload", False),
+                backend=getattr(parsed, "backend", "fastapi"),
             )
         elif parsed.command == "mcp":
             self.app.serve_mcp(
