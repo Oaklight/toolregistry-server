@@ -691,3 +691,71 @@ class TestBackendSelection:
         parser = CLI().create_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["openapi", "--backend", "gunicorn"])
+
+    def test_tokens_path_reaches_the_httpserver_backend(
+        self, route_table: RouteTable, tmp_path, monkeypatch
+    ) -> None:
+        """The CLI's tokens_path → tokens seam must leave auth switched on."""
+        import asyncio
+
+        # App.run installs signal handlers, which require the main thread.
+        import asyncio.unix_events
+        import threading
+        import time
+        import urllib.error
+        import urllib.request
+
+        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+        for loop_class in (
+            asyncio.BaseEventLoop,
+            asyncio.unix_events._UnixSelectorEventLoop,
+        ):
+            monkeypatch.setattr(loop_class, "add_signal_handler", lambda *a, **k: None)
+
+        token_file = tmp_path / "tokens.txt"
+        token_file.write_text("secret\n", encoding="utf-8")
+
+        captured: dict = {}
+        original_run = OpenAPIAdapter.run
+
+        def fake_run(self, **kwargs):
+            captured["app"] = self._app
+            captured["backend"] = self._backend
+
+        OpenAPIAdapter.run = fake_run
+        try:
+            OpenAPIAdapter.create_and_run(
+                route_table,
+                backend="httpserver",
+                tokens_path=str(token_file),
+                host="127.0.0.1",
+                port=0,
+            )
+        finally:
+            OpenAPIAdapter.run = original_run
+
+        assert captured["backend"] == "httpserver"
+        app = captured["app"]
+
+        thread = threading.Thread(
+            target=app.run, kwargs={"host": "127.0.0.1", "port": 0}, daemon=True
+        )
+        thread.start()
+        for _ in range(100):
+            if app.port:
+                break
+            time.sleep(0.05)
+        base = f"http://127.0.0.1:{app.port}"
+        try:
+            with pytest.raises(urllib.error.HTTPError) as excinfo:
+                urllib.request.urlopen(base + "/tools", timeout=5)
+            assert excinfo.value.code == 401
+
+            request = urllib.request.Request(
+                base + "/tools", headers={"Authorization": "Bearer secret"}
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert response.status == 200
+        finally:
+            app.shutdown()
