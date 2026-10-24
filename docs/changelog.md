@@ -6,6 +6,11 @@
 
 ## [未发布]
 
+### 新增
+
+- **OpenAPI 适配器新增零依赖 HTTP 后端**（#127、#128，epic #101）：`--backend httpserver`（或 `OpenAPIAdapter(..., backend="httpserver")`）在内联的 `httpserver` 上提供完全相同的线上契约——工具路由、带 ETag/`304` 的 `/tools` 与 `/openapi.json`、`/docs`，以及 SSE 的 `/events`——且无需安装 FastAPI/uvicorn。默认仍是 `fastapi`；`--reload` 在新后端上会明确提示不支持。返回值统一用 core 的 `ToolResultJSONEncoder` 序列化，dataclass、pydantic 模型、集合、日期时间与嵌套容器都与 FastAPI 路径产出相同的 JSON 形状；`bytes` 依旧按设计使用 base64。
+- **两种后端的差分比对测试**（#129）：同时启动两个实现并通过真实 socket 发送同一批请求，断言状态码、`ETag` 与响应体字节完全一致，覆盖工具调用、错误结构、条件请求、404/405、禁用工具的 503 以及三种鉴权情形。
+
 ## [0.7.1] - 2026-10-23
 
 ### 变更
