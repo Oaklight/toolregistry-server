@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -113,7 +114,7 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
             # Compact separators and no ASCII escaping match FastAPI's
             # JSONResponse byte for byte.
             body = json.dumps(
-                result,
+                _json_safe(result),
                 cls=ToolResultJSONEncoder,
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -123,6 +124,22 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
         return Response(body, content_type="application/json; charset=utf-8")
 
     return _handler
+
+
+def _json_safe(value: Any) -> Any:
+    """Replace non-finite floats with None before JSON encoding.
+
+    ``json.dumps`` writes bare ``NaN``/``Infinity``, which is not valid JSON;
+    FastAPI's encoder writes ``null`` for the same tool result. Walk only the
+    JSON containers and leave other objects to ``ToolResultJSONEncoder``.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _add_tools_route(app: App, route_table: RouteTable) -> None:

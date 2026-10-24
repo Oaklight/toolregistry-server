@@ -321,3 +321,19 @@ class TestEvents:
             threading.Thread(target=emit, daemon=True).start()
             line = response.readline()
             assert line.startswith(b"event: tool_change")
+
+
+def test_non_finite_floats_are_written_as_null():
+    """NaN/Infinity are not valid JSON; FastAPI writes null, so do we (#130)."""
+    status, body = _serve_result(
+        {"x": float("nan"), "a": [1.0, float("inf"), float("-inf")]}
+    )
+    assert status == 200
+
+    def reject_constant(value: str):
+        raise AssertionError(f"non-finite {value} in JSON body")
+
+    assert json.loads(body, parse_constant=reject_constant) == {
+        "x": None,
+        "a": [1.0, None, None],
+    }
