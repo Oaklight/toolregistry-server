@@ -186,6 +186,7 @@ class TestMain:
             port=9000,
             tokens_path=None,
             reload=False,
+            backend="fastapi",
         )
 
     @patch.object(
@@ -211,6 +212,7 @@ class TestMain:
             port=9000,
             tokens_path=None,
             reload=False,
+            backend="fastapi",
         )
 
     @patch("toolregistry_server.app.App.serve_mcp")

@@ -126,13 +126,22 @@ def create_openapi_app(
     return app
 
 
+#: HTTP backends :class:`OpenAPIAdapter` can serve on.
+_BACKENDS = ("fastapi", "httpserver")
+
+
 # ---------------------------------------------------------------------------
 # Adapter class
 # ---------------------------------------------------------------------------
 
 
 class OpenAPIAdapter(Adapter):
-    """Serve tools as RESTful HTTP endpoints via FastAPI.
+    """Serve tools as RESTful HTTP endpoints.
+
+    Two backends produce the same wire contract. ``fastapi`` (the default)
+    keeps the existing uvicorn stack; ``httpserver`` runs on the vendored
+    zero-dependency server from epic #101 and will become the default once
+    the test suite is ported.
 
     Args:
         route_table: The RouteTable to expose.
@@ -140,6 +149,7 @@ class OpenAPIAdapter(Adapter):
         title: API title for OpenAPI schema.
         version: API version string.
         description: API description.
+        backend: ``"fastapi"`` or ``"httpserver"``.
     """
 
     def __init__(
@@ -150,8 +160,27 @@ class OpenAPIAdapter(Adapter):
         title: str = "ToolRegistry Server",
         version: str = "1.0.0",
         description: str = "OpenAPI server for ToolRegistry tools",
+        backend: str = "fastapi",
     ) -> None:
         super().__init__(route_table)
+
+        if backend not in _BACKENDS:
+            raise ValueError(
+                f"Unknown OpenAPI backend {backend!r}; choose from {_BACKENDS}"
+            )
+        self._backend = backend
+
+        if backend == "httpserver":
+            from .server_app import create_httpserver_app
+
+            self._app = create_httpserver_app(
+                route_table,
+                title=title,
+                version=version,
+                description=description,
+                tokens=tokens,
+            )
+            return
 
         dependencies = None
         if tokens:
@@ -172,8 +201,8 @@ class OpenAPIAdapter(Adapter):
         )
 
     @property
-    def app(self) -> FastAPI:
-        """The FastAPI application instance."""
+    def app(self) -> Any:
+        """The application instance for the configured backend."""
         return self._app
 
     def run(self, *, host: str = "0.0.0.0", port: int = 8000, **kwargs) -> None:
@@ -183,7 +212,19 @@ class OpenAPIAdapter(Adapter):
             host: Host to bind to.
             port: Port to bind to.
             reload: Enable auto-reload for development (default: False).
+                Only supported by the ``fastapi`` backend.
         """
+        if self._backend == "httpserver":
+            if kwargs.get("reload"):
+                logger.warning(
+                    "--reload is a uvicorn feature; it is ignored on the "
+                    "httpserver backend"
+                )
+            logger.info(f"Starting OpenAPI server on {host}:{port}")
+            logger.info(f"Registered {len(self._route_table.list_routes())} tool(s)")
+            self._app.run(host=host, port=port)
+            return
+
         import uvicorn
 
         reload = kwargs.get("reload", False)
@@ -221,7 +262,16 @@ class OpenAPIAdapter(Adapter):
         parser.add_argument(
             "--reload",
             action="store_true",
-            help="Enable auto-reload for development mode",
+            help="Enable auto-reload for development mode (fastapi backend only)",
+        )
+        parser.add_argument(
+            "--backend",
+            choices=_BACKENDS,
+            default="fastapi",
+            help=(
+                "HTTP backend: fastapi (uvicorn, default) or httpserver "
+                "(vendored, zero-dependency)"
+            ),
         )
 
     @classmethod
@@ -243,6 +293,7 @@ class OpenAPIAdapter(Adapter):
             title=kwargs.pop("title", identity.name),
             version=kwargs.pop("version", identity.version),
             description=kwargs.pop("description", identity.description),
+            backend=kwargs.pop("backend", "fastapi"),
         )
         adapter.run(**kwargs)
 
