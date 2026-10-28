@@ -777,7 +777,7 @@ class TestOverrideSchemaEdgeCases:
         registry = ToolRegistry()
 
         @registry.register
-        def add(a: int, b: int = 0) -> int:
+        def add(a: int, b: int) -> int:
             """Add."""
             return a + b
 
@@ -810,3 +810,30 @@ class TestOverrideSchemaEdgeCases:
         )
         served = table.get_route("add").served_parameters_schema
         assert served["additionalProperties"] is False
+
+    def test_override_without_required_fills_it_from_the_model(self) -> None:
+        table = self._table()
+        table.override_parameters(
+            "add",
+            {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "integer"},
+                    "b": {"type": "integer"},
+                },
+            },
+        )
+        served = table.get_route("add").served_parameters_schema
+        assert served["required"] == ["a", "b"]
+
+    def test_typed_additional_properties_is_rejected_for_a_model(self) -> None:
+        table = self._table()
+        with pytest.raises(ValueError, match="typed additionalProperties"):
+            table.override_parameters(
+                "add",
+                {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer"}},
+                    "additionalProperties": {"type": "integer"},
+                },
+            )
