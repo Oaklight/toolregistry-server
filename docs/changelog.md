@@ -12,8 +12,11 @@
 
 ### 变更
 
-- **默认只发布显式声明的执行提示**（#136）：`READ_ONLY` / `DESTRUCTIVE` 标签可能是为本地权限策略选择的，发布解析后的映射会让该标签变成面向客户端的自动批准声明。`served_execution_hints` 现在优先使用 `Tool.declared_execution_hints`；只有 `RouteTable` 通过 `emit_derived_execution_hints=True` 或 `set_emit_derived_execution_hints(True)` 显式选择加入时，才会发布由标签推导的提示。显式声明的提示不受影响；由于两个适配器读取同一视图，MCP 与 OpenAPI 遵循相同策略。在尚未提供 `declared_execution_hints` 的 core 上会回退到旧的解析映射；core 版本下限将随下一次发布上调。
+- **默认只发布显式声明的执行提示**（#136）：`READ_ONLY` / `DESTRUCTIVE` 标签可能是为本地权限策略选择的，发布解析后的映射会让该标签变成面向客户端的自动批准声明。`served_execution_hints` 现在优先使用 `Tool.declared_execution_hints`；只有 `RouteTable` 通过 `emit_derived_execution_hints=True` 或 `set_emit_derived_execution_hints(True)` 显式选择加入时，才会发布由标签推导的提示。显式声明的提示不受影响；由于两个适配器读取同一视图，MCP 与 OpenAPI 遵循相同策略。在尚未提供 `declared_execution_hints` 的 core 上，服务端会从 `ToolMetadata` 的提示字段重建相同映射（这些字段在 0.19.x 下限中已存在），因此无需等待 core 发布即可生效；更旧的 core 则不发布任何声明。
 
+### 修复
+
+- **路由级覆盖会被校验并具有权威性**（#138）：覆盖现在是一份经校验的副本。`override_parameters` 要求对象 schema（接受 `["object", "null"]`），把省略的 `additionalProperties` 规范化为 `false`，从工具的校验模型补齐 `required`，当覆盖缺少模型必填字段时发出警告，并拒绝模型型工具无法执行的带类型 `additionalProperties`。OpenAPI 适配器在走校验模型之前先检查实际发布的 schema，因此覆盖未声明的键会以 `extra_forbidden` 被拒绝，而不会静默传给可调用对象。
 
 ## [0.8.0] - 2026-10-23
 
