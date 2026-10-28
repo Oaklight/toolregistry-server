@@ -7,6 +7,7 @@ protocol adapters (OpenAPI, MCP, etc.).
 
 import copy
 import functools
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,15 +64,42 @@ def _validate_parameter_override(parameters: Any) -> dict[str, Any]:
     ``{"type": "object", "properties": {}}``, which then dropped every
     argument.  Raising here keeps a malformed override from changing what
     the server accepts without saying so.
+
+    An omitted ``additionalProperties`` is filled with ``False`` so the
+    published schema says exactly what request validation enforces.
     """
     if not isinstance(parameters, dict):
         raise TypeError("parameter override must be a JSON Schema object")
-    if parameters.get("type") not in (None, "object"):
+    schema_type = parameters.get("type")
+    if isinstance(schema_type, list):
+        if "object" not in schema_type:
+            raise ValueError("parameter override must describe an object schema")
+    elif schema_type not in (None, "object"):
         raise ValueError("parameter override must describe an object schema")
     properties = parameters.get("properties")
     if properties is not None and not isinstance(properties, dict):
         raise ValueError("parameter override 'properties' must be a mapping")
-    return normalize_parameters_schema(copy.deepcopy(parameters))
+
+    copied = copy.deepcopy(parameters)
+    if isinstance(copied.get("type"), list):
+        # ``["object", "null"]`` is legal JSON Schema; the request path only
+        # produces an object, so the served schema is normalized to object.
+        copied["type"] = "object"
+    normalized = normalize_parameters_schema(copied)
+    normalized.setdefault("additionalProperties", False)
+    return normalized
+
+
+def _allows_additional_properties(schema: dict[str, Any]) -> bool:
+    """Whether the served schema permits keys outside ``properties``.
+
+    ``additionalProperties`` is a JSON Schema, not a boolean: ``{}`` and any
+    other non-``False`` value allow extra keys, and only an explicit
+    ``False`` forbids them.
+    """
+    return (
+        "additionalProperties" in schema and schema["additionalProperties"] is not False
+    )
 
 
 def _validate_execution_hints(hints: Any) -> dict[str, bool]:
@@ -457,6 +485,24 @@ class RouteTable:
         self._rebuild()
         self._notify_listeners("*", "refresh_all")
 
+    @staticmethod
+    def _warn_if_override_omits_required(
+        tool_name: str, route: RouteEntry, schema: dict[str, Any]
+    ) -> None:
+        """Warn when an override drops a field the tool's model requires."""
+        model = getattr(route.tool, "parameters_model", None)
+        required = getattr(model, "__required_keys__", None)
+        if not required:
+            return
+        missing = sorted(set(required) - set(schema.get("required", ())))
+        if missing:
+            warnings.warn(
+                f"parameter override for '{tool_name}' omits required field(s) "
+                f"{missing}; the tool's validation model still requires them.",
+                UserWarning,
+                stacklevel=3,
+            )
+
     def override_parameters(
         self, tool_name: str, parameters: dict[str, Any] | None
     ) -> None:
@@ -467,7 +513,8 @@ class RouteTable:
         :attr:`RouteEntry.schema_hash` describes the served schema, so it
         changes with the override.  The override is remembered across
         ``refresh()`` and ``refresh_all()``.  Passing ``None`` clears it and
-        restores the tool's own schema.
+        restores the tool's own schema.  A route override takes precedence
+        over ``ToolRegistry.update_tool_metadata()`` for this route.
 
         Args:
             tool_name: Registered tool name.
@@ -488,6 +535,7 @@ class RouteTable:
                 return
         else:
             normalized = _validate_parameter_override(parameters)
+            self._warn_if_override_omits_required(tool_name, route, normalized)
             if self._parameter_overrides.get(tool_name) == normalized:
                 route.parameter_schema_override = normalized
                 return

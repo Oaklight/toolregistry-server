@@ -765,3 +765,48 @@ class TestRouteOverrideValidationAndIsolation:
             ("search", "metadata_update"),
             ("search", "metadata_update"),
         ]
+
+
+class TestOverrideSchemaEdgeCases:
+    """JSON Schema edge cases the override must not collapse (#138 review)."""
+
+    @staticmethod
+    def _table() -> RouteTable:
+        from toolregistry import ToolRegistry
+
+        registry = ToolRegistry()
+
+        @registry.register
+        def add(a: int, b: int = 0) -> int:
+            """Add."""
+            return a + b
+
+        return RouteTable(registry)
+
+    def test_nullable_object_type_list_is_accepted(self) -> None:
+        table = self._table()
+        table.override_parameters(
+            "add",
+            {
+                "type": ["object", "null"],
+                "properties": {"a": {"type": "integer"}},
+            },
+        )
+        served = table.get_route("add").served_parameters_schema
+        assert served["type"] == "object"
+        assert "a" in served["properties"]
+
+    def test_override_omitting_a_required_field_warns(self) -> None:
+        table = self._table()
+        with pytest.warns(UserWarning, match="omits required field"):
+            table.override_parameters(
+                "add", {"type": "object", "properties": {"a": {"type": "integer"}}}
+            )
+
+    def test_additional_properties_is_explicit_in_the_served_schema(self) -> None:
+        table = self._table()
+        table.override_parameters(
+            "add", {"type": "object", "properties": {"a": {"type": "integer"}}}
+        )
+        served = table.get_route("add").served_parameters_schema
+        assert served["additionalProperties"] is False

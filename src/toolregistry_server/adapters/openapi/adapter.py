@@ -67,7 +67,7 @@ def _undeclared_parameter_details(
     error_type: str,
 ) -> list[dict[str, Any]]:
     """Return a 422 detail entry for every payload key *schema* omits."""
-    if schema.get("additionalProperties"):
+    if "additionalProperties" in schema and schema["additionalProperties"] is not False:
         return []
     declared = set((schema.get("properties") or {}).keys())
     return [
@@ -142,7 +142,10 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
             raise HTTPException(
                 status_code=422, detail=_validation_details(exc)
             ) from exc
-        if override_active and not served_schema.get("additionalProperties"):
+        if override_active and (
+            "additionalProperties" not in served_schema
+            or served_schema["additionalProperties"] is False
+        ):
             # The override advertised a key the tool cannot accept; the
             # model dropped it.  Reject rather than run with less than the
             # client sent.  When the served schema permits additional
