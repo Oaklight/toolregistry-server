@@ -192,7 +192,7 @@ toolregistry-server openapi --config tools.yaml --tokens tokens.txt
 
 ## 操作扩展
 
-OpenAPI 没有存放执行提示的标准字段，因此与 MCP 的 `annotations` 相同的已解析提示会以 `x-` 扩展的形式出现在生成的每个 operation 上：
+OpenAPI 没有存放执行提示的标准字段，因此与 MCP 的 `annotations` 相同的发布提示会以 `x-` 扩展的形式出现在生成的每个 operation 上：
 
 | 扩展 | 来源 |
 |---|---|
@@ -202,7 +202,7 @@ OpenAPI 没有存放执行提示的标准字段，因此与 MCP 的 `annotations
 | `x-open-world` | `open_world_hint` |
 | `x-title` | `ToolMetadata.title` |
 
-只输出已声明的提示：没有任何声明的工具，其 operation 保持原有结构。与 MCP 侧一致，标签决定部署暴露范围，提示描述单次调用，因此方法级提示不会改变 profile 暴露哪些工具。
+默认只输出已声明的提示：没有任何声明的工具，其 operation 保持原有结构；除非 `RouteTable` 启用 `emit_derived_execution_hints`，否则由标签推导的值不会出现。与 MCP 侧一致，标签决定部署暴露范围，提示描述单次调用，因此方法级提示不会改变 profile 暴露哪些工具。
 
 ## API 参考
 

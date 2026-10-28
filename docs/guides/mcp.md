@@ -190,9 +190,9 @@ http://localhost:8000/sse       # SSE
 当工具元数据声明了显示标题或执行提示时，`tools/list` 会以 MCP 的 `title` 与 `annotations` 字段返回：
 
 - `ToolMetadata.title` → `title`
-- `Tool.execution_hints` → `annotations`（`readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint`）
+- `Tool.declared_execution_hints` → `annotations`（`readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint`）
 
-未声明的提示保持缺省：没有做出任何声明的工具仍保持最小的 `{name, description, inputSchema}` 定义，由宿主套用协议默认值。可在代码中或配置文件中设置：
+未声明的提示保持缺省：没有做出任何声明的工具仍保持最小的 `{name, description, inputSchema}` 定义，由宿主套用协议默认值。默认只发布显式声明：`execution_hints` 还会从 `read_only` / `destructive` 标签推导值，而这些标签可能是为本地权限策略选择的，并非面向客户端的安全声明。如需同时发布标签推导值，请使用 `RouteTable(..., emit_derived_execution_hints=True)`。可在代码中或配置文件中设置显式提示：
 
 ```yaml
 tool_metadata:

@@ -8,10 +8,19 @@
 
 ### 新增
 
+- **路由级覆盖：发布用的参数 schema 与执行提示**（#137）：`RouteTable.override_parameters(name, schema)` 与 `override_execution_hints(name, hints)` 可改变单个路由发布的内容，而不改动注册表中的 `Tool` 或其 `schema_hash`。`RouteEntry` 通过 `served_parameters_schema` / `served_execution_hints` 暴露结果，两个适配器都读取该视图，因此 MCP 的 `inputSchema` / `annotations` 与 OpenAPI 的请求 schema / `x-` 扩展保持一致。`{}` 会抑制所有注解/扩展；`None` 清除覆盖。覆盖在 `refresh()` 与 `refresh_all()` 后仍然保留，并会通知监听者，因此 ETag 与 `tools/list_changed` 能反映变化。这取代了包裹私有 `tools/list` handler 的做法。
+
+### 变更
+
+- **默认只发布显式声明的执行提示**（#136）：`READ_ONLY` / `DESTRUCTIVE` 标签可能是为本地权限策略选择的，发布解析后的映射会让该标签变成面向客户端的自动批准声明。`served_execution_hints` 现在优先使用 `Tool.declared_execution_hints`；只有 `RouteTable` 通过 `emit_derived_execution_hints=True` 或 `set_emit_derived_execution_hints(True)` 显式选择加入时，才会发布由标签推导的提示。显式声明的提示不受影响；由于两个适配器读取同一视图，MCP 与 OpenAPI 遵循相同策略。在尚未提供 `declared_execution_hints` 的 core 上会回退到旧的解析映射；core 版本下限将随下一次发布上调。
+
+
+## [0.8.0] - 2026-10-23
+
+### 新增
+
 - **OpenAPI 适配器新增零依赖 HTTP 后端**（#127、#128，epic #101）：`--backend httpserver`（或 `OpenAPIAdapter(..., backend="httpserver")`）在内联的 `httpserver` 上提供完全相同的线上契约——工具路由、带 ETag/`304` 的 `/tools` 与 `/openapi.json`、`/docs`，以及 SSE 的 `/events`——且无需安装 FastAPI/uvicorn。默认仍是 `fastapi`；`--reload` 在新后端上会明确提示不支持。返回值统一用 core 的 `ToolResultJSONEncoder` 序列化，dataclass、pydantic 模型、集合、日期时间与嵌套容器都与 FastAPI 路径产出相同的 JSON 形状；`bytes` 依旧按设计使用 base64。
 - **两种后端的差分比对测试**（#129）：同时启动两个实现并通过真实 socket 发送同一批请求，断言状态码、`ETag` 与响应体字节完全一致，覆盖工具调用、错误结构、条件请求、404/405、禁用工具的 503 以及三种鉴权情形。
-
-## [0.7.1] - 2026-10-23
 
 ### 变更
 
