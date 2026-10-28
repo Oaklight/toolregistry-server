@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from toolregistry import ValidationError
 
 from ..._vendor.jsonschema import SchemaValidationError, schema_validate
-from ...route_table import RouteEntry, RouteTable
+from ...route_table import RouteEntry, RouteTable, _allows_additional_properties
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def _undeclared_parameter_details(
     error_type: str,
 ) -> list[dict[str, Any]]:
     """Return a 422 detail entry for every payload key *schema* omits."""
-    if "additionalProperties" in schema and schema["additionalProperties"] is not False:
+    if _allows_additional_properties(schema):
         return []
     declared = set((schema.get("properties") or {}).keys())
     return [
@@ -142,10 +142,7 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
             raise HTTPException(
                 status_code=422, detail=_validation_details(exc)
             ) from exc
-        if override_active and (
-            "additionalProperties" not in served_schema
-            or served_schema["additionalProperties"] is False
-        ):
+        if override_active and not _allows_additional_properties(served_schema):
             # The override advertised a key the tool cannot accept; the
             # model dropped it.  Reject rather than run with less than the
             # client sent.  When the served schema permits additional

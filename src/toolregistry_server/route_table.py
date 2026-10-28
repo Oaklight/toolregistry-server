@@ -486,14 +486,34 @@ class RouteTable:
         self._notify_listeners("*", "refresh_all")
 
     @staticmethod
-    def _warn_if_override_omits_required(
+    def _reconcile_override_with_model(
         tool_name: str, route: RouteEntry, schema: dict[str, Any]
     ) -> None:
-        """Warn when an override drops a field the tool's model requires."""
+        """Make the served schema agree with the tool's validation model.
+
+        An override built from ``properties`` alone carries no ``required``
+        list, so the served schema would advertise the model's required
+        fields as optional.  Fill them in from the model, then warn only when
+        a model-required field is genuinely absent from the override.
+        """
         model = getattr(route.tool, "parameters_model", None)
+        if model is None:
+            return
+
+        additional = schema.get("additionalProperties")
+        if isinstance(additional, dict) and additional:
+            raise ValueError(
+                f"parameter override for '{tool_name}' uses a typed "
+                "additionalProperties, which a model-backed tool cannot "
+                "enforce; use true, false, or {}"
+            )
+
         required = getattr(model, "__required_keys__", None)
         if not required:
             return
+        declared = set(schema.get("properties", {}))
+        if "required" not in schema:
+            schema["required"] = sorted(set(required) & declared)
         missing = sorted(set(required) - set(schema.get("required", ())))
         if missing:
             warnings.warn(
@@ -535,7 +555,7 @@ class RouteTable:
                 return
         else:
             normalized = _validate_parameter_override(parameters)
-            self._warn_if_override_omits_required(tool_name, route, normalized)
+            self._reconcile_override_with_model(tool_name, route, normalized)
             if self._parameter_overrides.get(tool_name) == normalized:
                 route.parameter_schema_override = normalized
                 return
