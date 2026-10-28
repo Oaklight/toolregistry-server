@@ -809,3 +809,21 @@ class TestOverrideIsAuthoritative:
             },
         )
         assert _validate_arguments(route, {"a": "2", "b": 3}) == {"a": 2, "b": 3}
+
+    def test_override_allowing_additional_properties_accepts_extras(self, route_table):
+        route = route_table.get_route("add")
+        route_table.override_parameters(
+            "add",
+            {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "integer"},
+                    "b": {"type": "integer"},
+                },
+                "additionalProperties": True,
+            },
+        )
+        assert _validate_arguments(route, {"a": 1, "b": 2, "extra": 3}) == {
+            "a": 1,
+            "b": 2,
+        }

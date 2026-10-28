@@ -142,10 +142,11 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
             raise HTTPException(
                 status_code=422, detail=_validation_details(exc)
             ) from exc
-        if override_active:
+        if override_active and not served_schema.get("additionalProperties"):
             # The override advertised a key the tool cannot accept; the
             # model dropped it.  Reject rather than run with less than the
-            # client sent.
+            # client sent.  When the served schema permits additional
+            # properties, dropping them is consistent with that contract.
             dropped = sorted(set(payload) - set(validated))
             if dropped:
                 raise HTTPException(
