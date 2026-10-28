@@ -12,8 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- **Only declared execution hints are published by default** (#136): a `READ_ONLY` / `DESTRUCTIVE` tag can be chosen for local permission policy, so publishing the resolved mapping turned that tag into a client-facing auto-approve claim. `served_execution_hints` now prefers `Tool.declared_execution_hints`; tag-derived values are published only when the `RouteTable` opts in with `emit_derived_execution_hints=True` or `set_emit_derived_execution_hints(True)`. Explicit hints are unchanged, and `MCP` / `OpenAPI` follow the same policy because both read the same view. On a core that predates `declared_execution_hints` the old resolved mapping is used as a fallback; the core floor moves with the next release.
+- **Only declared execution hints are published by default** (#136): a `READ_ONLY` / `DESTRUCTIVE` tag can be chosen for local permission policy, so publishing the resolved mapping turned that tag into a client-facing auto-approve claim. `served_execution_hints` now prefers `Tool.declared_execution_hints`; tag-derived values are published only when the `RouteTable` opts in with `emit_derived_execution_hints=True` or `set_emit_derived_execution_hints(True)`. Explicit hints are unchanged, and `MCP` / `OpenAPI` follow the same policy because both read the same view. On a core that predates `declared_execution_hints` the server reconstructs the same mapping from the `ToolMetadata` hint fields, which exist on the 0.19.x floor, so the default is safe without waiting for a core release; a core older than those fields publishes no claim.
 
+### Fixed
+
+- **Route overrides are validated and authoritative** (#138): an override is now a validated copy. `override_parameters` requires an object schema (accepting `["object", "null"]`), normalizes an omitted `additionalProperties` to `false`, fills `required` from the tool's validation model, warns when a model-required field is missing from the override, and rejects a typed `additionalProperties` that a model-backed tool cannot enforce. The OpenAPI adapter checks the served schema before the validation model, so a key the override omits is rejected with `extra_forbidden` instead of silently reaching the callable.
 
 ## [0.8.0] - 2026-10-23
 
