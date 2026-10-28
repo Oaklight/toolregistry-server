@@ -108,11 +108,11 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
             ) from exc
 
     try:
-        schema_validate(payload, route.parameters_schema)
+        schema_validate(payload, route.served_parameters_schema)
     except SchemaValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_details(exc)) from exc
 
-    schema = route.parameters_schema or {}
+    schema = route.served_parameters_schema or {}
     if not schema.get("additionalProperties"):
         declared = set((schema.get("properties") or {}).keys())
         payload = {k: v for k, v in payload.items() if k in declared}
@@ -142,7 +142,7 @@ def _openapi_extensions(route: RouteEntry) -> dict[str, Any] | None:
     """
     extensions: dict[str, Any] = {
         f"x-{hint.removesuffix('_hint').replace('_', '-')}": value
-        for hint, value in route.execution_hints.items()
+        for hint, value in route.served_execution_hints.items()
     }
     if route.title is not None:
         extensions["x-title"] = route.title
@@ -188,7 +188,7 @@ def _add_route_from_entry(
     # the body exactly as the tool declares it.
     extensions["requestBody"] = {
         "required": True,
-        "content": {"application/json": {"schema": route.parameters_schema}},
+        "content": {"application/json": {"schema": route.served_parameters_schema}},
     }
     # Use the top-level segment of the namespace as the tag for grouping
     # e.g. "web/brave_search" → tag "web", "calculator" → tag "calculator"

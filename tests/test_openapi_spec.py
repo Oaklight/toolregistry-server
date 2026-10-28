@@ -130,6 +130,23 @@ class TestOperationIdentity:
         assert schema["type"] == "object"
         assert set(schema["properties"]) == {"a", "b"}
 
+    def test_parameter_override_reaches_the_request_body(self, route_table: RouteTable):
+        route_table.override_parameters(
+            "add",
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+            },
+        )
+        document = build_openapi_schema(route_table)
+        schema = _operation(document, "add")["requestBody"]["content"][
+            "application/json"
+        ]["schema"]
+
+        assert schema["properties"]["a"]["type"] == "string"
+        assert schema["required"] == ["a"]
+
     def test_responses_cover_success_and_validation(self, route_table: RouteTable):
         document = build_openapi_schema(route_table)
         responses = _operation(document, "add")["responses"]
@@ -200,6 +217,22 @@ class TestExtensions:
 
         assert operation["x-destructive"] is True
         assert "x-read-only" not in operation
+
+    def test_hint_override_replaces_and_suppresses_extensions(self):
+        table = self._table()
+        table.override_execution_hints("current_time", {})
+        operation = _operation(build_openapi_schema(table), "current_time")
+        for key in (
+            "x-read-only",
+            "x-destructive",
+            "x-idempotent",
+            "x-open-world",
+        ):
+            assert key not in operation
+
+        table.override_execution_hints("current_time", {"read_only_hint": False})
+        operation = _operation(build_openapi_schema(table), "current_time")
+        assert operation["x-read-only"] is False
 
 
 def _resolve_refs(node, components):

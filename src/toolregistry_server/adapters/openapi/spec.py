@@ -90,7 +90,7 @@ def _operation_extensions(route: RouteEntry) -> dict[str, Any]:
     """
     extensions: dict[str, Any] = {
         f"x-{hint.removesuffix('_hint').replace('_', '-')}": value
-        for hint, value in route.execution_hints.items()
+        for hint, value in route.served_execution_hints.items()
     }
     if route.title is not None:
         extensions["x-title"] = route.title
@@ -99,7 +99,7 @@ def _operation_extensions(route: RouteEntry) -> dict[str, Any]:
 
 def _request_schema(route: RouteEntry) -> dict[str, Any]:
     """Return the parameter schema with its declared defaults preserved."""
-    schema = route.parameters_schema
+    schema = route.served_parameters_schema
     return dict(schema)
 
 

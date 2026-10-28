@@ -2237,3 +2237,75 @@ class TestTrackableSession:
 
         assert seen, "trackable_session was not consulted"
         assert seen[-1] is None, "a modern connection must not be tracked"
+
+
+# ---------------------------------------------------------------------------
+# 9c. Route-level overrides
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not _core_has_execution_hints(),
+    reason="installed toolregistry predates execution hints",
+)
+class TestRouteOverridesOnMCP:
+    """A route override changes the served payload and nothing else (#137)."""
+
+    @pytest.fixture
+    def table(self) -> RouteTable:
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolMetadata
+
+        registry = ToolRegistry()
+
+        def reader() -> str:
+            """Read state."""
+            return "state"
+
+        registry.register(
+            Tool.from_function(reader, metadata=ToolMetadata(read_only_hint=True))
+        )
+        return RouteTable(registry)
+
+    @pytest.mark.asyncio
+    async def test_parameter_override_reaches_input_schema(
+        self, table: RouteTable
+    ) -> None:
+        table.override_parameters(
+            "reader",
+            {
+                "type": "object",
+                "properties": {"q": {"type": "number"}},
+                "required": ["q"],
+            },
+        )
+        server = route_table_to_mcp_server(table)
+        async with create_test_client(server) as client:
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+
+        schema = get_field(tools["reader"], "input_schema", "inputSchema")
+        assert schema["properties"]["q"]["type"] == "number"
+        assert schema["required"] == ["q"]
+
+    @pytest.mark.asyncio
+    async def test_hint_override_can_suppress_annotations(
+        self, table: RouteTable
+    ) -> None:
+        table.override_execution_hints("reader", {})
+        server = route_table_to_mcp_server(table)
+        async with create_test_client(server) as client:
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+
+        assert tools["reader"].annotations is None
+
+    @pytest.mark.asyncio
+    async def test_hint_override_can_replace_annotations(
+        self, table: RouteTable
+    ) -> None:
+        table.override_execution_hints("reader", {"read_only_hint": False})
+        server = route_table_to_mcp_server(table)
+        async with create_test_client(server) as client:
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+
+        annotations = tools["reader"].annotations
+        assert get_field(annotations, "read_only_hint", "readOnlyHint") is False

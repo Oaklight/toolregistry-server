@@ -62,6 +62,11 @@ class RouteEntry:
             (MCP ``outputSchema``).
         enabled: Whether the tool is currently enabled.
         disable_reason: Reason for disabling, if disabled.
+        parameter_schema_override: Schema served instead of the tool's own,
+            or ``None`` to serve the tool's schema.
+        execution_hints_override: Hints served instead of the resolved ones,
+            or ``None`` to serve the resolved mapping.  An empty mapping
+            suppresses every annotation/extension for this route.
     """
 
     # Tool reference
@@ -83,6 +88,11 @@ class RouteEntry:
     # State
     enabled: bool = True
     disable_reason: str | None = None
+
+    # Route-level overrides.  The registry Tool is never modified; these only
+    # change what the adapters publish for this route.
+    parameter_schema_override: dict[str, Any] | None = None
+    execution_hints_override: dict[str, bool] | None = None
 
     # --- Backward-compatible properties -----------------------------------
 
@@ -146,6 +156,24 @@ class RouteEntry:
         return hints if isinstance(hints, dict) else {}
 
     @property
+    def served_parameters_schema(self) -> dict[str, Any]:
+        """Parameter schema to publish, honoring the route override."""
+        if self.parameter_schema_override is not None:
+            return normalize_parameters_schema(self.parameter_schema_override)
+        return self.parameters_schema
+
+    @property
+    def served_execution_hints(self) -> dict[str, bool]:
+        """Execution hints to publish, honoring the route override.
+
+        An override of ``{}`` suppresses every annotation and extension,
+        which is how a consumer says "no claim" for a tool it has not rated.
+        """
+        if self.execution_hints_override is not None:
+            return dict(self.execution_hints_override)
+        return self.execution_hints
+
+    @property
     def schema_hash(self) -> str:
         """Content hash of the tool's parameter schema."""
         metadata = getattr(self.tool, "metadata", None)
@@ -194,6 +222,12 @@ class RouteTable:
         default_factory=list, init=False
     )
     _version: int = field(default=0, init=False)
+    _parameter_overrides: dict[str, dict[str, Any]] = field(
+        default_factory=dict, init=False
+    )
+    _execution_hint_overrides: dict[str, dict[str, bool]] = field(
+        default_factory=dict, init=False
+    )
 
     def __post_init__(self) -> None:
         """Initialize the route table from the registry."""
@@ -256,6 +290,8 @@ class RouteTable:
             output_schema=_extract_output_schema(tool),
             enabled=self._registry.is_enabled(tool.name),
             disable_reason=self._registry.get_disable_reason(tool.name),
+            parameter_schema_override=self._parameter_overrides.get(tool.name),
+            execution_hints_override=self._execution_hint_overrides.get(tool.name),
         )
 
     # ============== Query API ==============
@@ -358,6 +394,62 @@ class RouteTable:
         """Refresh all routes from registry."""
         self._rebuild()
         self._notify_listeners("*", "refresh_all")
+
+    def override_parameters(
+        self, tool_name: str, parameters: dict[str, Any] | None
+    ) -> None:
+        """Override the parameter schema published for one route.
+
+        The registry ``Tool`` and its ``schema_hash`` are untouched; only the
+        payload built by the adapters changes.  The override is remembered
+        across ``refresh()`` and ``refresh_all()``.  Passing ``None`` clears
+        it and restores the tool's own schema.
+
+        Args:
+            tool_name: Registered tool name.
+            parameters: Replacement JSON Schema, or ``None`` to clear.
+
+        Raises:
+            KeyError: If the route does not exist.
+        """
+        route = self._routes.get(tool_name)
+        if route is None:
+            raise KeyError(f"Route not found: {tool_name}")
+        if parameters is None:
+            self._parameter_overrides.pop(tool_name, None)
+        else:
+            self._parameter_overrides[tool_name] = normalize_parameters_schema(
+                parameters
+            )
+        route.parameter_schema_override = self._parameter_overrides.get(tool_name)
+        self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
+
+    def override_execution_hints(
+        self, tool_name: str, hints: dict[str, bool] | None
+    ) -> None:
+        """Override the execution hints published for one route.
+
+        The registry ``Tool`` is untouched.  Passing ``{}`` suppresses every
+        annotation and extension for the route -- the transport equivalent of
+        "no claim" -- while passing ``None`` clears the override and restores
+        the resolved hints.
+
+        Args:
+            tool_name: Registered tool name.
+            hints: Replacement mapping, or ``None`` to clear.
+
+        Raises:
+            KeyError: If the route does not exist.
+        """
+        route = self._routes.get(tool_name)
+        if route is None:
+            raise KeyError(f"Route not found: {tool_name}")
+        if hints is None:
+            self._execution_hint_overrides.pop(tool_name, None)
+        else:
+            self._execution_hint_overrides[tool_name] = dict(hints)
+        route.execution_hints_override = self._execution_hint_overrides.get(tool_name)
+        self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
 
     # ============== Observer Pattern ==============
 
