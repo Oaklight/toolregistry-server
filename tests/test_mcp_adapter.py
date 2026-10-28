@@ -1982,6 +1982,12 @@ def _core_has_execution_hints() -> bool:
     return "read_only_hint" in {f.name for f in fields(ToolMetadata)}
 
 
+def _core_has_declared_hints() -> bool:
+    from toolregistry.tool import ToolMetadata
+
+    return hasattr(ToolMetadata, "declared_execution_hints")
+
+
 @pytest.mark.skipif(
     not _core_has_execution_hints(),
     reason="installed toolregistry predates execution hints",
@@ -2065,8 +2071,21 @@ class TestToolAnnotations:
         assert get_field(annotations, "read_only_hint", "readOnlyHint") is None
 
     @pytest.mark.asyncio
-    async def test_tag_derived_hints(self, annotated_table: RouteTable) -> None:
+    @pytest.mark.skipif(
+        not _core_has_declared_hints(),
+        reason="installed toolregistry predates declared_execution_hints",
+    )
+    async def test_tag_derived_hints_need_opt_in(
+        self, annotated_table: RouteTable
+    ) -> None:
+        # A policy tag alone publishes nothing (#136).
         tools = await self._tools_by_name(annotated_table)
+        assert tools["tagged_reader"].annotations is None
+
+        opted_in = RouteTable(
+            annotated_table._registry, emit_derived_execution_hints=True
+        )
+        tools = await self._tools_by_name(opted_in)
         annotations = tools["tagged_reader"].annotations
         assert get_field(annotations, "read_only_hint", "readOnlyHint") is True
         assert get_field(annotations, "destructive_hint", "destructiveHint") is False
@@ -2309,3 +2328,68 @@ class TestRouteOverridesOnMCP:
 
         annotations = tools["reader"].annotations
         assert get_field(annotations, "read_only_hint", "readOnlyHint") is False
+
+
+# ---------------------------------------------------------------------------
+# 9d. Declared hints are the default
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not _core_has_declared_hints(),
+    reason="installed toolregistry predates declared_execution_hints",
+)
+class TestDeclaredHintsAreTheDefault:
+    """A policy tag alone must not reach a client as an auto-approve claim."""
+
+    @staticmethod
+    def _table(emit_derived: bool = False) -> RouteTable:
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolMetadata, ToolTag
+
+        registry = ToolRegistry()
+
+        def tagged_reader() -> str:
+            """Read state declared through tags only."""
+            return "state"
+
+        def explicit_reader() -> str:
+            """Read state declared explicitly."""
+            return "state"
+
+        registry.register(
+            Tool.from_function(
+                tagged_reader, metadata=ToolMetadata(tags={ToolTag.READ_ONLY})
+            )
+        )
+        registry.register(
+            Tool.from_function(
+                explicit_reader, metadata=ToolMetadata(read_only_hint=True)
+            )
+        )
+        return RouteTable(registry, emit_derived_execution_hints=emit_derived)
+
+    @staticmethod
+    async def _tools(table: RouteTable) -> dict:
+        server = route_table_to_mcp_server(table)
+        async with create_test_client(server) as client:
+            result = await client.list_tools()
+            return {t.name: t for t in result.tools}
+
+    @pytest.mark.asyncio
+    async def test_tag_only_tool_makes_no_claim(self) -> None:
+        tools = await self._tools(self._table())
+        assert tools["tagged_reader"].annotations is None
+
+    @pytest.mark.asyncio
+    async def test_explicit_hint_is_still_published(self) -> None:
+        tools = await self._tools(self._table())
+        annotations = tools["explicit_reader"].annotations
+        assert get_field(annotations, "read_only_hint", "readOnlyHint") is True
+
+    @pytest.mark.asyncio
+    async def test_opt_in_restores_tag_derived_hints(self) -> None:
+        tools = await self._tools(self._table(emit_derived=True))
+        annotations = tools["tagged_reader"].annotations
+        assert get_field(annotations, "read_only_hint", "readOnlyHint") is True
+        assert get_field(annotations, "destructive_hint", "destructiveHint") is False

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import toolregistry
 from toolregistry import ToolRegistry
 from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
@@ -120,6 +121,10 @@ def _validate_execution_hints(hints: Any) -> dict[str, bool]:
     return dict(hints)
 
 
+#: Whether the one-time warning about the declared-hints fallback has fired.
+_DECLARED_HINTS_FALLBACK_WARNED = False
+
+
 @dataclass
 class RouteEntry:
     """A single route entry in the central router table.
@@ -145,6 +150,9 @@ class RouteEntry:
         execution_hints_override: Hints served instead of the resolved ones,
             or ``None`` to serve the resolved mapping.  An empty mapping
             suppresses every annotation/extension for this route.
+        include_derived_hints: Whether to publish hints derived from policy
+            tags.  ``False`` (the default) publishes only explicit
+            declarations; a tag alone makes no claim on the wire.
     """
 
     # Tool reference
@@ -171,6 +179,10 @@ class RouteEntry:
     # change what the adapters publish for this route.
     parameter_schema_override: dict[str, Any] | None = None
     execution_hints_override: dict[str, bool] | None = None
+    include_derived_hints: bool = False
+    #: Back-reference to the owning table, so ``served_execution_hints``
+    #: reads the live policy flag instead of a value copied at build time.
+    _table_ref: Any = field(default=None, repr=False, compare=False)
 
     # --- Backward-compatible properties -----------------------------------
 
@@ -245,15 +257,53 @@ class RouteEntry:
         return self.parameters_schema
 
     @property
-    def served_execution_hints(self) -> dict[str, bool]:
-        """Execution hints to publish, honoring the route override.
+    def declared_execution_hints(self) -> dict[str, bool]:
+        """Explicitly declared execution hints, excluding tag-derived values.
 
-        An override of ``{}`` suppresses every annotation and extension,
-        which is how a consumer says "no claim" for a tool it has not rated.
+        Falls back to the resolved mapping on a core that predates
+        ``Tool.declared_execution_hints``.  The fallback keeps older
+        installs working; the core floor moves once the release carrying
+        the property lands.
+        """
+        hints = getattr(self.tool, "declared_execution_hints", None)
+        if isinstance(hints, dict):
+            return hints
+        global _DECLARED_HINTS_FALLBACK_WARNED
+        if not _DECLARED_HINTS_FALLBACK_WARNED:
+            _DECLARED_HINTS_FALLBACK_WARNED = True
+            version = getattr(toolregistry, "__version__", "unknown")
+            warnings.warn(
+                f"toolregistry {version} has no Tool.declared_execution_hints; "
+                "execution hints fall back to the resolved mapping, so policy "
+                "tags still reach clients. Upgrade toolregistry to the release "
+                "carrying #353.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self.execution_hints
+
+    @property
+    def served_execution_hints(self) -> dict[str, bool]:
+        """Execution hints to publish.
+
+        An explicit route override wins.  Otherwise a tool publishes only
+        what it declared; tag-derived hints are included only when the table
+        opted in.  The flag is read from the owning table when the entry is
+        attached to one, so assigning ``RouteTable.emit_derived_execution_hints``
+        takes effect immediately instead of silently doing nothing.  An
+        override of ``{}`` suppresses every annotation and extension, which
+        is how a consumer says "no claim" for a tool it has not rated.
         """
         if self.execution_hints_override is not None:
             return dict(self.execution_hints_override)
-        return self.execution_hints
+        include_derived = (
+            self._table_ref.emit_derived_execution_hints
+            if self._table_ref is not None
+            else self.include_derived_hints
+        )
+        if include_derived:
+            return self.execution_hints
+        return self.declared_execution_hints
 
     @property
     def schema_hash(self) -> str:
@@ -307,6 +357,12 @@ class RouteTable:
     """
 
     _registry: ToolRegistry
+
+    #: Whether adapters publish hints derived from policy tags.  ``False``
+    #: (the default) publishes only explicit declarations: a tag chosen for
+    #: local permission policy must not become a client auto-approve claim.
+    emit_derived_execution_hints: bool = False
+
     _routes: dict[str, RouteEntry] = field(default_factory=dict, init=False)
     _listeners: list[Callable[[str, str], None]] = field(
         default_factory=list, init=False
@@ -382,6 +438,8 @@ class RouteTable:
             disable_reason=self._registry.get_disable_reason(tool.name),
             parameter_schema_override=self._parameter_overrides.get(tool.name),
             execution_hints_override=self._execution_hint_overrides.get(tool.name),
+            include_derived_hints=self.emit_derived_execution_hints,
+            _table_ref=self,
         )
 
     # ============== Query API ==============
@@ -598,6 +656,24 @@ class RouteTable:
             self._execution_hint_overrides[tool_name] = normalized
         route.execution_hints_override = self._execution_hint_overrides.get(tool_name)
         self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
+
+    def set_emit_derived_execution_hints(self, enabled: bool) -> None:
+        """Enable or disable publication of tag-derived execution hints.
+
+        The default is ``False``: only explicitly declared hints reach the
+        wire, because a ``READ_ONLY`` tag may have been chosen for local
+        permission policy rather than as a client-facing safety claim.
+        Enabling this restores the pre-0.8 behavior for deployments that
+        deliberately want tag-derived annotations.
+
+        Args:
+            enabled: ``True`` to publish resolved hints, ``False`` to
+                publish explicit declarations only.
+        """
+        if self.emit_derived_execution_hints == enabled:
+            return
+        self.emit_derived_execution_hints = enabled
+        self.refresh_all()
 
     # ============== Observer Pattern ==============
 

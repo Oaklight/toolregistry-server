@@ -619,14 +619,14 @@ class TestRouteOverrides:
 
     def test_hint_override_can_suppress_every_claim(self) -> None:
         from toolregistry import ToolRegistry
-        from toolregistry.tool import ToolMetadata, ToolTag
+        from toolregistry.tool import ToolMetadata
 
         registry = ToolRegistry()
         registry.register(
             Tool.from_function(
                 lambda: "x",  # noqa: E731
                 name="reader",
-                metadata=ToolMetadata(tags={ToolTag.READ_ONLY}),
+                metadata=ToolMetadata(read_only_hint=True),
             )
         )
         table = RouteTable(registry)
@@ -837,3 +837,127 @@ class TestOverrideSchemaEdgeCases:
                     "additionalProperties": {"type": "integer"},
                 },
             )
+
+
+def _core_has_declared_hints() -> bool:
+    """Whether the installed core separates declared from resolved hints."""
+    from toolregistry.tool import ToolMetadata
+
+    return hasattr(ToolMetadata, "declared_execution_hints")
+
+
+class TestDeclaredHintPublication:
+    """A policy tag alone must not become a client-facing claim (#136)."""
+
+    @staticmethod
+    def _entry(declared: dict[str, bool], resolved: dict[str, bool]) -> RouteEntry:
+        tool = MagicMock()
+        tool.name = "probe"
+        tool.namespace = None
+        tool.method_name = None
+        tool.description = ""
+        tool.parameters = {"type": "object", "properties": {}}
+        tool.callable = lambda: None
+        tool.is_async = False
+        tool.metadata = MagicMock(defer=False)
+        tool.execution_hints = resolved
+        tool.declared_execution_hints = declared
+        return RouteEntry(
+            tool=tool, path="/probe", handler=tool.callable, is_async=False
+        )
+
+    def test_default_publishes_declared_only(self) -> None:
+        resolved = {"read_only_hint": True, "destructive_hint": False}
+        entry = self._entry({}, resolved)
+        assert entry.served_execution_hints == {}
+        entry.include_derived_hints = True
+        assert entry.served_execution_hints == resolved
+
+    def test_explicit_hints_publish_without_opt_in(self) -> None:
+        declared = {"read_only_hint": True, "destructive_hint": False}
+        entry = self._entry(declared, declared)
+        assert entry.served_execution_hints == declared
+
+    def test_explicit_override_still_wins(self) -> None:
+        entry = self._entry({"read_only_hint": True}, {"read_only_hint": True})
+        entry.execution_hints_override = {}
+        assert entry.served_execution_hints == {}
+
+    @pytest.mark.skipif(
+        not _core_has_declared_hints(),
+        reason="installed toolregistry predates declared_execution_hints",
+    )
+    def test_table_default_and_opt_in(self) -> None:
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolMetadata, ToolTag
+
+        registry = ToolRegistry()
+
+        def reader(value: int) -> int:
+            """Read a value."""
+            return value
+
+        registry.register(
+            Tool.from_function(reader, metadata=ToolMetadata(tags={ToolTag.READ_ONLY}))
+        )
+
+        default = RouteTable(registry)
+        assert default.get_route("reader").served_execution_hints == {}
+
+        opted_in = RouteTable(registry, emit_derived_execution_hints=True)
+        assert opted_in.get_route("reader").served_execution_hints == {
+            "read_only_hint": True,
+            "destructive_hint": False,
+        }
+
+        opted_in.set_emit_derived_execution_hints(False)
+        assert opted_in.get_route("reader").served_execution_hints == {}
+
+
+@pytest.mark.skipif(
+    not _core_has_declared_hints(),
+    reason="installed toolregistry predates declared_execution_hints",
+)
+class TestLiveDerivedHintFlag:
+    """Direct assignment to the documented flag must take effect (#139 review)."""
+
+    @staticmethod
+    def _table() -> RouteTable:
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolMetadata, ToolTag
+
+        registry = ToolRegistry()
+
+        def reader(value: int) -> int:
+            """Read a value."""
+            return value
+
+        registry.register(
+            Tool.from_function(reader, metadata=ToolMetadata(tags={ToolTag.READ_ONLY}))
+        )
+        return RouteTable(registry)
+
+    def test_direct_field_assignment_takes_effect(self) -> None:
+        table = self._table()
+        route = table.get_route("reader")
+        assert route.served_execution_hints == {}
+
+        table.emit_derived_execution_hints = True
+        assert route.served_execution_hints == {
+            "read_only_hint": True,
+            "destructive_hint": False,
+        }
+
+        table.emit_derived_execution_hints = False
+        assert route.served_execution_hints == {}
+
+    def test_setter_is_idempotent(self) -> None:
+        table = self._table()
+        events: list[tuple[str, str]] = []
+        table.add_listener(lambda name, event: events.append((name, event)))
+
+        table.set_emit_derived_execution_hints(False)  # already the default
+        assert events == []
+
+        table.set_emit_derived_execution_hints(True)
+        assert len(events) == 1
