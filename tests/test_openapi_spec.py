@@ -380,3 +380,58 @@ class TestParityWithFastAPI:
 
         assert "/tools/default/add" not in document["paths"]
         assert "/tools/default/greet" in document["paths"]
+
+
+def _core_has_declared_hints() -> bool:
+    from toolregistry.tool import ToolMetadata
+
+    return hasattr(ToolMetadata, "declared_execution_hints")
+
+
+@pytest.mark.skipif(
+    not _core_has_declared_hints(),
+    reason="installed toolregistry predates declared_execution_hints",
+)
+class TestDeclaredHintExtensions:
+    """OpenAPI follows the same declared-by-default policy as MCP."""
+
+    @staticmethod
+    def _table(emit_derived: bool = False) -> RouteTable:
+        from toolregistry.tool import ToolMetadata, ToolTag
+
+        registry = ToolRegistry()
+
+        def tagged_reader() -> str:
+            """Read state declared through tags only."""
+            return "state"
+
+        def explicit_reader() -> str:
+            """Read state declared explicitly."""
+            return "state"
+
+        registry.register(
+            Tool.from_function(
+                tagged_reader, metadata=ToolMetadata(tags={ToolTag.READ_ONLY})
+            )
+        )
+        registry.register(
+            Tool.from_function(
+                explicit_reader, metadata=ToolMetadata(read_only_hint=True)
+            )
+        )
+        return RouteTable(registry, emit_derived_execution_hints=emit_derived)
+
+    def test_tag_only_tool_has_no_extension(self) -> None:
+        operation = _operation(build_openapi_schema(self._table()), "tagged_reader")
+        assert "x-read-only" not in operation
+
+    def test_explicit_hint_is_still_published(self) -> None:
+        operation = _operation(build_openapi_schema(self._table()), "explicit_reader")
+        assert operation["x-read-only"] is True
+
+    def test_opt_in_restores_tag_derived_extension(self) -> None:
+        operation = _operation(
+            build_openapi_schema(self._table(emit_derived=True)), "tagged_reader"
+        )
+        assert operation["x-read-only"] is True
+        assert operation["x-destructive"] is False
