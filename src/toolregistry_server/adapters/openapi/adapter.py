@@ -115,6 +115,22 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
     schema = route.served_parameters_schema or {}
     if not schema.get("additionalProperties"):
         declared = set((schema.get("properties") or {}).keys())
+        undeclared = sorted(set(payload) - declared)
+        if undeclared and route.parameter_schema_override is not None:
+            # An override is now the served contract.  Dropping keys it does
+            # not declare would run the tool with different semantics than
+            # the client sent; reject instead.
+            raise HTTPException(
+                status_code=422,
+                detail=[
+                    {
+                        "loc": ["body", name],
+                        "msg": "Extra inputs are not permitted",
+                        "type": "extra_forbidden",
+                    }
+                    for name in undeclared
+                ],
+            )
         payload = {k: v for k, v in payload.items() if k in declared}
     return payload
 

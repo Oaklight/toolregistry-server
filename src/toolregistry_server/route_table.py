@@ -5,6 +5,7 @@ This module provides the RouteTable class that bridges ToolRegistry and
 protocol adapters (OpenAPI, MCP, etc.).
 """
 
+import copy
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import Any
 from toolregistry import ToolRegistry
 from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
+from toolregistry.utils import compute_schema_hash
 
 
 def _extract_output_schema(tool: Tool) -> dict[str, Any] | None:
@@ -40,6 +42,54 @@ def normalize_parameters_schema(schema: Any) -> dict[str, Any]:
     if not isinstance(normalized.get("properties"), dict):
         normalized["properties"] = {}
     return normalized
+
+
+#: The hint names a route override may set.  Keys are the transport-neutral
+#: ``ToolMetadata`` field names; the adapters map them to their wire spelling.
+_EXECUTION_HINT_NAMES: frozenset[str] = frozenset(
+    {
+        "read_only_hint",
+        "destructive_hint",
+        "idempotent_hint",
+        "open_world_hint",
+    }
+)
+
+
+def _validate_parameter_override(parameters: Any) -> dict[str, Any]:
+    """Return a deep-copied object schema, rejecting a wrong shape.
+
+    An override that is not an object schema used to be silently coerced to
+    ``{"type": "object", "properties": {}}``, which then dropped every
+    argument.  Raising here keeps a malformed override from changing what
+    the server accepts without saying so.
+    """
+    if not isinstance(parameters, dict):
+        raise TypeError("parameter override must be a JSON Schema object")
+    if parameters.get("type") not in (None, "object"):
+        raise ValueError("parameter override must describe an object schema")
+    properties = parameters.get("properties")
+    if properties is not None and not isinstance(properties, dict):
+        raise ValueError("parameter override 'properties' must be a mapping")
+    return normalize_parameters_schema(copy.deepcopy(parameters))
+
+
+def _validate_execution_hints(hints: Any) -> dict[str, bool]:
+    """Return a copied hint mapping, rejecting unknown names and non-bools."""
+    if not isinstance(hints, dict):
+        raise TypeError("execution hint override must be a mapping")
+    unknown = sorted(set(hints) - _EXECUTION_HINT_NAMES)
+    if unknown:
+        raise ValueError(
+            f"unknown execution hint(s) {unknown}; "
+            f"valid names are {sorted(_EXECUTION_HINT_NAMES)}"
+        )
+    invalid = sorted(
+        name for name, value in hints.items() if not isinstance(value, bool)
+    )
+    if invalid:
+        raise ValueError(f"execution hint(s) {invalid} must be booleans")
+    return dict(hints)
 
 
 @dataclass
@@ -159,7 +209,11 @@ class RouteEntry:
     def served_parameters_schema(self) -> dict[str, Any]:
         """Parameter schema to publish, honoring the route override."""
         if self.parameter_schema_override is not None:
-            return normalize_parameters_schema(self.parameter_schema_override)
+            # Copy on read as well as on write: an adapter that mutates the
+            # schema it was handed must not change what the route serves.
+            return normalize_parameters_schema(
+                copy.deepcopy(self.parameter_schema_override)
+            )
         return self.parameters_schema
 
     @property
@@ -175,7 +229,15 @@ class RouteEntry:
 
     @property
     def schema_hash(self) -> str:
-        """Content hash of the tool's parameter schema."""
+        """Content hash of the parameter schema this route serves.
+
+        Equal to the tool's own ``metadata.schema_hash`` until an override
+        is active; then it describes the override, because that is the
+        schema the payload publishes.  The registry tool's hash is never
+        modified.
+        """
+        if self.parameter_schema_override is not None:
+            return compute_schema_hash(self.served_parameters_schema)
         metadata = getattr(self.tool, "metadata", None)
         return getattr(metadata, "schema_hash", "") or ""
 
@@ -400,10 +462,12 @@ class RouteTable:
     ) -> None:
         """Override the parameter schema published for one route.
 
-        The registry ``Tool`` and its ``schema_hash`` are untouched; only the
-        payload built by the adapters changes.  The override is remembered
-        across ``refresh()`` and ``refresh_all()``.  Passing ``None`` clears
-        it and restores the tool's own schema.
+        The registry ``Tool`` and its ``metadata.schema_hash`` are untouched;
+        only the payload built by the adapters changes.  The route's
+        :attr:`RouteEntry.schema_hash` describes the served schema, so it
+        changes with the override.  The override is remembered across
+        ``refresh()`` and ``refresh_all()``.  Passing ``None`` clears it and
+        restores the tool's own schema.
 
         Args:
             tool_name: Registered tool name.
@@ -411,16 +475,23 @@ class RouteTable:
 
         Raises:
             KeyError: If the route does not exist.
+            TypeError: If *parameters* is not a mapping.
+            ValueError: If *parameters* is not an object schema, or its
+                ``properties`` is not a mapping.
         """
         route = self._routes.get(tool_name)
         if route is None:
             raise KeyError(f"Route not found: {tool_name}")
         if parameters is None:
-            self._parameter_overrides.pop(tool_name, None)
+            if self._parameter_overrides.pop(tool_name, None) is None:
+                route.parameter_schema_override = None
+                return
         else:
-            self._parameter_overrides[tool_name] = normalize_parameters_schema(
-                parameters
-            )
+            normalized = _validate_parameter_override(parameters)
+            if self._parameter_overrides.get(tool_name) == normalized:
+                route.parameter_schema_override = normalized
+                return
+            self._parameter_overrides[tool_name] = normalized
         route.parameter_schema_override = self._parameter_overrides.get(tool_name)
         self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
 
@@ -440,14 +511,23 @@ class RouteTable:
 
         Raises:
             KeyError: If the route does not exist.
+            TypeError: If *hints* is not a mapping.
+            ValueError: If *hints* contains an unknown name or a non-boolean
+                value.
         """
         route = self._routes.get(tool_name)
         if route is None:
             raise KeyError(f"Route not found: {tool_name}")
         if hints is None:
-            self._execution_hint_overrides.pop(tool_name, None)
+            if self._execution_hint_overrides.pop(tool_name, None) is None:
+                route.execution_hints_override = None
+                return
         else:
-            self._execution_hint_overrides[tool_name] = dict(hints)
+            normalized = _validate_execution_hints(hints)
+            if self._execution_hint_overrides.get(tool_name) == normalized:
+                route.execution_hints_override = normalized
+                return
+            self._execution_hint_overrides[tool_name] = normalized
         route.execution_hints_override = self._execution_hint_overrides.get(tool_name)
         self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
 
