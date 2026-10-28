@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-import toolregistry
 from toolregistry import ToolRegistry
 from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
@@ -119,10 +118,6 @@ def _validate_execution_hints(hints: Any) -> dict[str, bool]:
     if invalid:
         raise ValueError(f"execution hint(s) {invalid} must be booleans")
     return dict(hints)
-
-
-#: Whether the one-time warning about the declared-hints fallback has fired.
-_DECLARED_HINTS_FALLBACK_WARNED = False
 
 
 @dataclass
@@ -260,27 +255,30 @@ class RouteEntry:
     def declared_execution_hints(self) -> dict[str, bool]:
         """Explicitly declared execution hints, excluding tag-derived values.
 
-        Falls back to the resolved mapping on a core that predates
-        ``Tool.declared_execution_hints``.  The fallback keeps older
-        installs working; the core floor moves once the release carrying
-        the property lands.
+        Prefers ``Tool.declared_execution_hints`` when the installed core
+        provides it.  Otherwise reconstructs the same mapping from the
+        ``ToolMetadata`` hint fields, which exist on the 0.19.x floor; a core
+        that predates those fields yields an empty mapping, which is the
+        safe "no claim".  The server therefore does not depend on the core
+        release that adds the property.
         """
         hints = getattr(self.tool, "declared_execution_hints", None)
         if isinstance(hints, dict):
             return hints
-        global _DECLARED_HINTS_FALLBACK_WARNED
-        if not _DECLARED_HINTS_FALLBACK_WARNED:
-            _DECLARED_HINTS_FALLBACK_WARNED = True
-            version = getattr(toolregistry, "__version__", "unknown")
-            warnings.warn(
-                f"toolregistry {version} has no Tool.declared_execution_hints; "
-                "execution hints fall back to the resolved mapping, so policy "
-                "tags still reach clients. Upgrade toolregistry to the release "
-                "carrying #353.",
-                UserWarning,
-                stacklevel=2,
-            )
-        return self.execution_hints
+        metadata = getattr(self.tool, "metadata", None)
+        if metadata is None:
+            return {}
+        declared: dict[str, bool] = {}
+        for name in _EXECUTION_HINT_NAMES:
+            value = getattr(metadata, name, None)
+            if value is not None:
+                declared[name] = value
+        if (
+            "destructive_hint" not in declared
+            and declared.get("read_only_hint") is True
+        ):
+            declared["destructive_hint"] = False
+        return declared
 
     @property
     def served_execution_hints(self) -> dict[str, bool]:
@@ -673,7 +671,9 @@ class RouteTable:
         if self.emit_derived_execution_hints == enabled:
             return
         self.emit_derived_execution_hints = enabled
-        self.refresh_all()
+        # Entries read the flag live through their table reference, so only
+        # the notification is needed; a full rebuild would be wasted work.
+        self._notify_listeners("*", ChangeEventType.METADATA_UPDATE.value)
 
     # ============== Observer Pattern ==============
 

@@ -883,10 +883,6 @@ class TestDeclaredHintPublication:
         entry.execution_hints_override = {}
         assert entry.served_execution_hints == {}
 
-    @pytest.mark.skipif(
-        not _core_has_declared_hints(),
-        reason="installed toolregistry predates declared_execution_hints",
-    )
     def test_table_default_and_opt_in(self) -> None:
         from toolregistry import ToolRegistry
         from toolregistry.tool import ToolMetadata, ToolTag
@@ -914,10 +910,6 @@ class TestDeclaredHintPublication:
         assert opted_in.get_route("reader").served_execution_hints == {}
 
 
-@pytest.mark.skipif(
-    not _core_has_declared_hints(),
-    reason="installed toolregistry predates declared_execution_hints",
-)
 class TestLiveDerivedHintFlag:
     """Direct assignment to the documented flag must take effect (#139 review)."""
 

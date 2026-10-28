@@ -33,10 +33,10 @@ keywords = [
     "agentic-ai",
     "toolregistry",
 ]
-# TODO(release): raise this floor to the toolregistry release carrying
-# Tool.declared_execution_hints (#353) before the next server release. Until
-# then the declared-hints default falls back to the resolved mapping and
-# tag-derived hints still reach clients.
+# Core #353 adds Tool.declared_execution_hints; this server reconstructs the
+# same mapping from ToolMetadata on older cores, so the declared-hints default
+# is safe on the 0.19.x floor. Bump the floor when convenient, not as a
+# release blocker.
 dependencies = ["toolregistry>=0.19.0,<1.0.0"]
 
 [project.optional-dependencies]

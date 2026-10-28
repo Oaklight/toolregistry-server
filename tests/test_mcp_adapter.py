@@ -152,6 +152,8 @@ def route_table_with_tools(mock_registry: MagicMock) -> RouteTable:
     }
     add_tool.callable = add
     add_tool.is_async = False
+    add_tool.execution_hints = {}
+    add_tool.declared_execution_hints = {}
     add_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
     multiply_tool = MagicMock()
@@ -169,6 +171,8 @@ def route_table_with_tools(mock_registry: MagicMock) -> RouteTable:
     }
     multiply_tool.callable = multiply
     multiply_tool.is_async = False
+    multiply_tool.execution_hints = {}
+    multiply_tool.declared_execution_hints = {}
     multiply_tool.metadata.defer = False  # MagicMock bypasses frozen semantics
 
     mock_registry._tools = {"add": add_tool, "multiply": multiply_tool}
@@ -401,11 +405,13 @@ class TestListTools:
         only exist from the release that adds them).
         """
         add_tool = route_table_with_tools.get_route("add").tool
-        add_tool.execution_hints = {
+        hints = {
             "read_only_hint": True,
             "destructive_hint": False,
             "open_world_hint": False,
         }
+        add_tool.execution_hints = hints
+        add_tool.declared_execution_hints = hints
         add_tool.metadata.title = "Add Numbers"
 
         server = route_table_to_mcp_server(route_table_with_tools)
@@ -1982,12 +1988,6 @@ def _core_has_execution_hints() -> bool:
     return "read_only_hint" in {f.name for f in fields(ToolMetadata)}
 
 
-def _core_has_declared_hints() -> bool:
-    from toolregistry.tool import ToolMetadata
-
-    return hasattr(ToolMetadata, "declared_execution_hints")
-
-
 @pytest.mark.skipif(
     not _core_has_execution_hints(),
     reason="installed toolregistry predates execution hints",
@@ -2071,10 +2071,6 @@ class TestToolAnnotations:
         assert get_field(annotations, "read_only_hint", "readOnlyHint") is None
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        not _core_has_declared_hints(),
-        reason="installed toolregistry predates declared_execution_hints",
-    )
     async def test_tag_derived_hints_need_opt_in(
         self, annotated_table: RouteTable
     ) -> None:
@@ -2335,10 +2331,6 @@ class TestRouteOverridesOnMCP:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not _core_has_declared_hints(),
-    reason="installed toolregistry predates declared_execution_hints",
-)
 class TestDeclaredHintsAreTheDefault:
     """A policy tag alone must not reach a client as an auto-approve claim."""
 
