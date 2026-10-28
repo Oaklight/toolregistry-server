@@ -88,6 +88,10 @@ def _call(url: str, path: str, payload: object = None, headers: dict | None = No
         return error.code, dict(error.headers), error.read()
 
 
+def _reject_constant(value: str):
+    raise AssertionError(f"non-finite {value} in JSON body")
+
+
 def _path(route_table: RouteTable) -> str:
     return route_table.get_route("add").path
 
@@ -221,6 +225,21 @@ class TestResultEncoding:
         status, body = _serve_result(Point(1, 2))
         assert status == 200
         assert body == b'{"x":1,"y":2}'
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            {"score": float("nan")},
+            [Point(1, float("inf"))],
+            {float("nan"), 1.0},
+        ],
+        ids=["dict", "list-of-dataclass", "set"],
+    )
+    def test_non_finite_floats_are_null(self, value):
+        """The encoder covers projections, not just plain containers (#130)."""
+        status, body = _serve_result(value)
+        assert status == 200
+        assert json.loads(body, parse_constant=_reject_constant) is not None
 
     def test_bytes_are_base64_encoded(self):
         """Core's deliberate choice: bytes become base64, not UTF-8 text."""
