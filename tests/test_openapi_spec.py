@@ -382,16 +382,6 @@ class TestParityWithFastAPI:
         assert "/tools/default/greet" in document["paths"]
 
 
-def _core_has_declared_hints() -> bool:
-    from toolregistry.tool import ToolMetadata
-
-    return hasattr(ToolMetadata, "declared_execution_hints")
-
-
-@pytest.mark.skipif(
-    not _core_has_declared_hints(),
-    reason="installed toolregistry predates declared_execution_hints",
-)
 class TestDeclaredHintExtensions:
     """OpenAPI follows the same declared-by-default policy as MCP."""
 
