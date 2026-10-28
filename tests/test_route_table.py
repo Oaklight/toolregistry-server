@@ -672,3 +672,96 @@ class TestRouteOverrides:
             table.override_parameters("missing", {"type": "object", "properties": {}})
         with pytest.raises(KeyError):
             table.override_execution_hints("missing", {})
+
+
+class TestRouteOverrideValidationAndIsolation:
+    """The override is a copy, and a bad one fails loudly (#138 review)."""
+
+    @staticmethod
+    def _table() -> RouteTable:
+        from toolregistry import ToolRegistry
+
+        registry = ToolRegistry()
+
+        @registry.register
+        def search(query: str) -> str:
+            """Search."""
+            return query
+
+        return RouteTable(registry)
+
+    def test_override_is_copied_from_the_caller(self) -> None:
+        table = self._table()
+        shape = {"type": "object", "properties": {"query": {"type": "string"}}}
+        table.override_parameters("search", shape)
+        shape["properties"]["query"]["type"] = "integer"
+
+        served = table.get_route("search").served_parameters_schema
+        assert served["properties"]["query"]["type"] == "string"
+
+    def test_served_schema_is_independent_of_the_route(self) -> None:
+        table = self._table()
+        table.override_parameters(
+            "search", {"type": "object", "properties": {"query": {"type": "string"}}}
+        )
+        route = table.get_route("search")
+        route.served_parameters_schema["properties"]["query"]["type"] = "integer"
+        assert route.served_parameters_schema["properties"]["query"]["type"] == "string"
+
+    def test_served_hash_tracks_the_override(self) -> None:
+        from toolregistry.utils import compute_schema_hash
+
+        table = self._table()
+        route = table.get_route("search")
+        tool_hash = route.tool.metadata.schema_hash
+
+        table.override_parameters(
+            "search",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+            },
+        )
+        assert route.schema_hash == compute_schema_hash(route.served_parameters_schema)
+        assert route.schema_hash != tool_hash
+        # The registry tool is untouched.
+        assert route.tool.metadata.schema_hash == tool_hash
+
+    def test_invalid_parameter_override_raises(self) -> None:
+        table = self._table()
+        with pytest.raises(ValueError):
+            table.override_parameters("search", {"type": "array"})
+        with pytest.raises(ValueError):
+            table.override_parameters(
+                "search", {"type": "object", "properties": ["query"]}
+            )
+        with pytest.raises(TypeError):
+            table.override_parameters("search", "not a schema")
+
+    def test_invalid_hint_override_raises(self) -> None:
+        table = self._table()
+        with pytest.raises(ValueError, match="unknown execution hint"):
+            table.override_execution_hints("search", {"readOnlyHint": True})
+        with pytest.raises(ValueError, match="must be booleans"):
+            table.override_execution_hints("search", {"read_only_hint": "yes"})
+        with pytest.raises(TypeError):
+            table.override_execution_hints("search", ["read_only_hint"])
+
+    def test_reapplying_an_identical_override_does_not_notify(self) -> None:
+        table = self._table()
+        events: list[tuple[str, str]] = []
+        table.add_listener(lambda name, event: events.append((name, event)))
+
+        schema = {"type": "object", "properties": {"query": {"type": "string"}}}
+        table.override_parameters("search", schema)
+        table.override_parameters("search", schema)
+        table.override_execution_hints("search", {"read_only_hint": True})
+        table.override_execution_hints("search", {"read_only_hint": True})
+
+        assert events == [
+            ("search", "metadata_update"),
+            ("search", "metadata_update"),
+        ]
