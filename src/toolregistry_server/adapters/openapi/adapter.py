@@ -60,6 +60,22 @@ def _validation_details(exc: Exception) -> list[dict[str, Any]]:
     return details
 
 
+def _undeclared_parameter_details(
+    payload: dict[str, Any],
+    schema: dict[str, Any],
+    message: str,
+    error_type: str,
+) -> list[dict[str, Any]]:
+    """Return a 422 detail entry for every payload key *schema* omits."""
+    if schema.get("additionalProperties"):
+        return []
+    declared = set((schema.get("properties") or {}).keys())
+    return [
+        {"loc": ["body", name], "msg": message, "type": error_type}
+        for name in sorted(set(payload) - declared)
+    ]
+
+
 def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
     """Validate a request body and return the arguments for the tool call.
 
@@ -67,6 +83,11 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
     body gets the same coercion and unknown-key filtering the tool applies
     when called directly. Proxy tools (MCP / OpenAPI / LangChain, which have
     no ``parameters_model``) are checked against their own JSON Schema.
+
+    When a parameter override is active, the served schema is authoritative:
+    a key it does not declare is rejected before the model runs, and a key
+    the model then drops is rejected too.  Without an override the model
+    keeps its historical filtering behavior.
 
     Args:
         route: The route being called.
@@ -99,38 +120,54 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
 
     payload = _strip_framework_fields(raw, route)
     tool = route.tool
+    override_active = route.parameter_schema_override is not None
+    served_schema = route.served_parameters_schema
+
+    if override_active:
+        # The override is the contract the client was given.  Reject a key
+        # it omits before the tool's model gets a chance to filter it away.
+        details = _undeclared_parameter_details(
+            payload,
+            served_schema,
+            "Extra inputs are not permitted",
+            "extra_forbidden",
+        )
+        if details:
+            raise HTTPException(status_code=422, detail=details)
+
     if getattr(tool, "parameters_model", None) is not None:
         try:
-            return tool.validate_parameters(payload)
+            validated = tool.validate_parameters(payload)
         except ValidationError as exc:
             raise HTTPException(
                 status_code=422, detail=_validation_details(exc)
             ) from exc
+        if override_active:
+            # The override advertised a key the tool cannot accept; the
+            # model dropped it.  Reject rather than run with less than the
+            # client sent.
+            dropped = sorted(set(payload) - set(validated))
+            if dropped:
+                raise HTTPException(
+                    status_code=422,
+                    detail=[
+                        {
+                            "loc": ["body", name],
+                            "msg": "Parameter is not accepted by the tool",
+                            "type": "unexpected_parameter",
+                        }
+                        for name in dropped
+                    ],
+                )
+        return validated
 
     try:
-        schema_validate(payload, route.served_parameters_schema)
+        schema_validate(payload, served_schema)
     except SchemaValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_details(exc)) from exc
 
-    schema = route.served_parameters_schema or {}
-    if not schema.get("additionalProperties"):
-        declared = set((schema.get("properties") or {}).keys())
-        undeclared = sorted(set(payload) - declared)
-        if undeclared and route.parameter_schema_override is not None:
-            # An override is now the served contract.  Dropping keys it does
-            # not declare would run the tool with different semantics than
-            # the client sent; reject instead.
-            raise HTTPException(
-                status_code=422,
-                detail=[
-                    {
-                        "loc": ["body", name],
-                        "msg": "Extra inputs are not permitted",
-                        "type": "extra_forbidden",
-                    }
-                    for name in undeclared
-                ],
-            )
+    if not served_schema.get("additionalProperties"):
+        declared = set((served_schema.get("properties") or {}).keys())
         payload = {k: v for k, v in payload.items() if k in declared}
     return payload
 

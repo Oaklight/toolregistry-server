@@ -759,3 +759,53 @@ class TestBackendSelection:
                 assert response.status == 200
         finally:
             app.shutdown()
+
+
+class TestOverrideIsAuthoritative:
+    """A model-backed tool also enforces the served override (#138 review)."""
+
+    def test_override_rejects_an_argument_it_omits(self, route_table):
+        from fastapi import HTTPException
+
+        route = route_table.get_route("add")
+        route_table.override_parameters(
+            "add", {"type": "object", "properties": {"a": {"type": "integer"}}}
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            _validate_arguments(route, {"a": 1, "b": 2})
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.detail[0]["type"] == "extra_forbidden"
+
+    def test_override_rejects_an_argument_the_model_drops(self, route_table):
+        from fastapi import HTTPException
+
+        route = route_table.get_route("add")
+        route_table.override_parameters(
+            "add",
+            {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "integer"},
+                    "b": {"type": "integer"},
+                    "extra": {"type": "string"},
+                },
+            },
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            _validate_arguments(route, {"a": 1, "b": 2, "extra": "x"})
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.detail[0]["type"] == "unexpected_parameter"
+
+    def test_override_matching_the_model_still_coerces(self, route_table):
+        route = route_table.get_route("add")
+        route_table.override_parameters(
+            "add",
+            {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "integer"},
+                    "b": {"type": "integer"},
+                },
+            },
+        )
+        assert _validate_arguments(route, {"a": "2", "b": 3}) == {"a": 2, "b": 3}
