@@ -12,11 +12,11 @@
     },
     "httpserver": {
       "files": {
-        "httpserver.py": "a70930aeebf6a01a48e4d21cef51727dd468a352ec0d6ae511a89ab1df1943b4"
+        "httpserver.py": "a9a7d64bdd4a599ee582764466779db72f5cc3e1e7f21e03d27bedf0281f2d3e"
       },
       "requested": true,
-      "upstream_hash": "cecfbef158f6acea196a55ac4ca17e20ef3ed8de7dbcf1136d11fc88a59c15a9",
-      "version": "0.6.1"
+      "upstream_hash": "83f6f376fb6bb4ee3d05eeeb9a4039807c9d30339a75cbfcd6053f2fdc0fbf98",
+      "version": "0.7.0"
     },
     "jsonschema": {
       "files": {
@@ -36,7 +36,7 @@
     }
   },
   "source": {
-    "ref": "v2026.10.23.2",
+    "ref": "v2026.10.25",
     "repo": "Oaklight/zerodep"
   }
 }
