@@ -574,3 +574,101 @@ class TestRouteTable:
         assert route is not None
         assert route.tool is tool
         assert route.tool.name == "greet"
+
+
+class TestRouteOverrides:
+    """Route-level overrides change the served payload, not the Tool (#137)."""
+
+    @staticmethod
+    def _table() -> RouteTable:
+        from toolregistry import ToolRegistry
+
+        registry = ToolRegistry()
+
+        @registry.register
+        def greet(name: str) -> str:
+            """Greet someone."""
+            return f"Hello, {name}!"
+
+        return RouteTable(registry)
+
+    def test_parameter_override_is_served_without_touching_the_tool(self) -> None:
+        table = self._table()
+        route = table.get_route("greet")
+        assert route is not None
+        original = dict(route.tool.parameters)
+
+        override = {
+            "type": "object",
+            "properties": {"name": {"type": "number"}},
+            "required": ["name"],
+        }
+        table.override_parameters("greet", override)
+
+        assert route.served_parameters_schema["properties"]["name"]["type"] == "number"
+        assert route.tool.parameters == original
+
+    def test_clearing_the_parameter_override_restores_the_tool_schema(self) -> None:
+        table = self._table()
+        route = table.get_route("greet")
+        table.override_parameters(
+            "greet", {"type": "object", "properties": {"name": {"type": "number"}}}
+        )
+        table.override_parameters("greet", None)
+        assert route.served_parameters_schema == route.parameters_schema
+
+    def test_hint_override_can_suppress_every_claim(self) -> None:
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import ToolMetadata, ToolTag
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool.from_function(
+                lambda: "x",  # noqa: E731
+                name="reader",
+                metadata=ToolMetadata(tags={ToolTag.READ_ONLY}),
+            )
+        )
+        table = RouteTable(registry)
+        assert table.get_route("reader").served_execution_hints == {
+            "read_only_hint": True,
+            "destructive_hint": False,
+        }
+
+        table.override_execution_hints("reader", {})
+        assert table.get_route("reader").served_execution_hints == {}
+
+        table.override_execution_hints("reader", {"read_only_hint": False})
+        assert table.get_route("reader").served_execution_hints == {
+            "read_only_hint": False
+        }
+
+        table.override_execution_hints("reader", None)
+        assert table.get_route("reader").served_execution_hints == {
+            "read_only_hint": True,
+            "destructive_hint": False,
+        }
+
+    def test_overrides_survive_refresh_and_refresh_all(self) -> None:
+        table = self._table()
+        table.override_parameters(
+            "greet", {"type": "object", "properties": {"name": {"type": "number"}}}
+        )
+        table.override_execution_hints("greet", {})
+
+        table.refresh("greet")
+        route = table.get_route("greet")
+        assert route.served_parameters_schema["properties"]["name"]["type"] == "number"
+        assert route.served_execution_hints == {}
+
+        table.refresh_all()
+        route = table.get_route("greet")
+        assert route.served_parameters_schema["properties"]["name"]["type"] == "number"
+        assert route.served_execution_hints == {}
+
+    def test_unknown_route_raises(self) -> None:
+        table = self._table()
+        with pytest.raises(KeyError):
+            table.override_parameters("missing", {"type": "object", "properties": {}})
+        with pytest.raises(KeyError):
+            table.override_execution_hints("missing", {})

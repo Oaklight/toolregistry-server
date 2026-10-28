@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from toolregistry.tool import Tool as _Tool
 
 from ..._vendor.structlog import get_logger
-from ...route_table import normalize_parameters_schema
 from ...session import (
     SessionContext,
     SessionManager,
@@ -643,10 +642,10 @@ def route_table_to_mcp_server(
                 make_mcp_tool(
                     name=route.tool_name,
                     description=route.description or "",
-                    schema=normalize_parameters_schema(route.parameters_schema),
+                    schema=route.served_parameters_schema,
                     output_schema=route.output_schema,
                     title=route.title,
-                    annotations=make_tool_annotations(route.execution_hints),
+                    annotations=make_tool_annotations(route.served_execution_hints),
                 )
             )
         logger.debug(f"list_tools: returning {len(tools)} enabled tools")
