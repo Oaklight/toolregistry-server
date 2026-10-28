@@ -192,7 +192,7 @@ The adapter includes `ETagMiddleware` for HTTP caching on `/tools` and `/openapi
 
 ## Operation Extensions
 
-OpenAPI has no standard slot for execution hints, so the same resolved hints that MCP emits as `annotations` are exposed as `x-` extensions on each generated operation:
+OpenAPI has no standard slot for execution hints, so the same served hints that MCP emits as `annotations` are exposed as `x-` extensions on each generated operation:
 
 | Extension | Source |
 |---|---|
@@ -202,7 +202,7 @@ OpenAPI has no standard slot for execution hints, so the same resolved hints tha
 | `x-open-world` | `open_world_hint` |
 | `x-title` | `ToolMetadata.title` |
 
-Only declared hints appear: an operation for a tool that declares nothing keeps its previous shape. As on the MCP side, tags gate deployment exposure and hints describe a call, so a method-level hint does not change which tools a profile exposes.
+Only declared hints appear by default: an operation for a tool that declares nothing keeps its previous shape, and tag-derived values are omitted unless the `RouteTable` enables `emit_derived_execution_hints`. As on the MCP side, tags gate deployment exposure and hints describe a call, so a method-level hint does not change which tools a profile exposes.
 
 ## API Reference
 

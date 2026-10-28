@@ -8,10 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Route-level overrides for served schemas and hints** (#137): `RouteTable.override_parameters(name, schema)` and `override_execution_hints(name, hints)` change what one route publishes without touching the registry `Tool` or its `schema_hash`. `RouteEntry` exposes the result as `served_parameters_schema` / `served_execution_hints`, and both adapters read that view, so MCP `inputSchema` / `annotations` and OpenAPI request schemas / `x-` extensions stay in step. `{}` suppresses every annotation/extension; `None` clears the override. Overrides survive `refresh()` and `refresh_all()` and notify listeners, so ETags and `tools/list_changed` reflect them. This replaces the need to wrap the private `tools/list` handler.
+
+### Changed
+
+- **Only declared execution hints are published by default** (#136): a `READ_ONLY` / `DESTRUCTIVE` tag can be chosen for local permission policy, so publishing the resolved mapping turned that tag into a client-facing auto-approve claim. `served_execution_hints` now prefers `Tool.declared_execution_hints`; tag-derived values are published only when the `RouteTable` opts in with `emit_derived_execution_hints=True` or `set_emit_derived_execution_hints(True)`. Explicit hints are unchanged, and `MCP` / `OpenAPI` follow the same policy because both read the same view. On a core that predates `declared_execution_hints` the old resolved mapping is used as a fallback; the core floor moves with the next release.
+
+
+## [0.8.0] - 2026-10-23
+
+### Added
+
 - **A zero-dependency HTTP backend for the OpenAPI adapter** (#127, #128, epic #101): `--backend httpserver` (or `OpenAPIAdapter(..., backend="httpserver")`) serves the same wire contract on the vendored `httpserver` — tool routes, `/tools` and `/openapi.json` with ETag/`304`, `/docs`, and `/events` over SSE — with no FastAPI or uvicorn installed. `fastapi` stays the default; `--reload` is reported as unsupported on the new backend. Results are serialised with core's `ToolResultJSONEncoder`, so dataclasses, pydantic models, sets, datetimes and nested containers keep the JSON shapes the FastAPI path produced; `bytes` stays base64 by design.
 - **A differential parity suite between the two backends** (#129): both apps are served over sockets and the same request matrix is sent to each, asserting identical status, `ETag` and body bytes for tool calls, error envelopes, conditional GETs, 404/405, the disabled-tool 503 and the three auth cases.
-
-## [0.7.1] - 2026-10-23
 
 ### Changed
 

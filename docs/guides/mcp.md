@@ -205,9 +205,9 @@ http://localhost:8000/sse       # SSE
 When a tool's metadata declares a display title or execution hints, `tools/list` carries them as MCP `title` and `annotations`:
 
 - `ToolMetadata.title` → `title`
-- `Tool.execution_hints` → `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`)
+- `Tool.declared_execution_hints` → `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`)
 
-Unset hints stay absent: a tool that declares nothing keeps the minimal `{name, description, inputSchema}` definition, so hosts apply their protocol defaults. Set them in code or in the config file:
+Unset hints stay absent: a tool that declares nothing keeps the minimal `{name, description, inputSchema}` definition, so hosts apply their protocol defaults. Only explicit declarations are published by default: `execution_hints` also derives values from `read_only` / `destructive` tags, and those tags may have been chosen for local permission policy rather than as a client-facing safety claim. Opt in with `RouteTable(..., emit_derived_execution_hints=True)` if you want the tag-derived values published too. Set explicit hints in code or in the config file:
 
 ```yaml
 tool_metadata:
