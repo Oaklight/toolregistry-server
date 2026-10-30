@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A core tool override now reaches every served schema**: `ToolRegistry.override()` swaps
+  the `Tool`, and a `RouteEntry` holds a direct reference to it, but
+  `RouteTable._on_registry_change()` ignored `ChangeEventType.OVERRIDE`.  MCP `tools/list`
+  and the OpenAPI routes therefore kept the displaced description, title and annotations.
+  `OVERRIDE` is handled like `METADATA_UPDATE`: the named route is rebuilt from the installed
+  tool and listeners are notified, so `tools/list_changed` reaches clients.  Pinned by
+  `tests/test_route_table.py::TestRouteTable::test_override_replaces_the_route_and_notifies`.
 - **Route overrides are validated and authoritative** (#138): an override is now a validated copy. `override_parameters` requires an object schema (accepting `["object", "null"]`), normalizes an omitted `additionalProperties` to `false`, fills `required` from the tool's validation model, warns when a model-required field is missing from the override, and rejects a typed `additionalProperties` that a model-backed tool cannot enforce. The OpenAPI adapter checks the served schema before the validation model, so a key the override omits is rejected with `extra_forbidden` instead of silently reaching the callable.
 
 ## [0.8.0] - 2026-10-23
