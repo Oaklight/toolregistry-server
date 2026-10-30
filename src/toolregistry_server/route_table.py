@@ -383,12 +383,15 @@ class RouteTable:
 
         Keeps the RouteTable in sync when tools are enabled/disabled/registered
         externally (e.g. via the admin panel).  Handles both tool-level and
-        namespace-level enable/disable events.
+        namespace-level enable/disable events, and replaces the route when the
+        tool itself is overridden: the route holds a direct ``Tool`` reference,
+        so without this an override never reaches an MCP or OpenAPI client.
         """
         if event.event_type in (
             ChangeEventType.ENABLE,
             ChangeEventType.DISABLE,
             ChangeEventType.METADATA_UPDATE,
+            ChangeEventType.OVERRIDE,
         ):
             if event.tool_name:
                 if event.tool_name in self._routes:
