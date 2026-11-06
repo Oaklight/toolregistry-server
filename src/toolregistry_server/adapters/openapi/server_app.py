@@ -36,7 +36,12 @@ if TYPE_CHECKING:
 
 from toolregistry.utils import ToolResultJSONEncoder
 
-from ..._vendor.httpserver import App, Response, StreamingResponse
+from ..._vendor.httpserver import (
+    DEFAULT_MAX_BODY_SIZE,
+    App,
+    Response,
+    StreamingResponse,
+)
 from ..._vendor.structlog import get_logger
 from .adapter import _validate_arguments
 
@@ -297,6 +302,7 @@ def create_httpserver_app(
     description: str = "OpenAPI server for ToolRegistry tools",
     tokens: Sequence[str] | None = None,
     enable_etag: bool = True,
+    max_body_size: int = DEFAULT_MAX_BODY_SIZE,
 ) -> App:
     """Build a :class:`~httpserver.App` exposing the RouteTable.
 
@@ -308,12 +314,20 @@ def create_httpserver_app(
         tokens: Bearer tokens accepted by the server. ``None`` or an empty
             sequence disables authentication.
         enable_etag: Add a content ETag to successful responses.
+        max_body_size: Largest request body accepted, in bytes. A body above
+            this returns ``413`` with a JSON body. Defaults to 1 MiB.
 
     Returns:
         An :class:`~httpserver.App` with the tool routes, ``/tools``,
         ``/openapi.json``, ``/docs`` and ``/events`` registered.
+
+    Raises:
+        ValueError: If *max_body_size* is not positive.
     """
-    app = App()
+    if max_body_size <= 0:
+        raise ValueError(f"max_body_size must be positive, got {max_body_size}")
+
+    app = App(max_body_size=max_body_size)
 
     for route in route_table.list_routes(enabled_only=False):
         app.route(route.path, methods=["POST"])(
