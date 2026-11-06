@@ -1,8 +1,10 @@
 """Tests for the RouteTable module."""
 
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
+from toolregistry import ToolRegistry
 from toolregistry.events import ChangeEvent, ChangeEventType
 from toolregistry.tool import Tool
 
@@ -447,6 +449,76 @@ class TestRouteTable:
         assert route_table.version == initial_version + 1
         assert len(events) == 1
         assert events[0] == ("greet", "disable")
+
+    def test_override_replaces_the_route_and_notifies(self) -> None:
+        """An override swaps the tool, so the route must carry the new text.
+
+        A route holds a direct ``Tool`` reference.  Ignoring ``OVERRIDE`` left
+        MCP and OpenAPI clients on the displaced definition, which is exactly
+        the bug the admin panel's override made visible.
+        """
+        registry = ToolRegistry()
+
+        @registry.register
+        def greet(name: str = "World") -> str:
+            """Say hello."""
+            return f"Hello, {name}!"
+
+        route_table = RouteTable(registry)
+        events: list[tuple[str, str]] = []
+        route_table.add_listener(lambda name, event: events.append((name, event)))
+
+        current = registry.get_tool("greet")
+        assert current is not None
+        metadata = replace(current.metadata, title="Greeting")
+        replacement = replace(
+            current, description="Say hello, loudly.", metadata=metadata
+        )
+        registry.override("greet", replacement)
+
+        route = route_table.get_route("greet")
+        assert route is not None
+        # The registry normalises the replacement into its own Tool; the route
+        # must reference that installed instance, not the displaced one.
+        assert route.tool is registry.get_tool("greet")
+        assert route.tool is not current
+        assert route.description == "Say hello, loudly."
+        assert route.title == "Greeting"
+        assert events == [("greet", "override")]
+
+    def test_restore_override_restores_the_route_and_notifies(self) -> None:
+        """Undoing an override restores the served text and notifies listeners.
+
+        ``restore_override`` emits the same ``OVERRIDE`` event, so the route
+        must be rebuilt from the displaced tool just like a fresh override.
+        """
+        registry = ToolRegistry()
+
+        @registry.register
+        def greet(name: str = "World") -> str:
+            """Say hello."""
+            return f"Hello, {name}!"
+
+        route_table = RouteTable(registry)
+        events: list[tuple[str, str]] = []
+        route_table.add_listener(lambda name, event: events.append((name, event)))
+
+        current = registry.get_tool("greet")
+        assert current is not None
+        metadata = replace(current.metadata, title="Greeting")
+        replacement = replace(
+            current, description="Say hello, loudly.", metadata=metadata
+        )
+        registry.override("greet", replacement)
+        registry.restore_override("greet")
+
+        route = route_table.get_route("greet")
+        assert route is not None
+        assert route.tool is registry.get_tool("greet")
+        assert route.tool is current
+        assert route.description == "Say hello."
+        assert route.title is None
+        assert events == [("greet", "override"), ("greet", "override")]
 
     def test_namespace_disable_syncs_all_tools(self, mock_registry: MagicMock) -> None:
         """Test that disabling a namespace refreshes all tools in that namespace."""
