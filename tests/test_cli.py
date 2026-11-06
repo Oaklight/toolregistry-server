@@ -74,6 +74,18 @@ class TestCreateParser:
         assert args.tokens == "tokens.txt"
         assert args.reload is True
 
+    def test_openapi_max_body_size_defaults_to_one_mib(self):
+        """The httpserver body cap defaults to 1 MiB (#134)."""
+        parser = CLI().create_parser()
+        args = parser.parse_args(["openapi"])
+        assert args.max_body_size == 1_048_576
+
+    def test_openapi_max_body_size_override(self):
+        """--max-body-size reaches the parsed namespace (#134)."""
+        parser = CLI().create_parser()
+        args = parser.parse_args(["openapi", "--max-body-size", "2097152"])
+        assert args.max_body_size == 2_097_152
+
     def test_mcp_command(self):
         """Test mcp subcommand parsing."""
         parser = CLI().create_parser()
@@ -187,6 +199,7 @@ class TestMain:
             tokens_path=None,
             reload=False,
             backend="fastapi",
+            max_body_size=1_048_576,
         )
 
     @patch.object(
@@ -213,7 +226,16 @@ class TestMain:
             tokens_path=None,
             reload=False,
             backend="fastapi",
+            max_body_size=1_048_576,
         )
+
+    @patch.object(
+        __import__("toolregistry_server.app", fromlist=["App"]).App, "serve_openapi"
+    )
+    def test_openapi_command_passes_max_body_size(self, mock_serve):
+        """--max-body-size reaches the adapter (#134)."""
+        main(["openapi", "--config", "tools.yaml", "--max-body-size", "2048"])
+        assert mock_serve.call_args.kwargs["max_body_size"] == 2048
 
     @patch("toolregistry_server.app.App.serve_mcp")
     def test_mcp_command_dispatch(self, mock_serve):

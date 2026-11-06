@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
 from ..._vendor.structlog import get_logger
 from .. import Adapter
 
@@ -150,6 +151,9 @@ class OpenAPIAdapter(Adapter):
         version: API version string.
         description: API description.
         backend: ``"fastapi"`` or ``"httpserver"``.
+        max_body_size: Largest request body accepted by the ``httpserver``
+            backend, in bytes. Defaults to 1 MiB. The ``fastapi`` backend
+            leaves its own server configuration alone.
     """
 
     def __init__(
@@ -161,6 +165,7 @@ class OpenAPIAdapter(Adapter):
         version: str = "1.0.0",
         description: str = "OpenAPI server for ToolRegistry tools",
         backend: str = "fastapi",
+        max_body_size: int = DEFAULT_MAX_BODY_SIZE,
     ) -> None:
         super().__init__(route_table)
 
@@ -182,6 +187,7 @@ class OpenAPIAdapter(Adapter):
                 version=version,
                 description=description,
                 tokens=tokens,
+                max_body_size=max_body_size,
             )
             return
 
@@ -276,6 +282,16 @@ class OpenAPIAdapter(Adapter):
                 "(vendored, zero-dependency)"
             ),
         )
+        parser.add_argument(
+            "--max-body-size",
+            type=int,
+            default=DEFAULT_MAX_BODY_SIZE,
+            metavar="BYTES",
+            help=(
+                "Largest request body the httpserver backend accepts, in bytes "
+                f"(default: {DEFAULT_MAX_BODY_SIZE}); larger bodies return 413"
+            ),
+        )
 
     @classmethod
     def create_and_run(cls, route_table: RouteTable, **kwargs) -> None:
@@ -297,6 +313,7 @@ class OpenAPIAdapter(Adapter):
             version=kwargs.pop("version", identity.version),
             description=kwargs.pop("description", identity.description),
             backend=kwargs.pop("backend", "fastapi"),
+            max_body_size=kwargs.pop("max_body_size", DEFAULT_MAX_BODY_SIZE),
         )
         adapter.run(**kwargs)
 

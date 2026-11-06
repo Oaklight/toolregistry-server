@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, NoReturn, TextIO
 if TYPE_CHECKING:
     from .app import App
 
+from ._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
 from ._vendor.structlog import get_logger
 
 logger = get_logger()
@@ -219,6 +220,7 @@ class CLI:
                 tokens_path=getattr(parsed, "tokens", None),
                 reload=getattr(parsed, "reload", False),
                 backend=getattr(parsed, "backend", "fastapi"),
+                max_body_size=getattr(parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE),
             )
         elif parsed.command == "mcp":
             self.app.serve_mcp(
