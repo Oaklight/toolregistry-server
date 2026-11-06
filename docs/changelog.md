@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **The httpserver request-body cap is configurable** (#134): the vendored backend inherited a 1 MiB cap, so a tool call whose arguments exceeded that worked on the FastAPI backend and returned 413 on the httpserver backend. `--max-body-size BYTES` and `OpenAPIAdapter(max_body_size=...)` now set the cap; the default stays 1 MiB, a non-positive value raises `ValueError`, and an oversized body returns a JSON `413` with no traceback. A body large enough that the client is still writing when the server rejects it can still end in a connection reset — draining the unread body has to happen in the vendored server.
 - **A core tool override now reaches every served schema**: `ToolRegistry.override()` swaps
   the `Tool`, and a `RouteEntry` holds a direct reference to it, but
   `RouteTable._on_registry_change()` ignored `ChangeEventType.OVERRIDE`.  MCP `tools/list`
