@@ -20,10 +20,13 @@
 - **核心层覆写现在会传达到所有对外发布的 schema**：`ToolRegistry.override()` 会替换
   `Tool`，而 `RouteEntry` 持有它的直接引用，但 `RouteTable._on_registry_change()` 忽略了
   `ChangeEventType.OVERRIDE`。因此 MCP 的 `tools/list` 与 OpenAPI 路由仍保留被替换的描述、
-  标题与注解。现在 `OVERRIDE` 与 `METADATA_UPDATE` 同等处理：按名称重建该路由并通知监听者，
-  因此 `tools/list_changed` 能传达到客户端。由
+  标题与注解。现在 `OVERRIDE` 与 `METADATA_UPDATE` 同等处理：按名称从已安装的工具重建该路由，
+  描述与 `title` 一并更新，并通知监听者。订阅变更的客户端会收到 `tools/list_changed`，
+  其余客户端在下一次 `tools/list` 时看到新定义。由
   `tests/test_route_table.py::TestRouteTable::test_override_replaces_the_route_and_notifies`
-  固定。
+  （override、restore）与
+  `tests/test_mcp_session.py::TestBackwardCompatibility::test_override_reaches_list_tools_title`
+  （MCP `tools/list`）固定。
 - **路由级覆盖会被校验并具有权威性**（#138）：覆盖现在是一份经校验的副本。`override_parameters` 要求对象 schema（接受 `["object", "null"]`），把省略的 `additionalProperties` 规范化为 `false`，从工具的校验模型补齐 `required`，当覆盖缺少模型必填字段时发出警告，并拒绝模型型工具无法执行的带类型 `additionalProperties`。OpenAPI 适配器在走校验模型之前先检查实际发布的 schema，因此覆盖未声明的键会以 `extra_forbidden` 被拒绝，而不会静默传给可调用对象。
 
 ## [0.8.0] - 2026-10-23
