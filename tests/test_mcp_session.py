@@ -6,9 +6,11 @@ is correctly created, injected, and reused across tool calls.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
+from toolregistry import ToolRegistry
 from toolregistry.tool import Tool
 
 from toolregistry_server import RouteTable
@@ -114,6 +116,39 @@ class TestBackwardCompatibility:
             result = await client.call_tool("plain_add", {"a": 3, "b": 4})
             assert get_field(result, "is_error", "isError") is False
             assert result.content[0].text == "7"
+
+    @pytest.mark.asyncio
+    async def test_override_reaches_list_tools_title(self) -> None:
+        """An override's description and title reach MCP ``tools/list``."""
+        registry = ToolRegistry()
+
+        @registry.register
+        def greet(name: str = "Ada") -> str:
+            """Say hello."""
+            return f"Hello, {name}!"
+
+        route_table = RouteTable(registry)
+        # SDK v2 honours the default tools/list ttlMs (five minutes), so a
+        # second list_tools() in the same session would return the cached
+        # list.  Disable caching here so the assertion reaches the server.
+        server = route_table_to_mcp_server(route_table, list_tools_ttl_ms=0)
+
+        async with create_test_client(server) as client:
+            before = await client.list_tools()
+            assert before.tools[0].title is None
+            assert before.tools[0].description == "Say hello."
+
+            current = registry.get_tool("greet")
+            assert current is not None
+            metadata = replace(current.metadata, title="Greeting")
+            replacement = replace(
+                current, description="Say hello, loudly.", metadata=metadata
+            )
+            registry.override("greet", replacement)
+
+            after = await client.list_tools()
+            assert after.tools[0].title == "Greeting"
+            assert after.tools[0].description == "Say hello, loudly."
 
 
 # ---------------------------------------------------------------------------
