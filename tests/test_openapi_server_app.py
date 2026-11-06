@@ -32,11 +32,26 @@ def noop() -> str:
     return "ok"
 
 
+def echo_len(text: str) -> int:
+    """Return the length of *text*."""
+    return len(text)
+
+
 @pytest.fixture
 def route_table() -> RouteTable:
     registry = ToolRegistry()
     registry.register(add)
     registry.register(noop)
+    table = RouteTable(registry)
+    table.refresh_all()
+    return table
+
+
+@pytest.fixture
+def body_limit_table() -> RouteTable:
+    """A table with one tool that accepts an arbitrarily long string."""
+    registry = ToolRegistry()
+    registry.register(echo_len)
     table = RouteTable(registry)
     table.refresh_all()
     return table
@@ -321,3 +336,47 @@ class TestEvents:
             threading.Thread(target=emit, daemon=True).start()
             line = response.readline()
             assert line.startswith(b"event: tool_change")
+
+
+class TestBodyLimit:
+    """The request-body cap is configurable and fails as a JSON 413 (#134)."""
+
+    @staticmethod
+    def _call_with_limit(table: RouteTable, payload: object, max_body_size: int):
+        app = create_httpserver_app(table, max_body_size=max_body_size)
+        url = _serve(app)
+        try:
+            return _call(url, table.get_route("echo_len").path, payload)
+        finally:
+            app.shutdown()
+
+    def test_default_limit_is_one_mib(self, route_table):
+        assert create_httpserver_app(route_table).max_body_size == 1_048_576
+
+    def test_body_under_the_limit_is_served(self, body_limit_table):
+        status, _, body = self._call_with_limit(
+            body_limit_table, {"text": "x" * 100}, max_body_size=1024
+        )
+        assert status == 200
+        assert json.loads(body) == 100
+
+    def test_body_over_the_limit_is_a_413(self, body_limit_table):
+        status, headers, body = self._call_with_limit(
+            body_limit_table, {"text": "x" * 2000}, max_body_size=1024
+        )
+        assert status == 413
+        assert headers["Content-Type"].startswith("application/json")
+        assert "too large" in json.loads(body)["error"].lower()
+        assert b"Traceback" not in body
+
+    def test_raising_the_limit_accepts_the_same_body(self, body_limit_table):
+        payload = {"text": "x" * 2000}
+        status, _, body = self._call_with_limit(
+            body_limit_table, payload, max_body_size=8192
+        )
+        assert status == 200
+        assert json.loads(body) == 2000
+
+    def test_non_positive_limit_is_rejected(self, route_table):
+        with pytest.raises(ValueError, match="max_body_size"):
+            create_httpserver_app(route_table, max_body_size=0)
