@@ -28,6 +28,7 @@ One-shot usage (standalone server)::
 """
 
 import importlib
+import inspect
 from typing import TYPE_CHECKING, Any
 
 from ._vendor.structlog import get_logger
@@ -173,6 +174,38 @@ def _source_filter_kwargs(source: object) -> dict[str, Any]:
     return filters
 
 
+def _allow_local_files_kwargs(loader: Any = None) -> dict[str, Any]:
+    """Return the local-file opt-in when the installed core accepts it.
+
+    ``toolregistry`` core gained the ``allow_local_files`` keyword with #376
+    to make reading a local OpenAPI path explicit.  A core that predates that
+    release reads local paths by default and raises ``TypeError`` for the
+    keyword, so the server cannot pass it unconditionally.  Like
+    :func:`_source_filter_kwargs`, this detects what the installed core
+    supports and forwards the value only where it exists: cores before the
+    release keep their existing behaviour, which already allowed local files.
+
+    Remove this probe once the server requires a core release that contains
+    #376.
+
+    Args:
+        loader: The loader to inspect.  Defaults to the installed
+            :func:`toolregistry.integrations.openapi.load_openapi_spec`;
+            tests pass a stand-in.
+
+    Returns:
+        ``{"allow_local_files": True}`` when the loader accepts the keyword,
+        else an empty dict.
+    """
+    if loader is None:
+        from toolregistry.integrations.openapi import load_openapi_spec
+
+        loader = load_openapi_spec
+    if "allow_local_files" in inspect.signature(loader).parameters:
+        return {"allow_local_files": True}
+    return {}
+
+
 def register_mcp_source(
     registry: "ToolRegistry",
     source: "MCPSource",
@@ -228,8 +261,10 @@ def register_openapi_source(
         elif source.auth.type == "header":
             headers[source.auth.header_name] = source.auth.token
 
-    # Load spec and determine base URL
-    spec = load_openapi_spec(source.url)
+    # Load spec and determine base URL.  The URL comes from the operator's
+    # tool configuration, which is already trusted (the same file can import
+    # Python modules and run stdio commands), so a local path is allowed.
+    spec = load_openapi_spec(source.url, **_allow_local_files_kwargs())
     base_url = source.base_url
     if not base_url:
         servers = spec.get("servers", [])
