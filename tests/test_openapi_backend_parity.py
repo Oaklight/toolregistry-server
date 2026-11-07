@@ -3,11 +3,9 @@
 Both apps are served on ephemeral ports over real sockets and the same
 request matrix is sent to each, so a contract drift shows up as a diff and
 not as a rewritten expectation. The FastAPI app is the reference until the
-switchover lands (epic #101).
-
-Known, deliberate divergence: ``bytes`` tool results. FastAPI decodes them as
-UTF-8 text, core's encoder base64-encodes them; the httpserver backend keeps
-core's behaviour.
+switchover lands (epic #101); tool results are rendered by core's
+``ToolResultJSONEncoder`` on both sides, so non-finite floats and Decimals,
+``bytes`` and sets reach the wire identically.
 """
 
 import asyncio
@@ -18,15 +16,32 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 from toolregistry import ToolRegistry
+from toolregistry.utils import ToolResultJSONEncoder
 
 from toolregistry_server import RouteTable
 from toolregistry_server.adapters.openapi import create_openapi_app
 from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
 
 TOKENS = ["secret"]
+
+#: Whether the installed core projects non-finite floats and Decimals to
+#: ``null``.  The projection is on core ``master`` but not in the released
+#: 0.19.0, so the non-finite cases skip on the default matrix and run in the
+#: ``core-master`` CI job until the server floor is raised (#159).
+_CORE_PROJECTS_NON_FINITE = "null" in ToolResultJSONEncoder().encode(
+    {"x": float("nan")}
+)
+_SKIP_WITHOUT_NON_FINITE = pytest.mark.skipif(
+    not _CORE_PROJECTS_NON_FINITE,
+    reason=(
+        "installed toolregistry lacks non-finite projection; the core-master "
+        "job runs this case (see #159)"
+    ),
+)
 
 
 @dataclass
@@ -60,6 +75,41 @@ def moment() -> datetime:
     return datetime(2026, 10, 23, 12, 0)
 
 
+def nan_dict() -> dict:
+    """Return a mapping with a NaN value."""
+    return {"x": float("nan")}
+
+
+def inf_value() -> float:
+    """Return a positive infinity."""
+    return float("inf")
+
+
+def nan_in_list() -> dict:
+    """Return a nested list with a NaN value."""
+    return {"a": [1.0, float("nan")]}
+
+
+def decimal_nan() -> Decimal:
+    """Return a non-finite Decimal."""
+    return Decimal("NaN")
+
+
+def decimal_finite() -> Decimal:
+    """Return a finite Decimal, which both backends encode as a string."""
+    return Decimal("1.5")
+
+
+def blob() -> bytes:
+    """Return bytes, which core encodes as base64."""
+    return b"hello"
+
+
+def unordered() -> set:
+    """Return a set, which core orders by ``repr``."""
+    return {"b", "a"}
+
+
 def boom() -> str:
     """Always raise."""
     raise RuntimeError("exploded")
@@ -70,9 +120,29 @@ def unserialisable():
     return object()
 
 
+def _reject_json_constant(value: str) -> None:
+    """Fail when ``json.loads`` meets a non-standard constant."""
+    raise AssertionError(f"non-standard JSON constant: {value}")
+
+
 def build_table() -> RouteTable:
     registry = ToolRegistry()
-    for tool in (add, greet, point, points, moment, boom, unserialisable):
+    for tool in (
+        add,
+        greet,
+        point,
+        points,
+        moment,
+        nan_dict,
+        inf_value,
+        nan_in_list,
+        decimal_nan,
+        decimal_finite,
+        blob,
+        unordered,
+        boom,
+        unserialisable,
+    ):
         registry.register(tool)
     table = RouteTable(registry)
     table.refresh_all()
@@ -229,6 +299,52 @@ class TestToolRoutes:
         assert json.loads(body) == {
             "detail": "Tool 'unserialisable' result is not serialisable"
         }
+
+    @pytest.mark.parametrize(
+        ("tool_name", "expected"),
+        [
+            pytest.param("nan_dict", {"x": None}, marks=_SKIP_WITHOUT_NON_FINITE),
+            pytest.param("inf_value", None, marks=_SKIP_WITHOUT_NON_FINITE),
+            pytest.param(
+                "nan_in_list", {"a": [1.0, None]}, marks=_SKIP_WITHOUT_NON_FINITE
+            ),
+            pytest.param("decimal_nan", None, marks=_SKIP_WITHOUT_NON_FINITE),
+            ("decimal_finite", "1.5"),
+        ],
+    )
+    def test_non_finite_results_are_strict_json(self, both, table, tool_name, expected):
+        """Both backends project non-finite values to null (#130, #135).
+
+        ``jsonable_encoder`` is not the reference here: it hands a float NaN
+        to ``json`` unchanged and keeps a non-finite ``Decimal`` as a value,
+        so the shared reference is core's ``ToolResultJSONEncoder``, which
+        the httpserver already uses.  The non-finite cases are skipped when
+        the installed core still lacks the projection (#159); the
+        ``core-master`` CI job runs them.
+        """
+        status, body = compare(both, table.get_route(tool_name).path, {})
+        assert status == 200
+        text = body.decode("utf-8")
+        assert "NaN" not in text
+        assert "Infinity" not in text
+        assert json.loads(text, parse_constant=_reject_json_constant) == expected
+
+    @pytest.mark.parametrize(
+        ("tool_name", "expected"),
+        [("blob", "aGVsbG8="), ("unordered", ["a", "b"])],
+    )
+    def test_core_projections_agree(self, both, table, tool_name, expected):
+        """``bytes`` and sets use core's projection on both backends."""
+        status, body = compare(both, table.get_route(tool_name).path, {})
+        assert status == 200
+        assert json.loads(body) == expected
+
+    def test_tool_response_content_type_matches(self, both, table):
+        """Both backends send the same Content-Type for tool results."""
+        path = table.get_route("add").path
+        fastapi = request(both[0], path, {"a": 1, "b": 2})
+        httpserver = request(both[1], path, {"a": 1, "b": 2})
+        assert fastapi[1]["content-type"] == httpserver[1]["content-type"]
 
     def test_unknown_path(self, both):
         status, body = compare(both, "/nope")

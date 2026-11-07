@@ -5,11 +5,13 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
+import json
 import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Any
 
 from toolregistry import ValidationError
+from toolregistry.utils import ToolResultJSONEncoder
 
 from ..._vendor.jsonschema import SchemaValidationError, schema_validate
 from ...route_table import RouteEntry, RouteTable, _allows_additional_properties
@@ -17,7 +19,7 @@ from ...route_table import RouteEntry, RouteTable, _allows_additional_properties
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from fastapi import APIRouter, FastAPI
+    from fastapi import APIRouter, FastAPI, Response
 
 # ---------------------------------------------------------------------------
 # Argument coercion
@@ -264,6 +266,32 @@ def _openapi_extensions(route: RouteEntry) -> dict[str, Any] | None:
     return extensions or None
 
 
+def _tool_result_response(result: Any) -> "Response":
+    """Render a tool result the way the httpserver backend does.
+
+    Both OpenAPI backends share :class:`ToolResultJSONEncoder`, so non-finite
+    floats and ``Decimal`` values reach the wire as ``null`` instead of a
+    bare ``NaN`` or the string ``"NaN"``.  FastAPI would otherwise serialise
+    the raw result through pydantic, whose JSON mode keeps a non-finite
+    ``Decimal`` as a string.
+
+    Args:
+        result: The value returned by the tool.
+
+    Returns:
+        A JSON response carrying the encoded body.
+    """
+    from fastapi import Response
+
+    body = json.dumps(
+        result,
+        cls=ToolResultJSONEncoder,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return Response(content=body, media_type="application/json; charset=utf-8")
+
+
 def _add_route_from_entry(
     router: "APIRouter",
     route: RouteEntry,
@@ -344,11 +372,12 @@ def _add_route_from_entry(
                     )
                 arguments = _validate_arguments(current_route, data)
                 try:
-                    return await h(**arguments)
+                    result = await h(**arguments)
                 except HTTPException:
                     raise
                 except Exception as e:
                     raise _wrap_tool_error(tname, e) from e
+                return _tool_result_response(result)
 
             return _endpoint
 
@@ -380,11 +409,12 @@ def _add_route_from_entry(
                     )
                 arguments = _validate_arguments(current_route, data)
                 try:
-                    return h(**arguments)
+                    result = h(**arguments)
                 except HTTPException:
                     raise
                 except Exception as e:
                     raise _wrap_tool_error(tname, e) from e
+                return _tool_result_response(result)
 
             return _endpoint
 
