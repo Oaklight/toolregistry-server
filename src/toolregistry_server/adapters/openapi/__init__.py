@@ -153,7 +153,8 @@ class OpenAPIAdapter(Adapter):
         backend: ``"fastapi"`` or ``"httpserver"``.
         max_body_size: Largest request body accepted by the ``httpserver``
             backend, in bytes. Defaults to 1 MiB. The ``fastapi`` backend
-            leaves its own server configuration alone.
+            leaves its own server configuration alone; a non-default value
+            logs a warning instead of being applied silently.
     """
 
     def __init__(
@@ -190,6 +191,13 @@ class OpenAPIAdapter(Adapter):
                 max_body_size=max_body_size,
             )
             return
+
+        if max_body_size != DEFAULT_MAX_BODY_SIZE:
+            logger.warning(
+                "max_body_size is enforced only by the httpserver backend; "
+                f"the fastapi backend ignores {max_body_size} bytes. "
+                "Enforce the limit in the reverse proxy or use --backend httpserver."
+            )
 
         dependencies = None
         if tokens:
