@@ -86,6 +86,13 @@ class TestCreateParser:
         args = parser.parse_args(["openapi", "--max-body-size", "2097152"])
         assert args.max_body_size == 2_097_152
 
+    @pytest.mark.parametrize("value", ["0", "-1"])
+    def test_openapi_max_body_size_must_be_positive(self, value):
+        """A non-positive cap is a parser error, not a silent no-op (#134)."""
+        parser = CLI().create_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["openapi", "--max-body-size", value])
+
     def test_mcp_command(self):
         """Test mcp subcommand parsing."""
         parser = CLI().create_parser()
