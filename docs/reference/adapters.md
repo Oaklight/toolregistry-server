@@ -73,6 +73,8 @@ route_table.override_execution_hints("analyse", {})  # suppress all annotations
 
 `override_parameters` replaces the parameter schema; `override_execution_hints` replaces the hint mapping, and `{}` means "no claim". Pass `None` to clear either override. Both are reflected in MCP (`inputSchema` / `annotations`) and OpenAPI (request schema / `x-` extensions), survive `refresh()` and `refresh_all()`, and notify `RouteTable` listeners. The registry `Tool` and its `schema_hash` are untouched, so an override cannot leak into another consumer.
 
+An override is descriptive: request validation still uses the tool's own validation model. For a model-backed tool, an override that is stricter than that model — adds a required field, tightens `minimum`/`maximum`/`minLength`/`maxLength`, changes `pattern`, narrows or changes `enum`, or narrows or changes a property's type — is rejected at save time, because the model would not enforce it. A looser override is saved with a `UserWarning`. Proxy tools validate against the served schema, so they are not restricted.
+
 By default adapters publish only hints a tool declared explicitly. Tag-derived hints are opt-in: `RouteTable(..., emit_derived_execution_hints=True)` or `set_emit_derived_execution_hints(True)` restores them.
 
 ## Request Validation
