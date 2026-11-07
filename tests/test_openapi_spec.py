@@ -135,8 +135,11 @@ class TestOperationIdentity:
             "add",
             {
                 "type": "object",
-                "properties": {"a": {"type": "string"}},
-                "required": ["a"],
+                "properties": {
+                    "a": {"type": "integer", "description": "First operand"},
+                    "b": {"type": "integer"},
+                },
+                "required": ["a", "b"],
             },
         )
         document = build_openapi_schema(route_table)
@@ -144,8 +147,8 @@ class TestOperationIdentity:
             "application/json"
         ]["schema"]
 
-        assert schema["properties"]["a"]["type"] == "string"
-        assert schema["required"] == ["a"]
+        assert schema["properties"]["a"]["description"] == "First operand"
+        assert schema["required"] == ["a", "b"]
 
     def test_responses_cover_success_and_validation(self, route_table: RouteTable):
         document = build_openapi_schema(route_table)

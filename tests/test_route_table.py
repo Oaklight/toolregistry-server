@@ -672,19 +672,22 @@ class TestRouteOverrides:
 
         override = {
             "type": "object",
-            "properties": {"name": {"type": "number"}},
+            "properties": {"name": {"type": "string", "description": "Display name"}},
             "required": ["name"],
         }
         table.override_parameters("greet", override)
 
-        assert route.served_parameters_schema["properties"]["name"]["type"] == "number"
+        assert (
+            route.served_parameters_schema["properties"]["name"]["description"]
+            == "Display name"
+        )
         assert route.tool.parameters == original
 
     def test_clearing_the_parameter_override_restores_the_tool_schema(self) -> None:
         table = self._table()
         route = table.get_route("greet")
         table.override_parameters(
-            "greet", {"type": "object", "properties": {"name": {"type": "number"}}}
+            "greet", {"type": "object", "properties": {"name": {"type": "string"}}}
         )
         table.override_parameters("greet", None)
         assert route.served_parameters_schema == route.parameters_schema
@@ -724,18 +727,30 @@ class TestRouteOverrides:
     def test_overrides_survive_refresh_and_refresh_all(self) -> None:
         table = self._table()
         table.override_parameters(
-            "greet", {"type": "object", "properties": {"name": {"type": "number"}}}
+            "greet",
+            {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Display name"}
+                },
+            },
         )
         table.override_execution_hints("greet", {})
 
         table.refresh("greet")
         route = table.get_route("greet")
-        assert route.served_parameters_schema["properties"]["name"]["type"] == "number"
+        assert (
+            route.served_parameters_schema["properties"]["name"]["description"]
+            == "Display name"
+        )
         assert route.served_execution_hints == {}
 
         table.refresh_all()
         route = table.get_route("greet")
-        assert route.served_parameters_schema["properties"]["name"]["type"] == "number"
+        assert (
+            route.served_parameters_schema["properties"]["name"]["description"]
+            == "Display name"
+        )
         assert route.served_execution_hints == {}
 
     def test_unknown_route_raises(self) -> None:
@@ -909,6 +924,92 @@ class TestOverrideSchemaEdgeCases:
                     "additionalProperties": {"type": "integer"},
                 },
             )
+
+    @staticmethod
+    def _bounded_table() -> RouteTable:
+        from typing import Annotated
+
+        from pydantic import Field
+        from toolregistry import ToolRegistry
+
+        registry = ToolRegistry()
+
+        @registry.register
+        def bounded(x: Annotated[int, Field(ge=0, le=100)]) -> int:
+            """Bounded."""
+            return x
+
+        return RouteTable(registry)
+
+    def test_override_adding_required_is_rejected(self) -> None:
+        table = self._table()
+        with pytest.raises(ValueError, match="required"):
+            table.override_parameters(
+                "add",
+                {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "integer"},
+                        "b": {"type": "integer"},
+                        "c": {"type": "integer"},
+                    },
+                    "required": ["a", "b", "c"],
+                },
+            )
+
+    def test_override_tightening_maximum_is_rejected(self) -> None:
+        table = self._bounded_table()
+        with pytest.raises(ValueError, match="maximum"):
+            table.override_parameters(
+                "bounded",
+                {
+                    "type": "object",
+                    "properties": {"x": {"type": "integer", "maximum": 10}},
+                    "required": ["x"],
+                },
+            )
+
+    def test_override_loosening_a_bound_is_allowed_with_a_warning(self) -> None:
+        table = self._bounded_table()
+        with pytest.warns(UserWarning, match="maximum"):
+            table.override_parameters(
+                "bounded",
+                {
+                    "type": "object",
+                    "properties": {"x": {"type": "integer", "maximum": 200}},
+                    "required": ["x"],
+                },
+            )
+        served = table.get_route("bounded").served_parameters_schema
+        assert served["properties"]["x"]["maximum"] == 200
+
+    def test_proxy_tool_override_is_not_constrained(self) -> None:
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import Tool
+
+        def proxy(**kwargs):
+            return kwargs
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="proxy",
+                description="proxy tool",
+                parameters={"type": "object", "properties": {}},
+                callable=proxy,
+            )
+        )
+        table = RouteTable(registry)
+        table.override_parameters(
+            "proxy",
+            {
+                "type": "object",
+                "properties": {"x": {"type": "integer", "maximum": 10}},
+                "required": ["x"],
+            },
+        )
+        served = table.get_route("proxy").served_parameters_schema
+        assert served["properties"]["x"]["maximum"] == 10
 
 
 def _core_has_declared_hints() -> bool:

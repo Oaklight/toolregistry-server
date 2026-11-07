@@ -7,6 +7,7 @@ protocol adapters (OpenAPI, MCP, etc.).
 
 import copy
 import functools
+import json
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -100,6 +101,248 @@ def _allows_additional_properties(schema: dict[str, Any]) -> bool:
     return (
         "additionalProperties" in schema and schema["additionalProperties"] is not False
     )
+
+
+def _json_key(value: Any) -> str:
+    """Return a stable comparison key for a JSON Schema value."""
+    try:
+        return json.dumps(value, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _type_names(value: Any) -> frozenset[str]:
+    """Return the type names a JSON Schema ``type`` keyword declares."""
+    if isinstance(value, str):
+        return frozenset({value})
+    if isinstance(value, list):
+        return frozenset(item for item in value if isinstance(item, str))
+    return frozenset()
+
+
+def _compare_bound(
+    path: str,
+    keyword: str,
+    model_value: Any,
+    override_value: Any,
+    *,
+    tighter_is_higher: bool,
+) -> tuple[list[str], list[str]]:
+    """Classify one numeric or length bound.
+
+    Args:
+        path: Dotted property path.
+        keyword: The JSON Schema keyword.
+        model_value: The tool's own value, if any.
+        override_value: The override's value, if any.
+        tighter_is_higher: True for a lower bound, False for an upper bound.
+
+    Returns:
+        ``(stricter, looser)`` descriptions.
+    """
+    if override_value is None:
+        if model_value is None:
+            return [], []
+        return [], [f"{path}.{keyword} is omitted"]
+    if model_value is None:
+        return [f"{path}.{keyword} adds a bound the model does not enforce"], []
+    if isinstance(model_value, bool) or isinstance(override_value, bool):
+        return [], []
+    if not isinstance(model_value, (int, float)) or not isinstance(
+        override_value, (int, float)
+    ):
+        return [], []
+    if override_value == model_value:
+        return [], []
+    tighter = (
+        override_value > model_value
+        if tighter_is_higher
+        else override_value < model_value
+    )
+    detail = f"{path}.{keyword} {override_value} vs model {model_value}"
+    if tighter:
+        return [detail], []
+    return [], [detail]
+
+
+def _compare_type(
+    model_prop: dict[str, Any],
+    override_prop: dict[str, Any],
+    path: str,
+) -> tuple[list[str], list[str]]:
+    """Classify a property's ``type`` keyword."""
+    override_type = override_prop.get("type")
+    if override_type is None:
+        return [], []
+    model_types = _type_names(model_prop.get("type"))
+    override_types = _type_names(override_type)
+    if not model_types:
+        return [f"{path}.type adds a constraint"], []
+    if override_types == model_types:
+        return [], []
+    if override_types < model_types:
+        return [
+            f"{path}.type narrows {sorted(model_types)} to {sorted(override_types)}"
+        ], []
+    if override_types > model_types:
+        return [], [
+            f"{path}.type widens {sorted(model_types)} to {sorted(override_types)}"
+        ]
+    return [
+        f"{path}.type changes {sorted(model_types)} to {sorted(override_types)}"
+    ], []
+
+
+def _compare_pattern(
+    model_prop: dict[str, Any],
+    override_prop: dict[str, Any],
+    path: str,
+) -> tuple[list[str], list[str]]:
+    """Classify a property's ``pattern`` keyword."""
+    model_pattern = model_prop.get("pattern")
+    override_pattern = override_prop.get("pattern")
+    if override_pattern is None:
+        if model_pattern is not None:
+            return [], [f"{path}.pattern is omitted"]
+        return [], []
+    if model_pattern is None:
+        return [f"{path}.pattern adds a constraint"], []
+    if override_pattern != model_pattern:
+        return [f"{path}.pattern differs from the model's"], []
+    return [], []
+
+
+def _compare_enum(
+    model_prop: dict[str, Any],
+    override_prop: dict[str, Any],
+    path: str,
+) -> tuple[list[str], list[str]]:
+    """Classify a property's ``enum`` keyword."""
+    model_enum = model_prop.get("enum")
+    override_enum = override_prop.get("enum")
+    if override_enum is None:
+        if model_enum is not None:
+            return [], [f"{path}.enum is omitted"]
+        return [], []
+    if not isinstance(model_enum, list) or not isinstance(override_enum, list):
+        return [f"{path}.enum adds a constraint"], []
+    model_values = {_json_key(value) for value in model_enum}
+    override_values = {_json_key(value) for value in override_enum}
+    if override_values == model_values:
+        return [], []
+    if override_values < model_values:
+        return [f"{path}.enum narrows the model's values"], []
+    if override_values > model_values:
+        return [], [f"{path}.enum adds values the model rejects"]
+    return [f"{path}.enum changes the model's values"], []
+
+
+def _compare_property(
+    model_prop: dict[str, Any],
+    override_prop: dict[str, Any],
+    path: str,
+) -> tuple[list[str], list[str]]:
+    """Classify one property's constraints relative to the model's."""
+    stricter: list[str] = []
+    looser: list[str] = []
+
+    for compare in (_compare_type, _compare_pattern, _compare_enum):
+        found_stricter, found_looser = compare(model_prop, override_prop, path)
+        stricter.extend(found_stricter)
+        looser.extend(found_looser)
+
+    for keyword, tighter_is_higher in (
+        ("minimum", True),
+        ("maximum", False),
+        ("minLength", True),
+        ("maxLength", False),
+    ):
+        bound_stricter, bound_looser = _compare_bound(
+            path,
+            keyword,
+            model_prop.get(keyword),
+            override_prop.get(keyword),
+            tighter_is_higher=tighter_is_higher,
+        )
+        stricter.extend(bound_stricter)
+        looser.extend(bound_looser)
+
+    return stricter, looser
+
+
+def _compare_required(
+    model_schema: dict[str, Any],
+    override_schema: dict[str, Any],
+    path: str,
+) -> tuple[list[str], list[str]]:
+    """Classify required-field differences for one object level."""
+    model_required = model_schema.get("required")
+    override_required = override_schema.get("required")
+    if not isinstance(model_required, list) or not isinstance(override_required, list):
+        return [], []
+    extra = sorted(set(override_required) - set(model_required))
+    missing = sorted(set(model_required) - set(override_required))
+    stricter = [f"{path}.required adds {extra}"] if extra else []
+    looser = [f"{path}.required omits {missing}"] if missing else []
+    return stricter, looser
+
+
+def _compare_constraints(
+    model_schema: dict[str, Any],
+    override_schema: dict[str, Any],
+    *,
+    compare_required: bool = False,
+    path: str = "",
+) -> tuple[list[str], list[str]]:
+    """Classify an override's constraints relative to the model's schema.
+
+    Only constraints the model itself enforces can be enforced at request
+    time.  A stricter override would publish a contract the server does not
+    honour, so it is rejected; a looser one only misstates the schema in the
+    safe direction, so it warrants a warning.
+
+    Args:
+        model_schema: The tool's own parameter schema.
+        override_schema: The normalized override.
+        compare_required: Whether to compare this object level's
+            ``required`` list.  The caller handles the top level, where an
+            omitted list is filled from the model.
+        path: Dotted path used in messages.
+
+    Returns:
+        ``(stricter, looser)`` human-readable descriptions.
+    """
+    stricter: list[str] = []
+    looser: list[str] = []
+    if compare_required:
+        required_stricter, required_looser = _compare_required(
+            model_schema, override_schema, path or "override"
+        )
+        stricter.extend(required_stricter)
+        looser.extend(required_looser)
+
+    model_props = model_schema.get("properties")
+    override_props = override_schema.get("properties")
+    if isinstance(model_props, dict) and isinstance(override_props, dict):
+        for name, model_prop in model_props.items():
+            override_prop = override_props.get(name)
+            if not isinstance(model_prop, dict) or not isinstance(override_prop, dict):
+                continue
+            prop_path = f"{path}.{name}" if path else name
+            prop_stricter, prop_looser = _compare_property(
+                model_prop, override_prop, prop_path
+            )
+            stricter.extend(prop_stricter)
+            looser.extend(prop_looser)
+            nested_stricter, nested_looser = _compare_constraints(
+                model_prop,
+                override_prop,
+                compare_required=True,
+                path=prop_path,
+            )
+            stricter.extend(nested_stricter)
+            looser.extend(nested_looser)
+    return stricter, looser
 
 
 def _validate_execution_hints(hints: Any) -> dict[str, bool]:
@@ -567,20 +810,45 @@ class RouteTable:
                 "enforce; use true, false, or {}"
             )
 
-        required = getattr(model, "__required_keys__", None)
-        if not required:
-            return
-        declared = set(schema.get("properties", {}))
-        if "required" not in schema:
-            schema["required"] = sorted(set(required) & declared)
-        missing = sorted(set(required) - set(schema.get("required", ())))
-        if missing:
+        model_schema = normalize_parameters_schema(route.tool.parameters)
+        stricter, looser = _compare_constraints(model_schema, schema)
+        if stricter:
+            raise ValueError(
+                f"parameter override for '{tool_name}' tightens constraints "
+                "the tool's validation model does not enforce: "
+                + "; ".join(stricter)
+                + "; relax the override or use a proxy tool"
+            )
+        if looser:
             warnings.warn(
-                f"parameter override for '{tool_name}' omits required field(s) "
-                f"{missing}; the tool's validation model still requires them.",
+                f"parameter override for '{tool_name}' relaxes constraints "
+                "the tool's validation model still enforces: " + "; ".join(looser),
                 UserWarning,
                 stacklevel=3,
             )
+
+        required = set(getattr(model, "__required_keys__", ()) or ())
+        if "required" in schema:
+            extra = sorted(set(schema["required"]) - required)
+            if extra:
+                raise ValueError(
+                    f"parameter override for '{tool_name}' adds required "
+                    f"field(s) {extra} that the tool's validation model does "
+                    "not require; relax the override or use a proxy tool"
+                )
+        elif required:
+            declared = set(schema.get("properties", {}))
+            schema["required"] = sorted(required & declared)
+        if required:
+            missing = sorted(required - set(schema.get("required", ())))
+            if missing:
+                warnings.warn(
+                    f"parameter override for '{tool_name}' omits required "
+                    f"field(s) {missing}; the tool's validation model still "
+                    "requires them.",
+                    UserWarning,
+                    stacklevel=3,
+                )
 
     def override_parameters(
         self, tool_name: str, parameters: dict[str, Any] | None
