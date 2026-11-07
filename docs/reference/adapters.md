@@ -75,6 +75,8 @@ route_table.override_execution_hints("analyse", {})  # 抑制所有注解
 
 覆盖是描述性的：请求校验仍使用工具自身的校验模型。对 model-backed 工具，如果覆盖比该模型更严格——新增必填字段、收紧 `minimum`/`maximum`/`minLength`/`maxLength`、修改 `pattern`、收窄或改变 `enum`、或收窄或改变属性类型——保存时会报错，因为模型不会执行这些约束。更宽松的覆盖会保存并发出 `UserWarning`。代理工具直接按发布的 schema 校验，因此不受此限制。
 
+被拒绝的覆盖会让 `override_parameters` 抛出 `ValueError`。若某个加载器从配置文件应用覆盖，应捕获该错误、记录工具名与原因，并跳过该条覆盖（保留工具自身的 schema），使服务仍能启动。
+
 默认情况下适配器只发布工具显式声明的提示。由标签推导的提示需要显式开启：`RouteTable(..., emit_derived_execution_hints=True)` 或 `set_emit_derived_execution_hints(True)`。
 
 ## 请求校验

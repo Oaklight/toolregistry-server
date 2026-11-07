@@ -13,7 +13,7 @@
 ### 变更
 
 - **默认只发布显式声明的执行提示**（#136）：`READ_ONLY` / `DESTRUCTIVE` 标签可能是为本地权限策略选择的，发布解析后的映射会让该标签变成面向客户端的自动批准声明。`served_execution_hints` 现在优先使用 `Tool.declared_execution_hints`；只有 `RouteTable` 通过 `emit_derived_execution_hints=True` 或 `set_emit_derived_execution_hints(True)` 显式选择加入时，才会发布由标签推导的提示。显式声明的提示不受影响；由于两个适配器读取同一视图，MCP 与 OpenAPI 遵循相同策略。在尚未提供 `declared_execution_hints` 的 core 上，服务端会从 `ToolMetadata` 的提示字段重建相同映射（这些字段在 0.19.x 下限中已存在），因此无需等待 core 发布即可生效；更旧的 core 则不发布任何声明。
-- **比工具模型更严格的参数覆盖会被拒绝**（#384）：对 model-backed 工具，`override_parameters` 现在拒绝新增 `required`、收紧 `minimum`/`maximum`/`minLength`/`maxLength`、修改 `pattern`、收窄或改变 `enum`、或收窄或改变属性类型的覆盖，因为工具的校验模型不会执行更严格的契约。更宽松的覆盖会保存并发出 `UserWarning`。现有的更严格覆盖需要放宽或改用代理工具；代理工具按发布的 schema 校验，不受影响。
+- **比工具模型更严格的参数覆盖会被拒绝**（core #384）：对 model-backed 工具，`override_parameters` 现在拒绝新增 `required`、收紧 `minimum`/`maximum`/`minLength`/`maxLength`、修改 `pattern`、收窄或改变 `enum`、或收窄或改变属性类型的覆盖，因为工具的校验模型不会执行更严格的契约。更宽松的覆盖会保存并发出 `UserWarning`。现有的更严格覆盖需要放宽或改用代理工具；代理工具按发布的 schema 校验，不受影响。拒绝由程序化的 `override_parameters` 调用抛出。`toolregistry-server` 自身不会从配置应用路由参数覆盖，因此升级不会仅因此导致启动失败；下游加载器若确实应用这些覆盖，应捕获 `ValueError`、记录工具名与原因、跳过该条覆盖，使服务仍能启动。
 
 ### 修复
 
