@@ -75,6 +75,15 @@ route_table.override_execution_hints("analyse", {})  # 抑制所有注解
 
 默认情况下适配器只发布工具显式声明的提示。由标签推导的提示需要显式开启：`RouteTable(..., emit_derived_execution_hints=True)` 或 `set_emit_derived_execution_hints(True)`。
 
+## 请求校验
+
+OpenAPI 适配器在调用工具前校验请求体：
+
+- 由签名生成的工具走生成的模型，包括类型转换和未知键过滤。
+- 代理工具（OpenAPI、MCP、LangChain）没有模型，因此按工具自己的 JSON Schema 校验。
+
+对代理工具而言，来自 OpenAPI 文档的 `pattern` 与 `patternProperties` **不会被执行**。spec 属于不可信内容，Python 的 `re` 没有超时机制，像 `(a+)+$` 这样很短的灾难性表达式就能卡住请求。移除 `patternProperties` 时，同一层的 `additionalProperties: false` 会放宽，以免原本被这些模式覆盖的键被误判为未知键。这些约束仍会发布：`/openapi.json`、MCP 的 `inputSchema` 与路由 ETag 保留原始 schema；字段格式以上游 API 为准。通过 `RouteTable.override_parameters` 提供的覆盖属于 operator 代码，其正则仍会执行。
+
 ## 动态行为
 
 适配器在请求时从 `RouteTable` 读取数据，这意味着：
