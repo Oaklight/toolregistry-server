@@ -88,7 +88,13 @@ def server(route_table):
     app.shutdown()
 
 
-def _call(url: str, path: str, payload: object = None, headers: dict | None = None):
+def _call(
+    url: str,
+    path: str,
+    payload: object = None,
+    headers: dict | None = None,
+    timeout: float = 5,
+):
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         url + path,
@@ -97,7 +103,7 @@ def _call(url: str, path: str, payload: object = None, headers: dict | None = No
         method="POST" if payload is not None else "GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, dict(response.headers), response.read()
     except urllib.error.HTTPError as error:
         return error.code, dict(error.headers), error.read()
@@ -380,3 +386,20 @@ class TestBodyLimit:
     def test_non_positive_limit_is_rejected(self, route_table):
         with pytest.raises(ValueError, match="max_body_size"):
             create_httpserver_app(route_table, max_body_size=0)
+
+    def test_eight_megabytes_is_a_413_not_a_reset(self, body_limit_table):
+        """The 0.7.2 drain turns the old connection reset into a 413 (#134)."""
+        app = create_httpserver_app(body_limit_table)
+        url = _serve(app)
+        try:
+            status, _, body = _call(
+                url,
+                body_limit_table.get_route("echo_len").path,
+                {"text": "x" * 8_000_000},
+                timeout=30,
+            )
+        finally:
+            app.shutdown()
+        assert status == 413
+        assert b"Request body too large" in body
+        assert b"Traceback" not in body
