@@ -342,6 +342,34 @@ def _add_framework_errors(app: App) -> None:
         return _error(405, "Method Not Allowed")
 
 
+class _DetailEnvelopeApp(App):
+    """An :class:`App` that renders read-phase ``413`` bodies as ``detail``.
+
+    The vendored server rejects an oversized body while reading it, before
+    dispatch, so :meth:`App.errorhandler` never sees the ``413``.  Rewriting
+    the body just before it is written keeps the vendored drain and close
+    logic untouched and gives transport errors the same top-level key as the
+    adapter's ``404`` and ``405`` (issue #146).
+    """
+
+    async def _send_error_and_close(
+        self,
+        writer,
+        response,
+        reader=None,
+        exc=None,
+        state=None,
+    ) -> None:
+        if getattr(response, "status_code", None) == 413:
+            response.body = json.dumps(
+                {"detail": "Request body too large"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            response.headers["Content-Type"] = "application/json"
+        await super()._send_error_and_close(writer, response, reader, exc, state)
+
+
 def create_httpserver_app(
     route_table: RouteTable,
     *,
@@ -384,7 +412,7 @@ def create_httpserver_app(
             f"max_sse_subscribers must not be negative, got {max_sse_subscribers}"
         )
 
-    app = App(max_body_size=max_body_size)
+    app = _DetailEnvelopeApp(max_body_size=max_body_size)
 
     for route in route_table.list_routes(enabled_only=False):
         app.route(route.path, methods=["POST"])(

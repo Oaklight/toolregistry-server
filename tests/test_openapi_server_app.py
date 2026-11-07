@@ -430,7 +430,7 @@ class TestBodyLimit:
         )
         assert status == 413
         assert headers["Content-Type"].startswith("application/json")
-        assert "too large" in json.loads(body)["error"].lower()
+        assert "too large" in json.loads(body)["detail"].lower()
         assert b"Traceback" not in body
 
     def test_raising_the_limit_accepts_the_same_body(self, body_limit_table):
@@ -461,3 +461,27 @@ class TestBodyLimit:
         assert status == 413
         assert b"Request body too large" in body
         assert b"Traceback" not in body
+
+    def test_transport_and_framework_errors_share_the_envelope(self, body_limit_table):
+        """413, 404 and 405 all carry the same top-level key (#146)."""
+        app = create_httpserver_app(body_limit_table, max_body_size=1024)
+        url = _serve(app)
+        try:
+            status, _, body = _call(
+                url,
+                body_limit_table.get_route("echo_len").path,
+                {"text": "x" * 2000},
+            )
+            assert status == 413
+            assert set(json.loads(body)) == {"detail"}
+
+            status, _, body = _call(url, "/nope")
+            assert status == 404
+            assert set(json.loads(body)) == {"detail"}
+
+            # GET on a POST-only tool route.
+            status, _, body = _call(url, body_limit_table.get_route("echo_len").path)
+            assert status == 405
+            assert set(json.loads(body)) == {"detail"}
+        finally:
+            app.shutdown()
