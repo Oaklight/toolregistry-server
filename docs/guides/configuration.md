@@ -128,7 +128,7 @@ When `class` is specified, the server instantiates the class and calls `register
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `type` | `"openapi"` | Yes | Source type identifier |
-| `url` | string | Yes | URL to the OpenAPI spec |
+| `url` | string | Yes | URL to the OpenAPI spec. May be a local path; local paths are read only from operator configuration, and the admin panel input still rejects them |
 | `namespace` | string | No | Namespace for registered tools |
 | `auth` | object | No | Authentication configuration |
 | `base_url` | string | No | Override `servers[0].url` from spec |

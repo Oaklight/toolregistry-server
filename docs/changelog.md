@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A local OpenAPI path in operator configuration now loads** (core #376): core #376 made `load_openapi_spec()` reject local paths unless the caller opts in, and `register_openapi_source()` did not, so an `openapi` source pointing at a local file registered no tools and only logged a warning. The server now passes `allow_local_files=True` when the installed core accepts the keyword, so a core that predates #376 keeps its existing behaviour; the admin panel input remains http(s)-only.
 - **The httpserver request-body cap is configurable** (#134): the vendored backend inherited a 1 MiB cap, so a tool call whose arguments exceeded that worked on the FastAPI backend and returned 413 on the httpserver backend. `--max-body-size BYTES` and `OpenAPIAdapter(max_body_size=...)` now set the cap; the default stays 1 MiB, a non-positive value raises `ValueError`, and an oversized body returns a JSON `413` with no traceback. A body large enough that the client is still writing when the server rejects it can still end in a connection reset — draining the unread body has to happen in the vendored server.
 - **A core tool override now reaches every served schema**: `ToolRegistry.override()` swaps
   the `Tool`, and a `RouteEntry` holds a direct reference to it, but
