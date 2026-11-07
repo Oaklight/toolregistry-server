@@ -2324,11 +2324,23 @@ class TestRouteOverridesOnMCP:
         return RouteTable(registry)
 
     @pytest.mark.asyncio
-    async def test_parameter_override_reaches_input_schema(
-        self, table: RouteTable
-    ) -> None:
+    async def test_parameter_override_reaches_input_schema(self) -> None:
+        """A proxy tool has no validation model, so the override is free."""
+        from toolregistry import ToolRegistry
+        from toolregistry.tool import Tool
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="proxy",
+                description="Proxy.",
+                parameters={"type": "object", "properties": {}},
+                callable=lambda **kwargs: kwargs,
+            )
+        )
+        table = RouteTable(registry)
         table.override_parameters(
-            "reader",
+            "proxy",
             {
                 "type": "object",
                 "properties": {"q": {"type": "number"}},
@@ -2339,7 +2351,7 @@ class TestRouteOverridesOnMCP:
         async with create_test_client(server) as client:
             tools = {t.name: t for t in (await client.list_tools()).tools}
 
-        schema = get_field(tools["reader"], "input_schema", "inputSchema")
+        schema = get_field(tools["proxy"], "input_schema", "inputSchema")
         assert schema["properties"]["q"]["type"] == "number"
         assert schema["required"] == ["q"]
 
