@@ -13,18 +13,38 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from io import StringIO
 
 import pytest
 from toolregistry import ToolRegistry
 from toolregistry.utils import ToolResultJSONEncoder
 
 from toolregistry_server import RouteTable
+from toolregistry_server._vendor.structlog import (
+    BoundLogger,
+    ConsoleRenderer,
+    PrintLogger,
+    TimeStamper,
+    add_log_level,
+)
 from toolregistry_server.adapters.openapi.server_app import (
     SWAGGER_UI_BUNDLE_INTEGRITY,
     SWAGGER_UI_CSS_INTEGRITY,
     SWAGGER_UI_VERSION,
     create_httpserver_app,
 )
+
+
+def _capture_logs(monkeypatch, module):
+    """Route *module*'s logger into a StringIO and return the stream."""
+    stream = StringIO()
+    log = BoundLogger(
+        logger=PrintLogger(file=stream),
+        processors=[add_log_level, TimeStamper(), ConsoleRenderer(colors=False)],
+        context={},
+    )
+    monkeypatch.setattr(module, "logger", log)
+    return stream
 
 
 def add(a: int, b: int) -> int:
@@ -182,6 +202,53 @@ class TestToolRoutes:
         detail = json.loads(body)["detail"]
         assert detail == "Tool 'boom' execution failed"
         assert "exploded" not in detail
+
+    def test_tool_exception_traceback_is_logged(self, monkeypatch):
+        """The server log keeps the traceback the client must not receive."""
+        import toolregistry_server.adapters.openapi.server_app as server_app
+
+        stream = _capture_logs(monkeypatch, server_app)
+
+        def boom() -> str:
+            """Raise."""
+            raise RuntimeError("exploded")
+
+        registry = ToolRegistry()
+        registry.register(boom)
+        table = RouteTable(registry)
+        table.refresh_all()
+        url = _serve(create_httpserver_app(table))
+
+        status, _, _ = _call(url, table.get_route("boom").path, {})
+        assert status == 500
+
+        output = stream.getvalue()
+        assert "Traceback (most recent call last)" in output
+        assert "RuntimeError: exploded" in output
+
+    def test_unserialisable_result_traceback_is_logged(self, monkeypatch):
+        """A result JSON cannot encode still leaves a traceback in the log."""
+        import toolregistry_server.adapters.openapi.server_app as server_app
+
+        stream = _capture_logs(monkeypatch, server_app)
+
+        def returns_a_function() -> object:
+            """Return a value with no JSON projection."""
+            return lambda: None
+
+        registry = ToolRegistry()
+        registry.register(returns_a_function)
+        table = RouteTable(registry)
+        table.refresh_all()
+        url = _serve(create_httpserver_app(table))
+
+        status, _, body = _call(url, table.get_route("returns_a_function").path, {})
+        assert status == 500
+        assert "not serialisable" in json.loads(body)["detail"]
+
+        output = stream.getvalue()
+        assert "Traceback (most recent call last)" in output
+        assert "TypeError" in output
 
 
 @dataclass

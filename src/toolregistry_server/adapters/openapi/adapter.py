@@ -5,17 +5,18 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
-import logging
+import traceback
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Any
 
 from toolregistry import ValidationError
 
 from ..._vendor.jsonschema import SchemaValidationError, schema_validate
+from ..._vendor.structlog import get_logger
 from ...route_table import RouteEntry, RouteTable, _allows_additional_properties
 from .serialisation import encode_tool_result
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import APIRouter, FastAPI, Response
@@ -320,7 +321,11 @@ def _add_route_from_entry(
         strings, internal paths and upstream URLs, and the client only needs
         to know which tool failed.
         """
-        logger.exception("Tool %r execution failed", tname)
+        logger.error(
+            "Tool execution failed",
+            tool=tname,
+            exception=traceback.format_exc(),
+        )
         return HTTPException(
             status_code=500,
             detail=f"Tool '{tname}' execution failed",
@@ -605,7 +610,7 @@ def add_events_endpoint(
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
-                logger.debug("SSE client queue full, dropping event: %s", tool_name)
+                logger.debug("SSE client queue full, dropping event", tool=tool_name)
 
     route_table.add_listener(_on_change)
 
@@ -616,9 +621,9 @@ def add_events_endpoint(
         """Stream tool change events via Server-Sent Events."""
         if len(_queues) >= max_subscribers:
             logger.warning(
-                "SSE subscriber limit reached (%d/%d), rejecting a connection",
-                len(_queues),
-                max_subscribers,
+                "SSE subscriber limit reached, rejecting a connection",
+                subscribers=len(_queues),
+                max_subscribers=max_subscribers,
             )
             raise HTTPException(status_code=503, detail="Too many event subscribers")
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
