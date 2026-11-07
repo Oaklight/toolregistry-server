@@ -226,13 +226,19 @@ def _add_route_from_entry(
         route_table: The :class:`~toolregistry_server.RouteTable` used for
             runtime enable/disable checks.
     """
-    from fastapi import Body, HTTPException
+    from fastapi import Body, HTTPException, Request
 
     def _wrap_tool_error(tname: str, e: Exception) -> HTTPException:
-        """Convert an unhandled tool exception into a structured HTTP 500."""
+        """Convert an unhandled tool exception into a structured HTTP 500.
+
+        The exception text stays in the server log: it can carry connection
+        strings, internal paths and upstream URLs, and the client only needs
+        to know which tool failed.
+        """
+        logger.exception("Tool %r execution failed", tname)
         return HTTPException(
             status_code=500,
-            detail=f"Tool '{tname}' execution failed: {e}",
+            detail=f"Tool '{tname}' execution failed",
         )
 
     summary = (route.description or "")[:120]
@@ -265,7 +271,10 @@ def _add_route_from_entry(
             rt: RouteTable = route_table,
             tname: str = tool_name,
         ):
-            async def _endpoint(data: Annotated[Any, Body()]) -> Any:
+            async def _endpoint(data: Annotated[Any, Body()], request: Request) -> Any:
+                # Mark the request so the app's server-error handler can tell
+                # a response-rendering failure from any other 500.
+                request.state.tool_name = tname
                 current_route = rt.get_route(tname)
                 if current_route is None or not current_route.enabled:
                     raise HTTPException(
@@ -298,7 +307,10 @@ def _add_route_from_entry(
             rt: RouteTable = route_table,
             tname: str = tool_name,
         ):
-            def _endpoint(data: Annotated[Any, Body()]) -> Any:
+            def _endpoint(data: Annotated[Any, Body()], request: Request) -> Any:
+                # Mark the request so the app's server-error handler can tell
+                # a response-rendering failure from any other 500.
+                request.state.tool_name = tname
                 current_route = rt.get_route(tname)
                 if current_route is None or not current_route.enabled:
                     raise HTTPException(

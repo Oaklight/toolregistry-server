@@ -142,8 +142,12 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
             result = current.handler(**arguments)
             if asyncio.iscoroutine(result):
                 result = await result
-        except Exception as exc:
-            return _error(500, f"Tool '{tool_name}' execution failed: {exc}")
+        except Exception:
+            # Keep the exception text in the log; it can carry connection
+            # strings, paths and upstream URLs.  The client only needs the
+            # tool name.
+            logger.exception("Tool execution failed", tool=tool_name)
+            return _error(500, f"Tool '{tool_name}' execution failed")
 
         try:
             # Compact separators and no ASCII escaping match FastAPI's
@@ -154,8 +158,14 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-        except TypeError as exc:  # unserialisable tool result
-            return _error(500, f"Tool '{tool_name}' result is not serialisable: {exc}")
+        except (TypeError, ValueError):
+            # ``json.dumps`` raises TypeError for a value with no JSON
+            # projection and ValueError for a circular reference.  Keep the
+            # exception text in the log; a custom ``to_dict`` / ``model_dump``
+            # may raise with data in the message.  The client gets a stable
+            # reason.
+            logger.exception("Tool result is not serialisable", tool=tool_name)
+            return _error(500, f"Tool '{tool_name}' result is not serialisable")
         return Response(body, content_type="application/json; charset=utf-8")
 
     return _handler

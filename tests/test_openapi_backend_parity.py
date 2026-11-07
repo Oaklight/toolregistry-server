@@ -65,9 +65,14 @@ def boom() -> str:
     raise RuntimeError("exploded")
 
 
+def unserialisable():
+    """Return a value neither encoder can project to JSON."""
+    return object()
+
+
 def build_table() -> RouteTable:
     registry = ToolRegistry()
-    for tool in (add, greet, point, points, moment, boom):
+    for tool in (add, greet, point, points, moment, boom, unserialisable):
         registry.register(tool)
     table = RouteTable(registry)
     table.refresh_all()
@@ -213,7 +218,17 @@ class TestToolRoutes:
     def test_tool_exception(self, both, table):
         status, body = compare(both, table.get_route("boom").path, {})
         assert status == 500
-        assert "exploded" in json.loads(body)["detail"]
+        detail = json.loads(body)["detail"]
+        assert detail == "Tool 'boom' execution failed"
+        assert "exploded" not in detail
+
+    def test_unserialisable_result(self, both, table):
+        """Both backends answer with the same JSON envelope and stable reason."""
+        status, body = compare(both, table.get_route("unserialisable").path, {})
+        assert status == 500
+        assert json.loads(body) == {
+            "detail": "Tool 'unserialisable' result is not serialisable"
+        }
 
     def test_unknown_path(self, both):
         status, body = compare(both, "/nope")
