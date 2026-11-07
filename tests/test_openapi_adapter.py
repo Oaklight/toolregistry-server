@@ -180,6 +180,104 @@ class TestValidateArguments:
         assert excinfo.value.status_code == 422
         assert excinfo.value.detail[0]["type"] == "additionalProperties"
 
+    def test_proxy_tool_does_not_execute_spec_regexes(self, route_table, monkeypatch):
+        """A spec-supplied regex never runs against the request body (#384).
+
+        The validator receives a copy without ``pattern`` and
+        ``patternProperties``; the served schema keeps both.
+        """
+        import toolregistry_server.adapters.openapi.adapter as adapter
+
+        def proxy(**kwargs):
+            return kwargs
+
+        tool = Tool(
+            name="patterned_proxy",
+            description="proxy with spec regexes",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string", "pattern": "(a+)+$"}},
+                "patternProperties": {"^x-": {"type": "integer"}},
+                "additionalProperties": False,
+            },
+            callable=proxy,
+        )
+        route_table._registry.register(tool)  # noqa: SLF001 - test fixture
+        route_table.refresh_all()
+        route = route_table.get_route("patterned_proxy")
+
+        seen = {}
+
+        def spy(instance, schema, **kwargs):
+            seen["schema"] = schema
+
+        monkeypatch.setattr(adapter, "schema_validate", spy)
+        _validate_arguments(route, {"q": "a" * 40 + "!", "x-extra": 1})
+
+        validated = seen["schema"]
+        assert "pattern" not in validated["properties"]["q"]
+        assert "patternProperties" not in validated
+        # Keys the patterns used to cover are not treated as unknown.
+        assert validated["additionalProperties"] is True
+
+        served = route.served_parameters_schema
+        assert served["properties"]["q"]["pattern"] == "(a+)+$"
+        assert served["patternProperties"] == {"^x-": {"type": "integer"}}
+
+    def test_override_schema_still_enforces_patterns(self, route_table):
+        """An override is operator code, so its regexes still run."""
+        from fastapi import HTTPException
+
+        def proxy(**kwargs):
+            return kwargs
+
+        tool = Tool(
+            name="override_proxy",
+            description="proxy",
+            parameters={"type": "object", "properties": {}},
+            callable=proxy,
+        )
+        route_table._registry.register(tool)  # noqa: SLF001 - test fixture
+        route_table.refresh_all()
+        route_table.override_parameters(
+            "override_proxy",
+            {
+                "type": "object",
+                "properties": {"q": {"type": "string", "pattern": "^[0-9]+$"}},
+            },
+        )
+        route = route_table.get_route("override_proxy")
+
+        with pytest.raises(HTTPException) as excinfo:
+            _validate_arguments(route, {"q": "abc"})
+        assert excinfo.value.status_code == 422
+        assert _validate_arguments(route, {"q": "123"}) == {"q": "123"}
+
+    def test_without_spec_regex_leaves_nested_additional_properties_alone(self):
+        """Relaxing one level must not descend into nested schemas."""
+        from toolregistry_server.adapters.openapi.adapter import _without_spec_regex
+
+        schema = {
+            "type": "object",
+            "patternProperties": {"^x-": {"type": "string"}},
+            "additionalProperties": False,
+            "properties": {
+                "nested": {"type": "object", "additionalProperties": False},
+                "pat": {"type": "string", "pattern": "^[a-z]+$"},
+            },
+            "items": {"type": "string", "pattern": "^[0-9]+$"},
+        }
+
+        stripped = _without_spec_regex(schema)
+
+        assert stripped["additionalProperties"] is True
+        assert stripped["properties"]["nested"]["additionalProperties"] is False
+        assert "pattern" not in stripped["properties"]["pat"]
+        assert "pattern" not in stripped["items"]
+        # The input is untouched.
+        assert schema["patternProperties"] == {"^x-": {"type": "string"}}
+        assert schema["properties"]["pat"]["pattern"] == "^[a-z]+$"
+
     @pytest.mark.parametrize("body", [[], "str", 123, None, True])
     def test_non_object_body_is_a_422(self, route_table, body):
         """Scalars, arrays and null are rejected, not crashed on."""
@@ -401,6 +499,41 @@ class TestDynamicOpenAPI:
 
 class TestToolsEndpoint:
     """Tests for the /tools endpoint."""
+
+    def test_spec_regexes_stay_in_the_published_schema(self, route_table):
+        """Filtering the validation copy must not change the contract."""
+        from fastapi.testclient import TestClient
+
+        def proxy(**kwargs):
+            return kwargs
+
+        tool = Tool(
+            name="published_regex",
+            description="proxy with a spec regex",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string", "pattern": "^[a-z]+$"}},
+                "patternProperties": {"^x-": {"type": "integer"}},
+            },
+            callable=proxy,
+        )
+        route_table._registry.register(tool)  # noqa: SLF001 - test fixture
+        route_table.refresh_all()
+        client = TestClient(create_openapi_app(route_table))
+
+        before = client.get("/openapi.json").json()
+        etag_before = client.get("/tools").headers["etag"]
+
+        _validate_arguments(route_table.get_route("published_regex"), {"q": "abc"})
+
+        after = client.get("/openapi.json").json()
+        assert after == before
+        operation = after["paths"]["/tools/default/published_regex"]["post"]
+        schema = operation["requestBody"]["content"]["application/json"]["schema"]
+        assert schema["properties"]["q"]["pattern"] == "^[a-z]+$"
+        assert schema["patternProperties"] == {"^x-": {"type": "integer"}}
+        # The served schema drives the ETag; validation must not move it.
+        assert client.get("/tools").headers["etag"] == etag_before
 
     def test_tools_endpoint_returns_list(self, route_table: RouteTable):
         """Test that /tools endpoint returns a list of tools."""
