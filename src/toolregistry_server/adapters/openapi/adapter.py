@@ -5,6 +5,7 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
+import asyncio
 import traceback
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Any
@@ -380,7 +381,11 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _validate_arguments(current_route, data)
+                # Validation is CPU-bound; keep this loop free while it runs,
+                # the same way the httpserver handler does.
+                arguments = await asyncio.to_thread(
+                    _validate_arguments, current_route, data
+                )
                 try:
                     result = await h(**arguments)
                 except HTTPException:
