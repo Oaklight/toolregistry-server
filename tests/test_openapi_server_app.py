@@ -174,7 +174,9 @@ class TestToolRoutes:
         url = _serve(app)
         status, _, body = _call(url, table.get_route("boom").path, {})
         assert status == 500
-        assert "exploded" in json.loads(body)["detail"]
+        detail = json.loads(body)["detail"]
+        assert detail == "Tool 'boom' execution failed"
+        assert "exploded" not in detail
 
 
 @dataclass

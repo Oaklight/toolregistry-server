@@ -519,7 +519,9 @@ class TestToolExecutionErrorHandling:
 
         response = client.post("/tools/default/fail_sync", json={})
         assert response.status_code == 500
-        assert "boom" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert detail == "Tool 'fail_sync' execution failed"
+        assert "boom" not in detail
 
     def test_async_tool_exception_returns_500(self, route_table: RouteTable):
         """Async tool that raises should return structured 500."""
@@ -536,7 +538,9 @@ class TestToolExecutionErrorHandling:
 
         response = client.post("/tools/default/fail_async", json={})
         assert response.status_code == 500
-        assert "async boom" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert detail == "Tool 'fail_async' execution failed"
+        assert "async boom" not in detail
 
 
 class TestAddETagMiddleware:

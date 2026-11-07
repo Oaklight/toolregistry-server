@@ -78,7 +78,8 @@ def create_openapi_app(
         ImportError: If FastAPI is not installed.
     """
     try:
-        from fastapi import FastAPI
+        from fastapi import FastAPI, Request
+        from fastapi.responses import JSONResponse
     except ImportError as e:
         raise ImportError(
             "FastAPI is required for OpenAPI support. "
@@ -107,6 +108,25 @@ def create_openapi_app(
             version=version,
             description=description,
         )
+
+    async def _server_error(request: Request, exc: Exception) -> JSONResponse:
+        """Render an unexpected failure in the httpserver's JSON envelope.
+
+        FastAPI's default is a plain-text 500, which leaves the client unable
+        to read the reason and makes the two backends disagree when a tool
+        result cannot be serialised.  The httpserver answers with
+        ``{"detail": ...}``; this keeps the same shape.  ``tool_name`` is set
+        by the endpoint, so an exception raised while rendering a successful
+        result is reported as a serialisation failure.
+        """
+        tool_name = getattr(request.state, "tool_name", None)
+        if tool_name:
+            detail = f"Tool '{tool_name}' result is not serialisable"
+        else:
+            detail = "Internal Server Error"
+        return JSONResponse({"detail": detail}, status_code=500)
+
+    app.add_exception_handler(Exception, _server_error)
 
     # Add ETag middleware for cache validation
     if enable_etag:
