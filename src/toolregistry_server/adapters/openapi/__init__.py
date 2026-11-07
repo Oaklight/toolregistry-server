@@ -26,6 +26,7 @@ Note:
 
 from __future__ import annotations
 
+import argparse
 from typing import TYPE_CHECKING, Any
 
 from ..._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
@@ -129,6 +130,22 @@ def create_openapi_app(
 
 #: HTTP backends :class:`OpenAPIAdapter` can serve on.
 _BACKENDS = ("fastapi", "httpserver")
+
+
+def _positive_int(text: str) -> int:
+    """Argparse type for a byte count that must be greater than zero.
+
+    The factory and the adapter reject a non-positive cap at construction;
+    rejecting it at the parser too keeps ``--max-body-size`` consistent for
+    both backends, including the fastapi backend that does not apply it.
+    """
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid int value: {text!r}") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number of bytes")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +309,7 @@ class OpenAPIAdapter(Adapter):
         )
         parser.add_argument(
             "--max-body-size",
-            type=int,
+            type=_positive_int,
             default=DEFAULT_MAX_BODY_SIZE,
             metavar="BYTES",
             help=(
