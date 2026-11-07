@@ -832,3 +832,42 @@ class TestOverrideIsAuthoritative:
             "a": 1,
             "b": 2,
         }
+
+
+class TestMaxBodySizeWarning:
+    """A non-default cap is meaningless on fastapi; it must not be silent (#134)."""
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[str]:
+        from toolregistry_server.adapters import openapi as openapi_module
+
+        messages: list[str] = []
+        monkeypatch.setattr(
+            type(openapi_module.logger),
+            "warning",
+            lambda self, event=None, /, **kw: messages.append(event or ""),
+        )
+        return messages
+
+    def test_fastapi_warns_when_the_cap_is_not_the_default(
+        self, monkeypatch, route_table
+    ):
+        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+        messages = self._capture(monkeypatch)
+        OpenAPIAdapter(route_table, backend="fastapi", max_body_size=2048)
+        assert any("max_body_size" in message for message in messages)
+
+    def test_fastapi_default_is_silent(self, monkeypatch, route_table):
+        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+        messages = self._capture(monkeypatch)
+        OpenAPIAdapter(route_table, backend="fastapi")
+        assert not any("max_body_size" in message for message in messages)
+
+    def test_httpserver_does_not_warn(self, monkeypatch, route_table):
+        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+        messages = self._capture(monkeypatch)
+        OpenAPIAdapter(route_table, backend="httpserver", max_body_size=2048)
+        assert not any("max_body_size" in message for message in messages)
