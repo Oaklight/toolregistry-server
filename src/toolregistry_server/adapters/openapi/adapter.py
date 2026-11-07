@@ -76,6 +76,58 @@ def _undeclared_parameter_details(
     ]
 
 
+#: Keywords whose value maps names to sub-schemas; their keys are names,
+#: not schema keywords, so the walker must recurse into the values only.
+_SCHEMA_MAP_KEYWORDS = frozenset(
+    {"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"}
+)
+
+
+def _without_spec_regex(node: Any) -> Any:
+    """Return a validation-only copy of *node* without spec regexes.
+
+    ``pattern`` and ``patternProperties`` come from the OpenAPI document,
+    not from the operator.  Running one against a request body can backtrack
+    catastrophically -- ``(a+)+$`` is six characters and takes exponential
+    time on a 30-character subject -- and Python's ``re`` has no timeout.
+    The server must stay dependency-free, so validation ignores the
+    expressions instead of executing them; the upstream API remains the
+    authority for the format.  The served schema is never modified, so
+    clients still see the published contract.
+
+    Dropping ``patternProperties`` would make the keys those patterns used
+    to cover look like unknown keys, so ``additionalProperties: false`` at
+    that same level is relaxed to ``true``.  The relaxation is local to the
+    level that carried the patterns and never descends: a nested schema
+    keeps its own ``additionalProperties``.
+
+    Args:
+        node: A JSON Schema fragment, or any nested value.
+
+    Returns:
+        A new fragment.  *node* and everything under it are left untouched.
+    """
+    if isinstance(node, list):
+        return [_without_spec_regex(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    stripped: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in ("pattern", "patternProperties"):
+            continue
+        if key in _SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            stripped[key] = {
+                name: _without_spec_regex(sub) for name, sub in value.items()
+            }
+        else:
+            stripped[key] = _without_spec_regex(value)
+
+    if "patternProperties" in node and stripped.get("additionalProperties") is False:
+        stripped["additionalProperties"] = True
+    return stripped
+
+
 def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
     """Validate a request body and return the arguments for the tool call.
 
@@ -162,8 +214,14 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
                 )
         return validated
 
+    # An override is operator code, so its regexes are trusted.  A proxy
+    # tool's schema is derived from the spec, so its regexes are not executed
+    # (see ``_without_spec_regex``).
+    validation_schema = (
+        served_schema if override_active else _without_spec_regex(served_schema)
+    )
     try:
-        schema_validate(payload, served_schema)
+        schema_validate(payload, validation_schema)
     except SchemaValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_details(exc)) from exc
 
