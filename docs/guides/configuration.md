@@ -128,7 +128,7 @@ tools:
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `type` | `"openapi"` | 是 | 源类型标识 |
-| `url` | string | 是 | OpenAPI 规范的 URL |
+| `url` | string | 是 | OpenAPI 规范的 URL 或本地路径。本地路径仅从 operator 配置读取，面板输入仍会被拒绝 |
 | `namespace` | string | 否 | 注册工具的命名空间 |
 | `auth` | object | 否 | 认证配置 |
 | `base_url` | string | 否 | 覆盖规范中的 `servers[0].url` |

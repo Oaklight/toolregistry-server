@@ -16,6 +16,7 @@
 
 ### 修复
 
+- **operator 配置中的本地 OpenAPI 路径现在可以加载**（core #376）：core #376 让 `load_openapi_spec()` 默认拒绝本地路径，除非调用方显式开启，而 `register_openapi_source()` 没有开启，因此指向本地文件的 `openapi` 源不会注册任何工具，只记录一条警告。现在，当安装的 core 接受该关键字时，服务端会传入 `allow_local_files=True`；早于 #376 的 core 保持原有行为。面板输入仍然只接受 http(s)。
 - **httpserver 后端的请求体上限可配置**（#134）：内联后端此前继承 1 MiB 上限，参数超过该值的工具调用在 FastAPI 后端可用，在 httpserver 后端却返回 413。现在可用 `--max-body-size BYTES` 与 `OpenAPIAdapter(max_body_size=...)` 设置该上限；默认仍为 1 MiB，非正值会抛出 `ValueError`，超限请求返回不含 traceback 的 JSON `413`。如果请求体大到服务端拒绝时客户端仍在写入，仍可能表现为连接重置——排空未读请求体必须在内部服务端中完成。
 - **核心层覆写现在会传达到所有对外发布的 schema**：`ToolRegistry.override()` 会替换
   `Tool`，而 `RouteEntry` 持有它的直接引用，但 `RouteTable._on_registry_change()` 忽略了
