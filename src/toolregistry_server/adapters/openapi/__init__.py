@@ -56,6 +56,7 @@ def create_openapi_app(
     dependencies: Sequence[Any] | None = None,
     enable_etag: bool = True,
     max_sse_subscribers: int | None = None,
+    max_body_size: int = DEFAULT_MAX_BODY_SIZE,
 ) -> FastAPI:
     """Create a FastAPI application from a RouteTable.
 
@@ -70,16 +71,21 @@ def create_openapi_app(
         max_sse_subscribers: Largest number of concurrent ``/events``
             streams. Further connections get ``503``. ``None`` keeps the
             default (64); ``0`` disables the endpoint.
+        max_body_size: Largest request body accepted, in bytes. Larger bodies
+            return ``413`` with ``{"detail": "Request body too large"}``.
+            Defaults to 1 MiB, the same as the httpserver backend.
 
     Returns:
         A configured FastAPI application with:
         - Tool routes from the RouteTable
         - /tools endpoint for listing available tools
         - ETag middleware for cache validation (if enabled)
+        - A request-body limit shared with the httpserver backend
         - Dynamic OpenAPI schema that filters disabled tools
 
     Raises:
         ImportError: If FastAPI is not installed.
+        ValueError: If *max_body_size* is not positive.
     """
     try:
         from fastapi import FastAPI, Request
@@ -96,7 +102,7 @@ def create_openapi_app(
         route_table_to_router,
         setup_dynamic_openapi,
     )
-    from .middleware import add_etag_middleware
+    from .middleware import add_body_size_middleware, add_etag_middleware
 
     # Create app with optional global dependencies
     if dependencies:
@@ -152,6 +158,10 @@ def create_openapi_app(
     # Setup dynamic OpenAPI schema that filters disabled tools
     setup_dynamic_openapi(app, route_table)
 
+    # Added last so it wraps every other middleware: an oversized body is
+    # rejected before routing, auth or ETag short-circuits see it.
+    add_body_size_middleware(app, max_body_size=max_body_size)
+
     return app
 
 
@@ -163,8 +173,7 @@ def _positive_int(text: str) -> int:
     """Argparse type for a byte count that must be greater than zero.
 
     The factory and the adapter reject a non-positive cap at construction;
-    rejecting it at the parser too keeps ``--max-body-size`` consistent for
-    both backends, including the fastapi backend that does not apply it.
+    rejecting it at the parser too gives one error message for both backends.
     """
     try:
         value = int(text)
@@ -195,10 +204,9 @@ class OpenAPIAdapter(Adapter):
         version: API version string.
         description: API description.
         backend: ``"fastapi"`` or ``"httpserver"``.
-        max_body_size: Largest request body accepted by the ``httpserver``
-            backend, in bytes. Defaults to 1 MiB. The ``fastapi`` backend
-            leaves its own server configuration alone; a non-default value
-            logs a warning instead of being applied silently.
+        max_body_size: Largest request body accepted, in bytes. Both backends
+            enforce it and return the same ``413`` envelope. Defaults to
+            1 MiB.
     """
 
     def __init__(
@@ -236,13 +244,6 @@ class OpenAPIAdapter(Adapter):
             )
             return
 
-        if max_body_size != DEFAULT_MAX_BODY_SIZE:
-            logger.warning(
-                "max_body_size is enforced only by the httpserver backend; "
-                f"the fastapi backend ignores {max_body_size} bytes. "
-                "Enforce the limit in the reverse proxy or use --backend httpserver."
-            )
-
         dependencies = None
         if tokens:
             from fastapi import Depends
@@ -259,6 +260,7 @@ class OpenAPIAdapter(Adapter):
             version=version,
             description=description,
             dependencies=dependencies,
+            max_body_size=max_body_size,
         )
 
     @property
@@ -340,7 +342,7 @@ class OpenAPIAdapter(Adapter):
             default=DEFAULT_MAX_BODY_SIZE,
             metavar="BYTES",
             help=(
-                "Largest request body the httpserver backend accepts, in bytes "
+                "Largest request body accepted by either backend, in bytes "
                 f"(default: {DEFAULT_MAX_BODY_SIZE}); larger bodies return 413"
             ),
         )
