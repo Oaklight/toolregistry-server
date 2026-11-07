@@ -447,8 +447,18 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
 # SSE event stream
 # ---------------------------------------------------------------------------
 
+#: Default ceiling on concurrent ``/events`` streams, shared by both
+#: OpenAPI backends.  Each stream holds a queue and a task until the client
+#: disconnects, so an unbounded set is a memory and file-descriptor leak.
+DEFAULT_MAX_SSE_SUBSCRIBERS = 64
 
-def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
+
+def add_events_endpoint(
+    app: "FastAPI",
+    route_table: RouteTable,
+    *,
+    max_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
+) -> None:
     """Add a GET /events SSE endpoint that streams tool change events.
 
     Each connected client receives server-sent events whenever a tool is
@@ -462,11 +472,20 @@ def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
     Args:
         app: The FastAPI application instance.
         route_table: The RouteTable whose changes are broadcast.
+        max_subscribers: Largest number of concurrent streams. Further
+            connections get ``503``. ``0`` disables the endpoint.
+
+    Raises:
+        ValueError: If *max_subscribers* is negative.
     """
     import asyncio
     import json as _json
 
+    if max_subscribers < 0:
+        raise ValueError(f"max_subscribers must not be negative, got {max_subscribers}")
+
     try:
+        from fastapi import HTTPException
         from starlette.responses import StreamingResponse
     except ImportError as e:
         raise ImportError(
@@ -496,6 +515,13 @@ def add_events_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
     @app.get("/events", tags=["meta"], include_in_schema=True)
     async def sse_events():
         """Stream tool change events via Server-Sent Events."""
+        if len(_queues) >= max_subscribers:
+            logger.warning(
+                "SSE subscriber limit reached (%d/%d), rejecting a connection",
+                len(_queues),
+                max_subscribers,
+            )
+            raise HTTPException(status_code=503, detail="Too many event subscribers")
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
         _queues.add(q)
 

@@ -55,6 +55,7 @@ def create_openapi_app(
     description: str = "OpenAPI server for ToolRegistry tools",
     dependencies: Sequence[Any] | None = None,
     enable_etag: bool = True,
+    max_sse_subscribers: int | None = None,
 ) -> FastAPI:
     """Create a FastAPI application from a RouteTable.
 
@@ -66,6 +67,9 @@ def create_openapi_app(
         dependencies: Optional list of global dependencies (e.g., authentication).
         enable_etag: Whether to enable ETag middleware for cache validation.
             Defaults to True.
+        max_sse_subscribers: Largest number of concurrent ``/events``
+            streams. Further connections get ``503``. ``None`` keeps the
+            default (64); ``0`` disables the endpoint.
 
     Returns:
         A configured FastAPI application with:
@@ -116,7 +120,10 @@ def create_openapi_app(
     add_tools_endpoint(app, route_table)
 
     # Add /events SSE endpoint for streaming tool change events
-    add_events_endpoint(app, route_table)
+    if max_sse_subscribers is None:
+        add_events_endpoint(app, route_table)
+    else:
+        add_events_endpoint(app, route_table, max_subscribers=max_sse_subscribers)
 
     # Add routes from route table
     router = route_table_to_router(route_table)

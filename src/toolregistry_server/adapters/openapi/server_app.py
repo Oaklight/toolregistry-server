@@ -28,6 +28,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -43,7 +44,8 @@ from ..._vendor.httpserver import (
     StreamingResponse,
 )
 from ..._vendor.structlog import get_logger
-from .adapter import _validate_arguments
+from ...auth import verify_token
+from .adapter import DEFAULT_MAX_SSE_SUBSCRIBERS, _validate_arguments
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,6 +53,23 @@ if TYPE_CHECKING:
     from ...route_table import RouteTable
 
 logger = get_logger()
+
+#: Swagger UI release served to ``/docs``.  Pinned, not a floating major
+#: range: the CDN copy must be the exact asset whose integrity hash is below.
+SWAGGER_UI_VERSION = "5.34.1"
+SWAGGER_UI_CSS_URL = (
+    f"https://cdn.jsdelivr.net/npm/swagger-ui-dist@{SWAGGER_UI_VERSION}/swagger-ui.css"
+)
+SWAGGER_UI_CSS_INTEGRITY = (
+    "sha384-4c3vsE5f+trhFyHrFrLM1fFGUn531NIaC7dcqEWIJdoRQJ5CkJbSuSCwXLpaS1KF"
+)
+SWAGGER_UI_BUNDLE_URL = (
+    f"https://cdn.jsdelivr.net/npm/swagger-ui-dist@{SWAGGER_UI_VERSION}"
+    "/swagger-ui-bundle.js"
+)
+SWAGGER_UI_BUNDLE_INTEGRITY = (
+    "sha384-XFYN47VzPiDY6qPtxYKg0nqUeW/upo20xf1j2SUE7gT/i35FJB4cuS/71Iegzk8Z"
+)
 
 
 def _json_response(data: Any, status: int = 200, headers: dict | None = None):
@@ -171,18 +190,28 @@ def _add_openapi_route(
 
 
 def _add_docs_route(app: App, title: str) -> None:
-    """Register ``GET /docs`` serving Swagger UI from the CDN."""
-    html = f"""<!DOCTYPE html>
+    """Register ``GET /docs`` serving Swagger UI from the CDN.
+
+    The release is pinned and both assets carry an integrity hash, so a
+    changed CDN response is refused by the browser instead of executed.
+    The title is operator configuration and is HTML-escaped.
+    """
+    safe_title = html.escape(title)
+    html_page = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{title} - Swagger UI</title>
+  <title>{safe_title} - Swagger UI</title>
   <link rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+        href="{SWAGGER_UI_CSS_URL}"
+        integrity="{SWAGGER_UI_CSS_INTEGRITY}"
+        crossorigin="anonymous">
 </head>
 <body>
   <div id="swagger-ui"></div>
-  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="{SWAGGER_UI_BUNDLE_URL}"
+          integrity="{SWAGGER_UI_BUNDLE_INTEGRITY}"
+          crossorigin="anonymous"></script>
   <script>
     window.ui = SwaggerUIBundle({{url: "/openapi.json", dom_id: "#swagger-ui"}});
   </script>
@@ -191,11 +220,19 @@ def _add_docs_route(app: App, title: str) -> None:
 
     @app.get("/docs")
     async def _docs(request) -> Response:
-        return Response(html, content_type="text/html; charset=utf-8")
+        return Response(html_page, content_type="text/html; charset=utf-8")
 
 
-def _add_events_route(app: App, route_table: RouteTable) -> None:
-    """Register ``GET /events`` streaming tool change events as SSE."""
+def _add_events_route(
+    app: App,
+    route_table: RouteTable,
+    max_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
+) -> None:
+    """Register ``GET /events`` streaming tool change events as SSE.
+
+    At most *max_subscribers* clients may stream at once; further requests
+    get a ``503`` instead of growing the subscriber set without bound.
+    """
     # RouteTable listeners may fire on any thread (an admin request, a
     # background refresh), so each subscriber pairs its queue with the loop
     # that reads it and wakes that loop explicitly.
@@ -236,7 +273,14 @@ def _add_events_route(app: App, route_table: RouteTable) -> None:
             subscribers.discard((queue, loop))
 
     @app.get("/events")
-    async def _events(request) -> StreamingResponse:
+    async def _events(request) -> Response | StreamingResponse:
+        if len(subscribers) >= max_subscribers:
+            logger.warning(
+                "SSE subscriber limit reached, rejecting a connection",
+                subscribers=len(subscribers),
+                limit=max_subscribers,
+            )
+            return _error(503, "Too many event subscribers")
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
         subscribers.add((queue, loop))
@@ -248,7 +292,11 @@ def _add_events_route(app: App, route_table: RouteTable) -> None:
 
 
 def _add_auth(app: App, tokens: Sequence[str]) -> None:
-    """Reject requests whose ``Authorization`` header carries no known token."""
+    """Reject requests whose ``Authorization`` header carries no known token.
+
+    The credential is compared against every configured token in constant
+    time (see :func:`toolregistry_server.auth.verify_token`).
+    """
 
     @app.before_request
     async def _require_token(request) -> Response | None:
@@ -256,7 +304,7 @@ def _add_auth(app: App, tokens: Sequence[str]) -> None:
         scheme, _, credential = header.partition(" ")
         if scheme.lower() != "bearer" or not credential:
             response = _error(401, "Not authenticated")
-        elif credential not in tokens:
+        elif not verify_token(credential, tokens):
             response = _error(401, "Invalid authentication token")
         else:
             return None
@@ -303,6 +351,7 @@ def create_httpserver_app(
     tokens: Sequence[str] | None = None,
     enable_etag: bool = True,
     max_body_size: int = DEFAULT_MAX_BODY_SIZE,
+    max_sse_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
 ) -> App:
     """Build a :class:`~httpserver.App` exposing the RouteTable.
 
@@ -316,16 +365,24 @@ def create_httpserver_app(
         enable_etag: Add a content ETag to successful responses.
         max_body_size: Largest request body accepted, in bytes. A body above
             this returns ``413`` with a JSON body. Defaults to 1 MiB.
+        max_sse_subscribers: Largest number of concurrent ``/events``
+            streams. Further connections get ``503``. ``0`` disables the
+            endpoint. Defaults to 64.
 
     Returns:
         An :class:`~httpserver.App` with the tool routes, ``/tools``,
         ``/openapi.json``, ``/docs`` and ``/events`` registered.
 
     Raises:
-        ValueError: If *max_body_size* is not positive.
+        ValueError: If *max_body_size* is not positive, or
+            *max_sse_subscribers* is negative.
     """
     if max_body_size <= 0:
         raise ValueError(f"max_body_size must be positive, got {max_body_size}")
+    if max_sse_subscribers < 0:
+        raise ValueError(
+            f"max_sse_subscribers must not be negative, got {max_sse_subscribers}"
+        )
 
     app = App(max_body_size=max_body_size)
 
@@ -337,7 +394,7 @@ def create_httpserver_app(
     _add_tools_route(app, route_table)
     _add_openapi_route(app, route_table, title, version, description)
     _add_docs_route(app, title)
-    _add_events_route(app, route_table)
+    _add_events_route(app, route_table, max_sse_subscribers)
     _add_framework_errors(app)
 
     if enable_etag:
