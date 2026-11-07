@@ -1,10 +1,19 @@
 """Tests for the OpenAPI adapter module."""
 
+from io import StringIO
+
 import pytest
 from toolregistry import ToolRegistry
 from toolregistry.tool import Tool, ToolMetadata
 
 from toolregistry_server import RouteTable
+from toolregistry_server._vendor.structlog import (
+    BoundLogger,
+    ConsoleRenderer,
+    PrintLogger,
+    TimeStamper,
+    add_log_level,
+)
 from toolregistry_server.adapters.openapi import create_openapi_app
 from toolregistry_server.adapters.openapi.adapter import (
     _validate_arguments,
@@ -13,6 +22,19 @@ from toolregistry_server.adapters.openapi.adapter import (
     setup_dynamic_openapi,
 )
 from toolregistry_server.adapters.openapi.middleware import add_etag_middleware
+
+
+def _capture_logs(monkeypatch, module):
+    """Route *module*'s logger into a StringIO and return the stream."""
+    stream = StringIO()
+    log = BoundLogger(
+        logger=PrintLogger(file=stream),
+        processors=[add_log_level, TimeStamper(), ConsoleRenderer(colors=False)],
+        context={},
+    )
+    monkeypatch.setattr(module, "logger", log)
+    return stream
+
 
 # ============== Fixtures ==============
 
@@ -640,6 +662,58 @@ class TestToolExecutionErrorHandling:
         detail = response.json()["detail"]
         assert detail == "Tool 'fail_async' execution failed"
         assert "async boom" not in detail
+
+    def test_sync_tool_exception_traceback_is_logged(
+        self, route_table: RouteTable, monkeypatch
+    ):
+        """The FastAPI path keeps the traceback the client must not receive."""
+        import toolregistry_server.adapters.openapi.adapter as adapter
+
+        stream = _capture_logs(monkeypatch, adapter)
+
+        def fail_sync() -> str:
+            raise RuntimeError("boom")
+
+        route_table._registry.register(fail_sync, name="fail_sync")
+        route_table._rebuild()
+
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.post("/tools/default/fail_sync", json={})
+        assert response.status_code == 500
+
+        output = stream.getvalue()
+        assert "Traceback (most recent call last)" in output
+        assert "RuntimeError: boom" in output
+
+    def test_async_tool_exception_traceback_is_logged(
+        self, route_table: RouteTable, monkeypatch
+    ):
+        """The async endpoint logs the same traceback shape."""
+        import toolregistry_server.adapters.openapi.adapter as adapter
+
+        stream = _capture_logs(monkeypatch, adapter)
+
+        async def fail_async() -> str:
+            raise ValueError("async boom")
+
+        route_table._registry.register(fail_async, name="fail_async")
+        route_table._rebuild()
+
+        from fastapi.testclient import TestClient
+
+        app = create_openapi_app(route_table)
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.post("/tools/default/fail_async", json={})
+        assert response.status_code == 500
+
+        output = stream.getvalue()
+        assert "Traceback (most recent call last)" in output
+        assert "ValueError: async boom" in output
 
 
 class TestAddETagMiddleware:

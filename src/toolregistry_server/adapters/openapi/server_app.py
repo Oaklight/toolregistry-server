@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import traceback
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -146,7 +147,11 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
             # Keep the exception text in the log; it can carry connection
             # strings, paths and upstream URLs.  The client only needs the
             # tool name.
-            logger.exception("Tool execution failed", tool=tool_name)
+            logger.error(
+                "Tool execution failed",
+                tool=tool_name,
+                exception=traceback.format_exc(),
+            )
             return _error(500, f"Tool '{tool_name}' execution failed")
 
         try:
@@ -164,7 +169,11 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
             # exception text in the log; a custom ``to_dict`` / ``model_dump``
             # may raise with data in the message.  The client gets a stable
             # reason.
-            logger.exception("Tool result is not serialisable", tool=tool_name)
+            logger.error(
+                "Tool result is not serialisable",
+                tool=tool_name,
+                exception=traceback.format_exc(),
+            )
             return _error(500, f"Tool '{tool_name}' result is not serialisable")
         return Response(body, content_type="application/json; charset=utf-8")
 
