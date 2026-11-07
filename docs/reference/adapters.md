@@ -75,6 +75,15 @@ route_table.override_execution_hints("analyse", {})  # suppress all annotations
 
 By default adapters publish only hints a tool declared explicitly. Tag-derived hints are opt-in: `RouteTable(..., emit_derived_execution_hints=True)` or `set_emit_derived_execution_hints(True)` restores them.
 
+## Request Validation
+
+The OpenAPI adapter validates a request body before calling the tool:
+
+- Signature-derived tools are checked against their generated model, including coercion and unknown-key filtering.
+- Proxy tools (OpenAPI, MCP, LangChain) have no model, so the body is checked against the tool's JSON Schema.
+
+For proxy tools, a `pattern` or `patternProperties` that came from the OpenAPI document is **not executed**. A spec is untrusted content, Python's `re` has no timeout, and a short catastrophic expression such as `(a+)+$` can hang a request. When `patternProperties` is dropped, `additionalProperties: false` at that same level is relaxed so keys the patterns used to cover are not rejected as unknown. The constraint is still published: `/openapi.json`, the MCP `inputSchema` and the route ETag keep the original schema, and the upstream API remains the authority for the field format. Overrides supplied through `RouteTable.override_parameters` are operator code and keep their regexes.
+
 ## Dynamic Behavior
 
 Adapters read from the `RouteTable` at request time, which means:
