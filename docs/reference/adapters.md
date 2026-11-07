@@ -73,6 +73,8 @@ route_table.override_execution_hints("analyse", {})  # 抑制所有注解
 
 `override_parameters` 替换参数 schema；`override_execution_hints` 替换提示映射，`{}` 表示“不作声明”。传入 `None` 可清除任一覆盖。两者都会反映到 MCP（`inputSchema` / `annotations`）与 OpenAPI（请求 schema / `x-` 扩展），在 `refresh()` 与 `refresh_all()` 后保留，并通知 `RouteTable` 监听者。注册表中的 `Tool` 及其 `schema_hash` 不受影响，因此覆盖不会泄漏到其他使用方。
 
+覆盖是描述性的：请求校验仍使用工具自身的校验模型。对 model-backed 工具，如果覆盖比该模型更严格——新增必填字段、收紧 `minimum`/`maximum`/`minLength`/`maxLength`、修改 `pattern`、收窄或改变 `enum`、或收窄或改变属性类型——保存时会报错，因为模型不会执行这些约束。更宽松的覆盖会保存并发出 `UserWarning`。代理工具直接按发布的 schema 校验，因此不受此限制。
+
 默认情况下适配器只发布工具显式声明的提示。由标签推导的提示需要显式开启：`RouteTable(..., emit_derived_execution_hints=True)` 或 `set_emit_derived_execution_hints(True)`。
 
 ## 请求校验
