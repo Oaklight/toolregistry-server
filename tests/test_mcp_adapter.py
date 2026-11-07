@@ -1213,7 +1213,48 @@ class TestExceptionHandling:
         async with create_test_client(server) as client:
             result = await client.call_tool("failing_tool", {})
             assert get_field(result, "is_error", "isError") is True
-            assert "intentional error for testing" in result.content[0].text
+            assert "Tool 'failing_tool' execution failed" in result.content[0].text
+            assert "intentional error for testing" not in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_tool_execution_error_does_not_leak_exception_text(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """A DSN in the exception stays out of the client text and in the log."""
+        from unittest.mock import patch
+
+        from toolregistry_server.adapters.mcp import adapter as adapter_module
+
+        def leaky_tool() -> str:
+            """Raise an error carrying a database DSN."""
+            raise RuntimeError("postgres://user:pass@db.internal/app")
+
+        leaky = MagicMock()
+        leaky.name = "leaky_tool"
+        leaky.namespace = "default"
+        leaky.method_name = "leaky_tool"
+        leaky.description = "A tool whose exception carries a DSN."
+        leaky.parameters = {"type": "object", "properties": {}}
+        leaky.callable = leaky_tool
+        leaky.is_async = False
+        mock_registry._tools = {"leaky_tool": leaky}
+
+        server = route_table_to_mcp_server(RouteTable(mock_registry))
+
+        with patch.object(adapter_module, "logger") as mock_logger:
+            async with create_test_client(server) as client:
+                result = await client.call_tool("leaky_tool", {})
+
+        assert get_field(result, "is_error", "isError") is True
+        text = result.content[0].text
+        assert "Tool 'leaky_tool' execution failed" in text
+        assert "user:pass" not in text
+        assert "db.internal" not in text
+
+        mock_logger.error.assert_called_once()
+        logged = mock_logger.error.call_args.kwargs["exception"]
+        assert "postgres://user:pass@db.internal/app" in logged
+        assert "Traceback (most recent call last)" in logged
 
 
 # ---------------------------------------------------------------------------
