@@ -122,11 +122,19 @@ def create_openapi_app(
         ``{"detail": ...}``; this keeps the same shape.  ``tool_name`` is set
         by the endpoint, so an exception raised while rendering a successful
         result is reported as a serialisation failure.
+
+        The traceback goes to the log, matching the httpserver path; the
+        client only gets the stable reason.
         """
         tool_name = getattr(request.state, "tool_name", None)
         if tool_name:
+            logger.exception("Tool result is not serialisable", tool=tool_name)
             detail = f"Tool '{tool_name}' result is not serialisable"
         else:
+            logger.exception(
+                "Unhandled error while rendering a response",
+                path=request.url.path,
+            )
             detail = "Internal Server Error"
         return JSONResponse({"detail": detail}, status_code=500)
 
