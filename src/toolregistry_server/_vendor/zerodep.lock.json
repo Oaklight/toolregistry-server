@@ -1,5 +1,5 @@
 {
-  "generated_by": "zerodep 2026.11.4",
+  "generated_by": "zerodep 2026.11.7.1",
   "lock_version": 1,
   "modules": {
     "dotenv": {
@@ -20,11 +20,11 @@
     },
     "jsonschema": {
       "files": {
-        "jsonschema.py": "ab200cf7cbc29c23da6607312ed4b3472ec0cd1cb9036e656f610139b765fb56"
+        "jsonschema.py": "b71345a9ff67c6ad5377c459edfb61512511750fca01ec1c655e7ec196c6fc9f"
       },
       "requested": true,
-      "upstream_hash": "9b4f8684930617202004f8024e3e1e7b6e248982060e5d6caacdbf544e3ab0ab",
-      "version": "0.4.1"
+      "upstream_hash": "627564aeda9dd450e788ab73a2afe263ad14fcf81f650e2d9115a41e359f1b55",
+      "version": "0.4.4"
     },
     "structlog": {
       "files": {
@@ -36,7 +36,7 @@
     }
   },
   "source": {
-    "ref": "v2026.11.7",
+    "ref": "7a0346c81d63210a5461513fa30a812b509d7aa6",
     "repo": "Oaklight/zerodep"
   }
 }
