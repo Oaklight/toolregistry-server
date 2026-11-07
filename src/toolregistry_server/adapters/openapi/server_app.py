@@ -35,8 +35,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-from toolregistry.utils import ToolResultJSONEncoder
-
 from ..._vendor.httpserver import (
     DEFAULT_MAX_BODY_SIZE,
     App,
@@ -46,6 +44,7 @@ from ..._vendor.httpserver import (
 from ..._vendor.structlog import get_logger
 from ...auth import verify_token
 from .adapter import DEFAULT_MAX_SSE_SUBSCRIBERS, _validate_arguments
+from .serialisation import encode_tool_result
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -75,9 +74,7 @@ SWAGGER_UI_BUNDLE_INTEGRITY = (
 def _json_response(data: Any, status: int = 200, headers: dict | None = None):
     """Serialize *data* the way FastAPI's ``JSONResponse`` does."""
     return Response(
-        json.dumps(
-            data, cls=ToolResultJSONEncoder, ensure_ascii=False, separators=(",", ":")
-        ),
+        encode_tool_result(data),
         status_code=status,
         headers=headers,
         content_type="application/json",
@@ -152,12 +149,7 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
         try:
             # Compact separators and no ASCII escaping match FastAPI's
             # JSONResponse byte for byte.
-            body = json.dumps(
-                result,
-                cls=ToolResultJSONEncoder,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            body = encode_tool_result(result)
         except (TypeError, ValueError):
             # ``json.dumps`` raises TypeError for a value with no JSON
             # projection and ValueError for a circular reference.  Keep the

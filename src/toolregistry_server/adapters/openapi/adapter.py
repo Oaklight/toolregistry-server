@@ -5,16 +5,15 @@ Converts a :class:`~toolregistry_server.RouteTable` into a FastAPI
 and dynamically creating Pydantic request models and route handlers.
 """
 
-import json
 import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Any
 
 from toolregistry import ValidationError
-from toolregistry.utils import ToolResultJSONEncoder
 
 from ..._vendor.jsonschema import SchemaValidationError, schema_validate
 from ...route_table import RouteEntry, RouteTable, _allows_additional_properties
+from .serialisation import encode_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +268,7 @@ def _openapi_extensions(route: RouteEntry) -> dict[str, Any] | None:
 def _tool_result_response(result: Any) -> "Response":
     """Render a tool result the way the httpserver backend does.
 
-    Both OpenAPI backends share :class:`ToolResultJSONEncoder`, so non-finite
+    Both OpenAPI backends call :func:`encode_tool_result`, so non-finite
     floats and ``Decimal`` values reach the wire as ``null`` instead of a
     bare ``NaN`` or the string ``"NaN"``.  FastAPI would otherwise serialise
     the raw result through pydantic, whose JSON mode keeps a non-finite
@@ -283,13 +282,10 @@ def _tool_result_response(result: Any) -> "Response":
     """
     from fastapi import Response
 
-    body = json.dumps(
-        result,
-        cls=ToolResultJSONEncoder,
-        ensure_ascii=False,
-        separators=(",", ":"),
+    return Response(
+        content=encode_tool_result(result),
+        media_type="application/json; charset=utf-8",
     )
-    return Response(content=body, media_type="application/json; charset=utf-8")
 
 
 def _add_route_from_entry(
