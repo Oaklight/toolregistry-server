@@ -17,6 +17,7 @@
 
 ### 修复
 
+- **OpenAPI 后端的工具失败日志重新包含堆栈**（#162）：内联 `structlog` 的处理器链没有 `format_exc_info`，`logger.exception()` 到达 `ConsoleRenderer` 时只剩 `exc_info=True`，堆栈被丢弃。两个后端现在与 MCP 路径一样显式传入 `exception=traceback.format_exc()`；FastAPI 适配器改用内联 logger，不再使用标准库 `logging`，以便接受该关键字。返回给客户端的 500 响应体不变。
 - **OpenAPI 请求校验不再执行来自 spec 的正则**（core #384）：OpenAPI 文档中的 `pattern` 或 `patternProperties` 可能发生灾难性回溯并卡住工具调用，因为 Python 的 `re` 没有超时。代理工具现在使用去掉这些关键字的副本校验（移除 `patternProperties` 时同层 `additionalProperties: false` 会放宽），而 `/openapi.json`、MCP 的 `inputSchema` 与路由 ETag 仍发布原始约束。覆盖保留其正则；字段格式以上游 API 为准。
 - **operator 配置中的本地 OpenAPI 路径现在可以加载**（core #376）：core #376 让 `load_openapi_spec()` 默认拒绝本地路径，除非调用方显式开启，而 `register_openapi_source()` 没有开启，因此指向本地文件的 `openapi` 源不会注册任何工具，只记录一条警告。现在，当安装的 core 接受该关键字时，服务端会传入 `allow_local_files=True`；早于 #376 的 core 保持原有行为。面板输入仍然只接受 http(s)。
 - **httpserver 后端的请求体上限可配置**（#134）：内联后端此前继承 1 MiB 上限，参数超过该值的工具调用在 FastAPI 后端可用，在 httpserver 后端却返回 413。现在可用 `--max-body-size BYTES` 与 `OpenAPIAdapter(max_body_size=...)` 设置该上限；默认仍为 1 MiB，非正值会抛出 `ValueError`，超限请求返回不含 traceback 的 JSON `413`。如果请求体大到服务端拒绝时客户端仍在写入，仍可能表现为连接重置——排空未读请求体必须在内部服务端中完成。
