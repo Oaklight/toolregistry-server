@@ -19,7 +19,12 @@ from toolregistry import ToolRegistry
 from toolregistry.utils import ToolResultJSONEncoder
 
 from toolregistry_server import RouteTable
-from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
+from toolregistry_server.adapters.openapi.server_app import (
+    SWAGGER_UI_BUNDLE_INTEGRITY,
+    SWAGGER_UI_CSS_INTEGRITY,
+    SWAGGER_UI_VERSION,
+    create_httpserver_app,
+)
 
 
 def add(a: int, b: int) -> int:
@@ -305,6 +310,29 @@ class TestMetaRoutes:
         assert "text/html" in headers["Content-Type"]
         assert b"swagger" in body.lower()
 
+    def test_docs_pins_swagger_ui_with_integrity(self, server):
+        """The CDN assets are an exact release guarded by SRI (#149)."""
+        url, _, _ = server
+        _, _, body = _call(url, "/docs")
+        page = body.decode()
+        assert f"swagger-ui-dist@{SWAGGER_UI_VERSION}/" in page
+        assert SWAGGER_UI_CSS_INTEGRITY in page
+        assert SWAGGER_UI_BUNDLE_INTEGRITY in page
+        assert page.count('integrity="sha384-') == 2
+        assert page.count('crossorigin="anonymous"') == 2
+
+    def test_docs_escapes_the_configured_title(self, route_table):
+        """An operator-supplied title cannot inject markup (#149)."""
+        title = "<script>alert(1)</script>"
+        app = create_httpserver_app(route_table, title=title)
+        url = _serve(app)
+        try:
+            _, _, body = _call(url, "/docs")
+        finally:
+            app.shutdown()
+        assert title.encode() not in body
+        assert b"&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
 
 class TestAuth:
     def test_missing_token_is_a_401(self, route_table):
@@ -342,6 +370,36 @@ class TestEvents:
             threading.Thread(target=emit, daemon=True).start()
             line = response.readline()
             assert line.startswith(b"event: tool_change")
+
+
+class TestEventsLimit:
+    """The ``/events`` subscriber set is bounded (#149)."""
+
+    def test_extra_subscribers_are_rejected(self, route_table):
+        app = create_httpserver_app(route_table, max_sse_subscribers=1)
+        url = _serve(app)
+        try:
+            with urllib.request.urlopen(url + "/events", timeout=5) as response:
+                assert "text/event-stream" in response.headers["Content-Type"]
+                status, _, body = _call(url, "/events")
+            assert status == 503
+            assert json.loads(body)["detail"] == "Too many event subscribers"
+        finally:
+            app.shutdown()
+
+    def test_zero_disables_the_endpoint(self, route_table):
+        app = create_httpserver_app(route_table, max_sse_subscribers=0)
+        url = _serve(app)
+        try:
+            status, _, body = _call(url, "/events")
+        finally:
+            app.shutdown()
+        assert status == 503
+        assert json.loads(body)["detail"] == "Too many event subscribers"
+
+    def test_negative_limit_is_rejected(self, route_table):
+        with pytest.raises(ValueError, match="max_sse_subscribers"):
+            create_httpserver_app(route_table, max_sse_subscribers=-1)
 
 
 class TestBodyLimit:

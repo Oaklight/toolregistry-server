@@ -42,6 +42,25 @@ class TestBearerTokenAuth:
         auth = BearerTokenAuth(tokens=["secret"])
         assert not auth.verify("wrong")
 
+    def test_verify_uses_compare_digest_on_every_token(self, monkeypatch):
+        """Tokens are compared in constant time, never with ``in`` (#149)."""
+        import secrets
+
+        real_compare = secrets.compare_digest
+        calls: list[tuple[bytes, bytes]] = []
+
+        def spy(left, right):
+            calls.append((left, right))
+            return real_compare(left, right)
+
+        monkeypatch.setattr("toolregistry_server.auth.secrets.compare_digest", spy)
+        auth = BearerTokenAuth(tokens=["token1", "token2"])
+
+        assert auth.verify("token2")
+        assert not auth.verify("wrong")
+        # Two comparisons per verify: the loop does not stop at a match.
+        assert len(calls) == 4
+
     def test_verify_when_disabled(self):
         """Test that verification passes when auth is disabled."""
         auth = BearerTokenAuth()

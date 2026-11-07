@@ -19,11 +19,36 @@ Example:
     ```
 """
 
+import hashlib
+import secrets
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from typing import Any
+
+
+def _token_digest(token: str) -> bytes:
+    """Return the SHA-256 digest of *token*.
+
+    Comparing fixed-size digests keeps ``secrets.compare_digest`` from
+    leaking the length of a configured token.
+    """
+    return hashlib.sha256(token.encode("utf-8")).digest()
+
+
+def _tokens_match(candidate: str, valid_tokens: "Iterable[str]") -> bool:
+    """Compare *candidate* against every valid token in constant time.
+
+    Every configured token is compared: returning on the first match would
+    leak its position through timing.
+    """
+    candidate_digest = _token_digest(candidate)
+    matched = False
+    for valid in valid_tokens:
+        if secrets.compare_digest(candidate_digest, _token_digest(valid)):
+            matched = True
+    return matched
 
 
 class BearerTokenAuth:
@@ -72,7 +97,7 @@ class BearerTokenAuth:
         return self._tokens.copy()
 
     def verify(self, token: str) -> bool:
-        """Verify a token.
+        """Verify a token in constant time.
 
         Args:
             token: The token to verify.
@@ -82,7 +107,7 @@ class BearerTokenAuth:
         """
         if not self._enabled:
             return True
-        return token in self._tokens
+        return _tokens_match(token, self._tokens)
 
     def add_token(self, token: str) -> None:
         """Add a valid token.
@@ -104,7 +129,7 @@ class BearerTokenAuth:
 
 
 def verify_token(token: str, valid_tokens: "Sequence[str]") -> bool:
-    """Verify a token against a list of valid tokens.
+    """Verify a token against a list of valid tokens in constant time.
 
     Args:
         token: The token to verify.
@@ -113,7 +138,7 @@ def verify_token(token: str, valid_tokens: "Sequence[str]") -> bool:
     Returns:
         True if the token is in the valid tokens list.
     """
-    return token in valid_tokens
+    return _tokens_match(token, valid_tokens)
 
 
 def create_bearer_dependency(auth: BearerTokenAuth) -> "Callable[..., Any]":

@@ -252,6 +252,19 @@ class TestOpenAPIIntegration:
         schema_after = response.json()
         assert "/tools/default/add" not in schema_after["paths"]
 
+    def test_events_cap_rejects_new_subscribers(self, route_table: RouteTable):
+        """A capped ``/events`` returns 503 instead of subscribing (#149)."""
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_openapi_app(route_table, max_sse_subscribers=0))
+        response = client.get("/events")
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Too many event subscribers"
+
+    def test_negative_events_cap_is_rejected(self, route_table: RouteTable):
+        with pytest.raises(ValueError, match="max_subscribers"):
+            create_openapi_app(route_table, max_sse_subscribers=-1)
+
 
 # ============== Dynamic OpenAPI Tests ==============
 
