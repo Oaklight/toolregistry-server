@@ -159,3 +159,7 @@ tools.jsonc
 # Git worktrees for docs branches
 docs_en/
 docs_zh/
+
+# Local tooling artifacts (kept in the working tree)
+uv.lock
+.claude/
