@@ -11,6 +11,7 @@ import enum
 import inspect
 import json
 import pathlib
+import traceback
 import weakref
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
@@ -604,6 +605,7 @@ def route_table_to_mcp_server(
             make_mcp_error,
             make_mcp_tool,
             make_tool_annotations,
+            tool_execution_error_message,
         )
     except ImportError as e:
         raise ImportError(
@@ -665,7 +667,8 @@ def route_table_to_mcp_server(
             result when the tool declares an ``outputSchema``, else None.
 
         Raises:
-            McpErrorClass: If the tool is disabled or not found.
+            McpErrorClass: If the tool is disabled, not found, or its
+                execution fails.
         """
         # Reuse the route the v1 pre-dispatch hook already resolved, so a
         # call has one lookup and one outcome on both SDK generations (#97).
@@ -698,8 +701,17 @@ def route_table_to_mcp_server(
         except McpErrorClass:
             raise
         except Exception as e:
-            logger.warning(f"call_tool '{tool_name}': error - {e}")
-            raise make_mcp_error(INTERNAL_ERROR, str(e)) from e
+            # Keep the exception text in the log; it can carry connection
+            # strings, internal paths and upstream URLs.  The client only
+            # needs to know which tool failed.
+            logger.error(
+                "Tool execution failed",
+                tool=tool_name,
+                exception=traceback.format_exc(),
+            )
+            raise make_mcp_error(
+                INTERNAL_ERROR, tool_execution_error_message(tool_name)
+            ) from e
         finally:
             if token is not None:
                 session_context_var.reset(token)

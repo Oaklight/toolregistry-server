@@ -8,14 +8,19 @@ implement our own MCP SDK, only this file needs a new backend.
 from __future__ import annotations
 
 import contextvars
+import traceback
 from collections.abc import Callable, Coroutine, MutableSet
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal
+
+from ..._vendor.structlog import get_logger
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
     from mcp.types import ContentBlock as MCPContentBlock
     from mcp.types import Tool as MCPTool
+
+logger = get_logger()
 
 # ---------------------------------------------------------------------------
 # Version detection
@@ -76,6 +81,60 @@ def _get_mcp_error_code(error: Exception) -> int | None:
     if code is None:
         code = getattr(error, "code", None)
     return code if isinstance(code, int) else None
+
+
+def tool_execution_error_message(tool_name: str) -> str:
+    """Return the client-visible message for a failed tool execution.
+
+    The exception text stays in the server log: it can carry connection
+    strings, internal paths and upstream URLs, and the client only needs to
+    know which tool failed.
+
+    Args:
+        tool_name: Name of the tool that failed.
+
+    Returns:
+        A stable message that names the tool.
+    """
+    return f"Tool '{tool_name}' execution failed"
+
+
+def _tool_error_result(tool_name: str, error: Exception) -> Any:
+    """Return the client-visible result for a failed tool call.
+
+    An adapter execution failure (``INTERNAL_ERROR``) and any unexpected
+    exception get a stable message; the exception text stays in the log.
+    Other protocol-level errors keep their own message.
+
+    Args:
+        tool_name: Name of the tool that failed.
+        error: The exception raised by the call handler.
+
+    Returns:
+        A ``CallToolResult`` with ``is_error=True``.
+    """
+    from mcp.types import INTERNAL_ERROR, CallToolResult, TextContent
+
+    if (
+        isinstance(error, McpErrorClass)
+        and _get_mcp_error_code(error) != INTERNAL_ERROR
+    ):
+        text = str(error)
+    else:
+        if not isinstance(error, McpErrorClass):
+            # Unexpected failure outside the tool handler: keep the
+            # exception text in the log and give the client a stable message.
+            logger.error(
+                "Tool execution failed",
+                tool=tool_name,
+                exception=traceback.format_exc(),
+            )
+        text = tool_execution_error_message(tool_name)
+
+    return CallToolResult(  # type: ignore[call-arg]
+        content=[TextContent(type="text", text=text)],
+        is_error=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -392,9 +451,8 @@ def _create_server_v2(
         return ListToolsResult(tools=tools, **extra)
 
     async def on_call_tool(ctx: Any, params: Any) -> Any:
-        from mcp.types import TextContent
-
         token = _v2_request_ctx.set(ctx)
+        tool_name = "<unknown>"
         try:
             tool_name = params.name
             arguments = params.arguments or {}
@@ -409,17 +467,11 @@ def _create_server_v2(
             # runtime serializes it as a JSON-RPC error.
             if _get_mcp_error_code(e) == INVALID_PARAMS:
                 raise
-            return CallToolResult(  # type: ignore[call-arg]
-                content=[TextContent(type="text", text=str(e))],
-                is_error=True,
-            )
+            return _tool_error_result(tool_name, e)
         except Exception as e:
             # Everything else stays an LLM-visible tool result, matching
             # SDK v1 behavior where execution errors are ``isError``.
-            return CallToolResult(  # type: ignore[call-arg]
-                content=[TextContent(type="text", text=str(e))],
-                is_error=True,
-            )
+            return _tool_error_result(tool_name, e)
         finally:
             _v2_request_ctx.reset(token)
 
