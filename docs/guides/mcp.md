@@ -229,10 +229,10 @@ tool_metadata:
 |-----------|----------------------|
 | Tool name unknown, or the tool is disabled | JSON-RPC error `-32602` (Invalid params) |
 | Arguments invalid (missing required field, wrong type) | `CallToolResult` with `isError: true` and the error text as content |
-| Tool raises while executing | `CallToolResult` with `isError: true` and the error text as content |
+| Tool raises while executing | `CallToolResult` with `isError: true` and a stable message naming the tool; the exception stays in the server log |
 | `call_deferred` with an unknown `_target_tool` | `CallToolResult` with `isError: true` |
 
-A protocol error means the call itself was invalid, so it should not be fed back to the model as a tool result. An execution error is model-visible: the LLM reads the message and can retry or change approach. Disabled tools report the disable reason in the error message.
+A protocol error means the call itself was invalid, so it should not be fed back to the model as a tool result. An execution error is model-visible: the LLM reads the message and can retry or change approach. That message is a stable `Tool '<name>' execution failed`; the exception text — which can carry connection strings, internal paths and upstream URLs — stays in the server log. Disabled tools report the disable reason in the error message.
 
 Bad arguments are deliberately *not* a protocol error even though they are also a request problem: the text (`Expected int at 'a', got str`) is what lets the model correct itself. The same reasoning keeps the `call_deferred` dispatcher's answer a tool result — its text is guidance ("tool 'ghost' not found in registry. Did you mean: …") aimed at the model. A host that switches on `-32602` therefore sees one shape for "that name is not a tool here" when calling directly, and another when dispatching through `call_deferred`.
 
