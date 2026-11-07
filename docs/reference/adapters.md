@@ -75,6 +75,8 @@ route_table.override_execution_hints("analyse", {})  # suppress all annotations
 
 An override is descriptive: request validation still uses the tool's own validation model. For a model-backed tool, an override that is stricter than that model — adds a required field, tightens `minimum`/`maximum`/`minLength`/`maxLength`, changes `pattern`, narrows or changes `enum`, or narrows or changes a property's type — is rejected at save time, because the model would not enforce it. A looser override is saved with a `UserWarning`. Proxy tools validate against the served schema, so they are not restricted.
 
+`override_parameters` raises `ValueError` for a rejected override. A loader that applies overrides from a configuration file should catch that error, log the tool name and reason, and skip the override (keeping the tool's own schema) so the service still starts.
+
 By default adapters publish only hints a tool declared explicitly. Tag-derived hints are opt-in: `RouteTable(..., emit_derived_execution_hints=True)` or `set_emit_derived_execution_hints(True)` restores them.
 
 ## Request Validation
