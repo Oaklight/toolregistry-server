@@ -130,6 +130,7 @@ def _without_spec_regex(node: Any) -> Any:
     return stripped
 
 
+# Read-only: never accesses RouteTable and may run in a worker thread.
 def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
     """Validate a request body and return the arguments for the tool call.
 
@@ -153,6 +154,14 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
 
     Raises:
         fastapi.HTTPException: 422 when validation fails.
+
+    Threading:
+        Read-only, does not access ``RouteTable``, and may run in a worker
+        thread. Every value comes from the ``route`` snapshot the caller
+        already holds. Without an override, ``served_parameters_schema`` is
+        a ``cached_property``: on Python 3.12+ concurrent first access may
+        compute it twice, but both results are identical and the assignment
+        is atomic, so the duplication is benign.
     """
     from fastapi import HTTPException
 

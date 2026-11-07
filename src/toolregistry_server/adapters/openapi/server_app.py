@@ -129,7 +129,11 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
             )
 
         try:
-            arguments = _validate_arguments(current, payload)
+            # Validation is synchronous and CPU-bound; a large body or schema
+            # would otherwise stall every request, SSE stream and meta route
+            # on this loop. The default executor is enough for a short CPU
+            # task, so no custom executor is installed.
+            arguments = await asyncio.to_thread(_validate_arguments, current, payload)
         except Exception as exc:  # HTTPException carries the 422 detail
             status = getattr(exc, "status_code", None)
             if status is not None:
