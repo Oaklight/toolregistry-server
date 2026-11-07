@@ -250,6 +250,74 @@ class TestToolRoutes:
         assert "Traceback (most recent call last)" in output
         assert "TypeError" in output
 
+    def test_validation_runs_off_the_event_loop(self, route_table, monkeypatch):
+        """Other requests are served while validation is still running."""
+        import toolregistry_server.adapters.openapi.server_app as server_app
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_validate(route, payload):
+            entered.set()
+            assert release.wait(5)
+            return payload
+
+        monkeypatch.setattr(server_app, "_validate_arguments", blocking_validate)
+        app = create_httpserver_app(route_table)
+        url = _serve(app)
+        responses: list[tuple[int, dict, bytes]] = []
+        try:
+            worker = threading.Thread(
+                target=lambda: responses.append(
+                    _call(url, _path(route_table), {"a": 1, "b": 2})
+                )
+            )
+            worker.start()
+            assert entered.wait(5)
+
+            # If validation still ran on the loop, this request could not be
+            # served until ``release`` was set below and would time out.
+            status, _, body = _call(url, "/tools")
+            assert status == 200
+            assert "tools" in json.loads(body)
+
+            release.set()
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+            assert responses[0][0] == 200
+        finally:
+            release.set()
+            app.shutdown()
+
+    def test_validation_http_exception_stays_a_422(self, route_table, monkeypatch):
+        """A 422 raised in the worker thread keeps its detail envelope."""
+        from fastapi import HTTPException
+
+        import toolregistry_server.adapters.openapi.server_app as server_app
+
+        def rejecting_validate(route, payload):
+            raise HTTPException(
+                status_code=422,
+                detail=[
+                    {
+                        "loc": ["body", "a"],
+                        "msg": "rejected in the worker thread",
+                        "type": "value_error",
+                    }
+                ],
+            )
+
+        monkeypatch.setattr(server_app, "_validate_arguments", rejecting_validate)
+        app = create_httpserver_app(route_table)
+        url = _serve(app)
+        try:
+            status, _, body = _call(url, _path(route_table), {"a": 1, "b": 2})
+        finally:
+            app.shutdown()
+
+        assert status == 422
+        assert json.loads(body)["detail"][0]["msg"] == "rejected in the worker thread"
+
 
 @dataclass
 class Point:
