@@ -94,6 +94,92 @@ class TestValidateArguments:
             _validate_arguments(route, {})
         assert excinfo.value.status_code == 422
 
+    @pytest.mark.parametrize(
+        "additional",
+        [{}, {"type": "integer"}, True],
+        ids=["empty-schema", "typed-schema", "true"],
+    )
+    def test_proxy_tool_keeps_extras_when_additional_properties_allows(
+        self, route_table, additional
+    ):
+        """``{}`` and other schema objects permit extras, not just ``True``."""
+
+        def proxy(**kwargs):
+            return kwargs
+
+        tool = Tool(
+            name="proxy_open",
+            description="proxy tool",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+                "additionalProperties": additional,
+            },
+            callable=proxy,
+        )
+        route_table._registry.register(tool)  # noqa: SLF001 - test fixture
+        route_table.refresh_all()
+        route = route_table.get_route("proxy_open")
+
+        assert _validate_arguments(route, {"q": "ok", "extra": 1}) == {
+            "q": "ok",
+            "extra": 1,
+        }
+
+    def test_proxy_tool_filters_extras_when_additional_properties_is_absent(
+        self, route_table
+    ):
+        """An absent keyword keeps the historical silent filtering."""
+
+        def proxy(**kwargs):
+            return kwargs
+
+        tool = Tool(
+            name="proxy_absent",
+            description="proxy tool",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+            },
+            callable=proxy,
+        )
+        route_table._registry.register(tool)  # noqa: SLF001 - test fixture
+        route_table.refresh_all()
+        route = route_table.get_route("proxy_absent")
+
+        assert _validate_arguments(route, {"q": "ok", "extra": 1}) == {"q": "ok"}
+
+    def test_proxy_tool_rejects_extras_when_additional_properties_is_false(
+        self, route_table
+    ):
+        """An explicit ``False`` is enforced by ``schema_validate`` first."""
+        from fastapi import HTTPException
+
+        def proxy(**kwargs):
+            return kwargs
+
+        tool = Tool(
+            name="proxy_closed",
+            description="proxy tool",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+                "additionalProperties": False,
+            },
+            callable=proxy,
+        )
+        route_table._registry.register(tool)  # noqa: SLF001 - test fixture
+        route_table.refresh_all()
+        route = route_table.get_route("proxy_closed")
+
+        with pytest.raises(HTTPException) as excinfo:
+            _validate_arguments(route, {"q": "ok", "extra": 1})
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.detail[0]["type"] == "additionalProperties"
+
     @pytest.mark.parametrize("body", [[], "str", 123, None, True])
     def test_non_object_body_is_a_422(self, route_table, body):
         """Scalars, arrays and null are rejected, not crashed on."""

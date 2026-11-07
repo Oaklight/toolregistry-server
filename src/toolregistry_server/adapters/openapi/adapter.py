@@ -167,7 +167,10 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
     except SchemaValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_details(exc)) from exc
 
-    if not served_schema.get("additionalProperties"):
+    # ``additionalProperties`` is a JSON Schema, not a boolean: ``{}`` and
+    # other non-``False`` values permit extras.  Only an explicit ``False``
+    # or an absent keyword forbids them.
+    if not _allows_additional_properties(served_schema):
         declared = set((served_schema.get("properties") or {}).keys())
         payload = {k: v for k, v in payload.items() if k in declared}
     return payload
