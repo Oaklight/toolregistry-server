@@ -851,40 +851,130 @@ class TestOverrideIsAuthoritative:
         }
 
 
-class TestMaxBodySizeWarning:
-    """A non-default cap is meaningless on fastapi; it must not be silent (#134)."""
+class TestFastAPIBodyLimit:
+    """The fastapi backend enforces the shared request-body cap (#148)."""
 
     @staticmethod
-    def _capture(monkeypatch) -> list[str]:
-        from toolregistry_server.adapters import openapi as openapi_module
+    def _client(table: RouteTable, max_body_size: int):
+        from fastapi.testclient import TestClient
 
-        messages: list[str] = []
-        monkeypatch.setattr(
-            type(openapi_module.logger),
-            "warning",
-            lambda self, event=None, /, **kw: messages.append(event or ""),
+        return TestClient(create_openapi_app(table, max_body_size=max_body_size))
+
+    def test_default_cap_is_one_mib(self, route_table: RouteTable):
+        from toolregistry_server._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
+        from toolregistry_server.adapters.openapi.middleware import (
+            BodySizeLimitMiddleware,
         )
-        return messages
 
-    def test_fastapi_warns_when_the_cap_is_not_the_default(
-        self, monkeypatch, route_table
-    ):
-        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+        app = create_openapi_app(route_table)
+        caps = [
+            entry.kwargs["max_body_size"]
+            for entry in app.user_middleware
+            if entry.cls is BodySizeLimitMiddleware
+        ]
+        assert caps == [DEFAULT_MAX_BODY_SIZE]
 
-        messages = self._capture(monkeypatch)
-        OpenAPIAdapter(route_table, backend="fastapi", max_body_size=2048)
-        assert any("max_body_size" in message for message in messages)
+    def test_small_request_passes(self, route_table: RouteTable):
+        client = self._client(route_table, max_body_size=1024)
+        response = client.post("/tools/default/add", json={"a": 2, "b": 3})
+        assert response.status_code == 200
+        assert response.json() == 5
 
-    def test_fastapi_default_is_silent(self, monkeypatch, route_table):
-        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+    def test_body_over_the_cap_is_a_413(self, route_table: RouteTable):
+        client = self._client(route_table, max_body_size=1024)
+        response = client.post(
+            "/tools/default/add",
+            content=b"x" * 2000,
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 413
+        assert response.json() == {"detail": "Request body too large"}
 
-        messages = self._capture(monkeypatch)
-        OpenAPIAdapter(route_table, backend="fastapi")
-        assert not any("max_body_size" in message for message in messages)
+    def test_raising_the_cap_accepts_the_body(self, route_table: RouteTable):
+        client = self._client(route_table, max_body_size=8192)
+        response = client.post(
+            "/tools/default/add",
+            content=b'{"a": 2, "b": 3}' + b" " * 2000,
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert response.json() == 5
 
-    def test_httpserver_does_not_warn(self, monkeypatch, route_table):
-        from toolregistry_server.adapters.openapi import OpenAPIAdapter
+    def test_non_positive_cap_is_rejected(self, route_table: RouteTable):
+        with pytest.raises(ValueError, match="max_body_size"):
+            create_openapi_app(route_table, max_body_size=0)
 
-        messages = self._capture(monkeypatch)
-        OpenAPIAdapter(route_table, backend="httpserver", max_body_size=2048)
-        assert not any("max_body_size" in message for message in messages)
+
+class TestBodySizeLimitMiddleware:
+    """The ASGI guard rejects before buffering the whole body (#148)."""
+
+    @staticmethod
+    async def _read_body_and_respond(scope, receive, send):
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                # What Starlette does when the client goes away mid-read.
+                raise RuntimeError("client disconnected")
+            if not message.get("more_body", False):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def test_declared_length_is_rejected_without_reading(self):
+        from toolregistry_server.adapters.openapi.middleware import (
+            BodySizeLimitMiddleware,
+        )
+
+        read = False
+
+        async def receive():
+            nonlocal read
+            read = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        sent: list[dict] = []
+
+        async def send(message):
+            sent.append(message)
+
+        app = BodySizeLimitMiddleware(self._read_body_and_respond, max_body_size=1024)
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/x",
+            "headers": [(b"content-length", b"2048")],
+        }
+        await app(scope, receive, send)
+
+        assert not read
+        assert [m["type"] for m in sent] == [
+            "http.response.start",
+            "http.response.body",
+        ]
+        assert sent[0]["status"] == 413
+        assert sent[1]["body"] == b'{"detail":"Request body too large"}'
+
+    async def test_streamed_body_is_counted_message_by_message(self):
+        from toolregistry_server.adapters.openapi.middleware import (
+            BodySizeLimitMiddleware,
+        )
+
+        messages = [
+            {"type": "http.request", "body": b"x" * 600, "more_body": True},
+            {"type": "http.request", "body": b"x" * 600, "more_body": False},
+        ]
+
+        async def receive():
+            return messages.pop(0)
+
+        sent: list[dict] = []
+
+        async def send(message):
+            sent.append(message)
+
+        app = BodySizeLimitMiddleware(self._read_body_and_respond, max_body_size=1024)
+        scope = {"type": "http", "method": "POST", "path": "/x", "headers": []}
+        await app(scope, receive, send)
+
+        assert sent[0]["status"] == 413
+        assert sent[-1]["body"] == b'{"detail":"Request body too large"}'
