@@ -277,7 +277,7 @@ class TestToolRoutes:
 
             # If validation still ran on the loop, this request could not be
             # served until ``release`` was set below and would time out.
-            status, _, body = _call(url, "/tools")
+            status, _, body = _call(url, "/tools", timeout=1)
             assert status == 200
             assert "tools" in json.loads(body)
 

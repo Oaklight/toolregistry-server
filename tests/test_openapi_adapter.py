@@ -1,5 +1,6 @@
 """Tests for the OpenAPI adapter module."""
 
+import asyncio
 from io import StringIO
 
 import pytest
@@ -847,6 +848,65 @@ class TestToolExecutionErrorHandling:
         output = stream.getvalue()
         assert "Traceback (most recent call last)" in output
         assert "ValueError: async boom" in output
+
+
+class TestAsyncValidationOffLoop:
+    """The async endpoint must not validate on the event loop."""
+
+    async def test_async_endpoint_validation_does_not_block_the_loop(
+        self, route_table: RouteTable, monkeypatch
+    ):
+        import threading
+
+        import httpx
+
+        import toolregistry_server.adapters.openapi.adapter as adapter
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_validate(route, payload):
+            entered.set()
+            assert release.wait(5)
+            return payload
+
+        monkeypatch.setattr(adapter, "_validate_arguments", blocking_validate)
+
+        async def async_tool() -> str:
+            return "ok"
+
+        route_table._registry.register(async_tool, name="async_tool")
+        route_table._rebuild()
+
+        app = create_openapi_app(route_table)
+
+        @app.get("/ping")
+        async def ping():
+            return {"ok": True}
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            tool_request = asyncio.create_task(
+                client.post("/tools/default/async_tool", json={})
+            )
+            try:
+                assert await asyncio.to_thread(entered.wait, 5)
+
+                # If validation still ran on the loop, this could not be
+                # served until ``release`` was set in the ``finally`` block.
+                response = await asyncio.wait_for(client.get("/ping"), timeout=1)
+                assert response.status_code == 200
+
+                release.set()
+                tool_response = await asyncio.wait_for(tool_request, timeout=5)
+                assert tool_response.status_code == 200
+                assert tool_response.json() == "ok"
+            finally:
+                release.set()
+                if not tool_request.done():
+                    await asyncio.wait_for(tool_request, timeout=5)
 
 
 class TestAddETagMiddleware:
