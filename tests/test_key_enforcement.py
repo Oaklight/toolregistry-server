@@ -42,21 +42,21 @@ from toolregistry_server.keystore import ApiKeyStore, PrincipalResolver, ScopeSp
 # ---------------------------------------------------------------------------
 
 
-def alpha_add(a: int, b: int) -> int:
-    """Add two integers in the alpha namespace."""
+def add(a: int, b: int) -> int:
+    """Add two integers."""
     return a + b
 
 
-def beta_echo(text: str) -> str:
-    """Echo text in the beta namespace."""
+def echo(text: str) -> str:
+    """Echo text."""
     return text
 
 
 @pytest.fixture
 def table() -> RouteTable:
     registry = ToolRegistry()
-    registry.register(alpha_add, namespace="alpha")
-    registry.register(beta_echo, namespace="beta")
+    registry.register(add, namespace="alpha")
+    registry.register(echo, namespace="beta")
     return RouteTable(registry)
 
 
