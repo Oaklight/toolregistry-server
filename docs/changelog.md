@@ -25,12 +25,13 @@
 - **比工具模型更严格的参数覆盖会被拒绝**（core #384）：对 model-backed 工具，`override_parameters` 现在拒绝新增 `required`、收紧 `minimum`/`maximum`/`minLength`/`maxLength`、修改 `pattern`、收窄或改变 `enum`、或收窄或改变属性类型的覆盖，因为工具的校验模型不会执行更严格的契约。更宽松的覆盖会保存并发出 `UserWarning`。现有的更严格覆盖需要放宽或改用代理工具；代理工具按发布的 schema 校验，不受影响。拒绝由程序化的 `override_parameters` 调用抛出。`toolregistry-server` 自身不会从配置应用路由参数覆盖，因此升级不会仅因此导致启动失败；下游加载器若确实应用这些覆盖，应捕获 `ValueError`、记录工具名与原因、跳过该条覆盖，使服务仍能启动。
 - **OpenAPI 请求校验不再依赖 pydantic 模型**（#123，epic #101）：`_schema_to_pydantic`、`_resolve_type` 以及 `__annotations__` 的修补全部移除。请求体现在改走两条路径：由函数签名生成的工具直接调用 `Tool.validate_parameters()`——与 `invoke` 相同的类型转换与未声明键过滤；代理工具（MCP / OpenAPI / LangChain，没有 `parameters_model`）则使用内联的 `jsonschema.schema_validate()`。两者都沿用既有的 422 `{"detail": [...]}` 结构（含 `loc` / `msg` / `type`），客户端错误处理无需改动。非 JSON 对象（数组、字符串、数字、`null`、表单提交）现在返回 422，而不是在参数处理阶段失败。
 - **`/openapi.json` 由 `RouteTable` 构建器生成**（#124，epic #101）：文档改由 `build_openapi_schema(route_table)` 生成，而不再通过 FastAPI 的 `get_openapi()` 遍历生成的 pydantic 模型，应用发布的文档与独立构建器输出的文档不会再出现偏差。被禁用的路由天然不在文档中。
+- **内联 jsonschema 更新到 0.4.4**：内置校验器升级到 zerodep 0.4.4，公开 API 不变。
 
 ### 修复
 
 - **请求校验不再阻塞 httpserver 的事件循环**（#161）：`_validate_arguments` 过去在 async handler 中同步执行，请求体或 schema 较大时会卡住 SSE 流与同进程的其他请求。两个 OpenAPI 后端现在都在工作线程中校验：httpserver handler 与 FastAPI 异步端点使用 `asyncio.to_thread`，FastAPI 同步端点本来就在其线程池中运行。`HTTPException` 仍以相同的 422 结构返回客户端。
 - **OpenAPI 后端的工具失败日志重新包含堆栈**（#162）：内联 `structlog` 的处理器链没有 `format_exc_info`，`logger.exception()` 到达 `ConsoleRenderer` 时只剩 `exc_info=True`，堆栈被丢弃。两个后端现在与 MCP 路径一样显式传入 `exception=traceback.format_exc()`；FastAPI 适配器改用内联 logger，不再使用标准库 `logging`，以便接受该关键字。返回给客户端的 500 响应体不变。
-- **OpenAPI 请求校验不再执行来自 spec 的正则**（core #384）：OpenAPI 文档中的 `pattern` 或 `patternProperties` 可能发生灾难性回溯并卡住工具调用，因为 Python 的 `re` 没有超时。代理工具现在使用去掉这些关键字的副本校验（移除 `patternProperties` 时同层 `additionalProperties: false` 会放宽），而 `/openapi.json`、MCP 的 `inputSchema` 与路由 ETag 仍发布原始约束。覆盖保留其正则；字段格式以上游 API 为准。
+- **OpenAPI 请求校验不再执行来自 spec 的正则**（core #384）：OpenAPI 文档中的 `pattern` 或 `patternProperties` 可能发生灾难性回溯并卡住工具调用，因为 Python 的 `re` 没有超时。代理工具现在使用去掉这些关键字的副本校验（移除 `patternProperties` 时同层 `additionalProperties: false` 会放宽），而 `/openapi.json`、MCP 的 `inputSchema` 与路由 ETag 仍发布原始约束。覆盖保留其正则；字段格式以上游 API 为准。同一批修复中，`additionalProperties: {}` 不再被当作 `False`：空 schema 现在允许额外字段，与 override 路径一致，而不是在校验中接受、随后又被过滤掉。
 - **operator 配置中的本地 OpenAPI 路径现在可以加载**（core #376）：core #376 让 `load_openapi_spec()` 默认拒绝本地路径，除非调用方显式开启，而 `register_openapi_source()` 没有开启，因此指向本地文件的 `openapi` 源不会注册任何工具，只记录一条警告。现在服务端会传入 `allow_local_files=True`；面板输入仍然只接受 http(s)。
 - **httpserver 后端的请求体上限可配置**（#134）：内联后端此前继承 1 MiB 上限，参数超过该值的工具调用在 FastAPI 后端可用，在 httpserver 后端却返回 413。现在可用 `--max-body-size BYTES` 与 `OpenAPIAdapter(max_body_size=...)` 设置该上限；默认仍为 1 MiB，非正值会抛出 `ValueError`，超限请求返回不含 traceback 的 JSON `413`。如果请求体大到服务端拒绝时客户端仍在写入，仍可能表现为连接重置——排空未读请求体必须在内部服务端中完成。
 - **核心层覆写现在会传达到所有对外发布的 schema**：`ToolRegistry.override()` 会替换
@@ -45,6 +46,12 @@
   （MCP `tools/list`）固定。
 - **路由级覆盖会被校验并具有权威性**（#138）：覆盖现在是一份经校验的副本。`override_parameters` 要求对象 schema（接受 `["object", "null"]`），把省略的 `additionalProperties` 规范化为 `false`，从工具的校验模型补齐 `required`，当覆盖缺少模型必填字段时发出警告，并拒绝模型型工具无法执行的带类型 `additionalProperties`。OpenAPI 适配器在走校验模型之前先检查实际发布的 schema，因此覆盖未声明的键会以 `extra_forbidden` 被拒绝，而不会静默传给可调用对象。
 - **两个 OpenAPI 后端的非有限工具结果现在都是严格 JSON**（#130、#135）：FastAPI 通过 pydantic 序列化工具结果，把非有限 `Decimal` 写成字符串 `"NaN"`，而 httpserver 则写出裸 `NaN`。两个后端现在都用 `adapters.openapi.serialisation.encode_tool_result()` 编码结果，非有限浮点数与 `Decimal` 一律输出 `null`。编码使用 core 的 `ToolResultJSONEncoder`，非有限浮点数与 `Decimal` 输出 `null`（#159）。由于共用同一个编码器，`bytes` 结果在两个后端上都是 base64（FastAPI 此前按 UTF-8 解码），集合按 `repr` 排序，工具响应的 `Content-Type` 在两个后端上都是 `application/json; charset=utf-8`。
+- **500 响应不再回显异常文本**（#147、#150）：两个后端此前都把 `str(exc)` 作为执行错误 detail 返回，其中可能含连接串、内部路径与上游 URL。现在执行错误返回点名工具的稳定消息，完整异常只写入服务端日志，不可序列化的结果同样处理。FastAPI 后端遇到意外的 500 时改为返回与 httpserver 相同的 JSON `{"detail": ...}` 结构，而不是纯文本。
+- **MCP 工具失败不再泄漏异常文本**（#153）：此前工具异常会以 `str(e)` 作为 `isError` 结果返回客户端。现在客户端只会收到稳定的 `Tool '<name>' execution failed` 消息，完整异常与堆栈只写入服务端日志。`INVALID_PARAMS` 等协议级错误不变。
+
+### 安全
+
+- **OpenAPI 后端加固凭据比较与 `/docs` 页面**（#149）：两个后端（FastAPI 依赖与 httpserver）都用 SHA-256 摘要配合 `secrets.compare_digest` 比较 bearer 凭据，并逐一比较所有已配置 token，因此匹配位置不会泄漏。operator 提供的 `/docs` 标题会做 HTML 转义，Swagger UI 固定为 5.34.1，两个 CDN 资源都带 SRI 哈希。`/events` 默认最多 64 个并发订阅者（`0` 关闭该端点，负值报错）；超出返回 503，不再无限增长队列集合。
 
 ## [0.7.0] - 2026-10-23
 
