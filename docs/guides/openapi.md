@@ -98,7 +98,11 @@ POST /calculator/evaluate
 
 ### Private addresses
 
-A spec URL, or any `servers[]` entry in the document, that resolves to a loopback, link-local or private address is refused before a connection is opened. Every `servers[]` entry is checked, not only the one used as the base URL, and a redirect is refused by default because the next hop cannot be validated (`follow_redirects=False`). Allow a local or private API per source:
+A spec URL that resolves to a loopback, link-local or private address is
+refused before it is fetched. The base URL the tools use — `servers[0]` or the
+configured `base_url` — is validated before each request, and a redirect is
+refused by default because the next hop cannot be validated
+(`follow_redirects=False`). Allow a local or private API per source:
 
 ```yaml
 tools:
@@ -120,9 +124,9 @@ remote document stays invisible until the source is registered again: restart
 the server, or, in the Hub, change that source's entry in `tools.jsonc` while
 `--config-reload` is on (an unchanged declaration is not re-registered).
 
-Every download of the spec repeats the outbound check with the source's
-`allow_private_hosts`: the spec URL and every `servers[]` entry are validated
-again before the request is sent.
+The source's `allow_private_hosts` reaches both checks: the spec URL is
+validated before it is fetched, and the client validates the base URL it
+actually uses (`servers[0]` or the configured `base_url`) before each request.
 
 ### Request Format
 

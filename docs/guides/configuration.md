@@ -137,7 +137,7 @@ When `class` is specified, the server instantiates the class and calls `register
 | `base_url` | string | No | Override `servers[0].url` from spec |
 | `include` | list | No | Name or glob patterns to keep. Mutually exclusive with `exclude` |
 | `exclude` | list | No | Name or glob patterns to drop. Mutually exclusive with `include` |
-| `allow_private_hosts` | bool | No | Allow the spec URL, every `servers[]` entry and the tools' request URLs to reach a loopback, link-local or private address (default: `false`) |
+| `allow_private_hosts` | bool | No | Allow the spec URL and the base URL the tools use to reach a loopback, link-local or private address (default: `false`) |
 | `enabled` | bool | No | Per-source enable/disable (default: `true`) |
 
 #### Auth Configuration
@@ -169,7 +169,7 @@ tools:
     allow_private_hosts: true
 ```
 
-The flag applies to that source only. For `mcp` it covers the URL transports (SSE, streamable HTTP, WebSocket); a `stdio` source has no URL and is unaffected. For `openapi` it covers the spec URL, every `servers[]` entry, and the tools' request URLs. The admin panel has its own switch: `enable_admin(allow_private_hosts=True)`.
+The flag applies to that source only. For `mcp` it covers the URL transports (SSE, streamable HTTP, WebSocket); a `stdio` source has no URL and is unaffected. For `openapi` it covers the spec URL and the base URL the tools use (`servers[0]` or the configured `base_url`). The admin panel has its own switch: `enable_admin(allow_private_hosts=True)`.
 
 ## Filtering Modes
 
