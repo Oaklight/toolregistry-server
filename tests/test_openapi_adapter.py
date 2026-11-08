@@ -865,7 +865,7 @@ class TestAsyncValidationOffLoop:
         entered = threading.Event()
         release = threading.Event()
 
-        def blocking_validate(route, payload):
+        def blocking_validate(route, payload, **_kwargs):
             entered.set()
             assert release.wait(5)
             return payload

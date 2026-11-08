@@ -207,6 +207,9 @@ class TestMain:
             reload=False,
             backend="fastapi",
             max_body_size=1_048_576,
+            regex_timeout=0.05,
+            regex_budget=0.25,
+            strict_spec_regex=False,
         )
 
     @patch.object(
@@ -234,6 +237,9 @@ class TestMain:
             reload=False,
             backend="fastapi",
             max_body_size=1_048_576,
+            regex_timeout=0.05,
+            regex_budget=0.25,
+            strict_spec_regex=False,
         )
 
     @patch.object(
