@@ -28,43 +28,75 @@ from toolregistry import ADMIN_EXTENSION_API, AdminServer, ToolRegistry
 from toolregistry_server.ext.gateway import REQUIRES_API, GatewayAdminExtension
 
 
-class FakeKeyStore:
-    """A minimal key store: one secret per key, records never carry it."""
+@dataclasses.dataclass
+class FakeKeyRecord:
+    """Stand-in for #186's ``ApiKeyRecord``: a dataclass with ``to_dict``."""
 
-    def __init__(self) -> None:
-        self._records: dict[str, dict[str, Any]] = {}
-        self._created = 0
+    id: str
+    label: str
+    scopes: dict[str, Any]
+    created_at: str = "2026-11-08T00:00:00Z"
+    expires_at: str | None = None
+    revoked_at: str | None = None
+    last_used_at: str | None = None
 
-    def create(
-        self, label: str, scopes: Sequence[str], expires_at: str | None = None
-    ) -> tuple[str, Mapping[str, Any]]:
-        self._created += 1
-        key_id = f"k{self._created}"
-        secret = f"gw_secret_{self._created}"
-        record = {
-            "id": key_id,
-            "label": label,
-            "prefix": secret[:6],
-            "scopes": list(scopes),
-            "created_at": "2026-11-08T00:00:00Z",
-            "expires_at": expires_at,
-            "revoked_at": None,
-            "last_used_at": None,
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "scopes": dict(self.scopes),
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "revoked_at": self.revoked_at,
+            "last_used_at": self.last_used_at,
             # Deliberately present: the extension must strip it.
             "secret_hash": "deadbeef",
         }
+
+
+@dataclasses.dataclass
+class FakeCreatedKey:
+    """Stand-in for #186's ``CreatedKey``: record plus one-time secret."""
+
+    record: FakeKeyRecord
+    secret: str
+
+
+class FakeKeyStore:
+    """A key store shaped like ``toolregistry_server.keystore.ApiKeyStore``."""
+
+    def __init__(self) -> None:
+        self._records: dict[str, FakeKeyRecord] = {}
+        self._created = 0
+
+    def create(
+        self,
+        label: str,
+        scopes: Sequence[str] | None = None,
+        *,
+        expires_at: str | None = None,
+    ) -> FakeCreatedKey:
+        self._created += 1
+        key_id = f"key_{self._created}"
+        secret = f"gw_secret_{self._created}"
+        record = FakeKeyRecord(
+            id=key_id,
+            label=label,
+            scopes={"namespaces": list(scopes or []), "tools": {}},
+            expires_at=expires_at,
+        )
         self._records[key_id] = record
-        return secret, record
+        return FakeCreatedKey(record=record, secret=secret)
 
-    def list(self) -> Sequence[Mapping[str, Any]]:
-        return [dict(record) for record in self._records.values()]
+    def list(self) -> Sequence[FakeKeyRecord]:
+        return list(self._records.values())
 
-    def revoke(self, key_id: str) -> Mapping[str, Any] | None:
+    def revoke(self, key_id: str) -> FakeKeyRecord:
         record = self._records.get(key_id)
         if record is None:
-            return None
-        record["revoked_at"] = "2026-11-08T01:00:00Z"
-        return dict(record)
+            raise KeyError(key_id)
+        record.revoked_at = "2026-11-08T01:00:00Z"
+        return record
 
 
 class FakeFrontends:

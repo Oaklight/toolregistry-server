@@ -149,7 +149,6 @@ const state = {
     frontends: [],
     sources: [],
     secret: null,
-    busy: false,
 };
 
 let root = null;
@@ -260,6 +259,18 @@ function keyStatus(record) {
     return { kind: 'active', label: T('gw.keys.active') };
 }
 
+function scopeText(scopes) {
+    if (!scopes) return '—';
+    if (Array.isArray(scopes)) return scopes.join(', ') || '—';
+    if (typeof scopes === 'object') {
+        const namespaces = (scopes.namespaces || []).join(', ');
+        const tools = Object.entries(scopes.tools || {})
+            .map(([name, allowed]) => name + (allowed ? ' +' : ' −'));
+        return [namespaces, ...tools].filter(Boolean).join(', ') || '—';
+    }
+    return String(scopes);
+}
+
 function renderKeys() {
     const host = root.querySelector('#gw-keys');
     if (!host) return;
@@ -310,7 +321,7 @@ function renderKeys() {
             el('td', {}, [
                 el('span', {
                     class: 'gw-mono',
-                    text: (record.scopes || []).join(', ') || '—',
+                    text: scopeText(record.scopes),
                 }),
             ]),
             el('td', { text: formatTime(record.created_at) }),
@@ -363,7 +374,6 @@ function renderKeys() {
                     class: 'gw-btn gw-btn-primary',
                     type: 'submit',
                     text: T('gw.keys.create'),
-                    disabled: state.busy ? 'disabled' : null,
                 }),
             ]),
         ]),
@@ -402,15 +412,12 @@ async function createKey(form) {
     const expiresRaw = String(data.get('expires_at') || '');
     const payload = { label: String(data.get('label') || '').trim(), scopes };
     if (expiresRaw) payload.expires_at = new Date(expiresRaw).toISOString();
-    state.busy = true;
     try {
         const created = await call('post', '/keys', payload);
         state.secret = created.secret || null;
         await loadKeys();
     } catch (error) {
         root.querySelector('#gw-keys')?.appendChild(message(error.message, 'error'));
-    } finally {
-        state.busy = false;
     }
 }
 
@@ -692,6 +699,7 @@ function renderTabs() {
             onclick: () => {
                 state.tab = name;
                 render();
+                refreshCurrent();
             },
         })
     )));
