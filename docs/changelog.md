@@ -13,6 +13,7 @@
 
 ### 变更
 
+- **core 下限提升到 0.20.0，兼容层已移除**（#159、#154）：`toolregistry>=0.20.0,<1.0.0`。`register_openapi_source()` 直接传入 `allow_local_files=True`，不再探测加载器签名；OpenAPI 后端直接使用 core 的 `ToolResultJSONEncoder`：非有限兜底编码器与能力探测已删除，工具结果中的 `NaN`、`Infinity` 与非有限 `Decimal` 在两个后端上都输出 `null`。最低 core 版本由安装依赖强制；早于 0.20.0 的 core 不再支持。
 - **非法 spec 正则现在只丢弃受影响的工具**（#171）：加载期会编译 OpenAPI source 工具 schema 中的每个 `pattern` 与 `patternProperties` 键。此前一条非法正则会移除该 source 的全部工具；现在只丢弃自身 schema 含该正则的工具，每个都记录错误日志（工具名、schema 路径、pattern），只有没有任何工具存活时才把 source 报为失败。`--strict-spec-regex` 保留整源失败语义并终止启动。加载期 walker 也不再把这些映射中**名为** `default`、`example`、`enum`、`const` 的属性或定义当作数据关键字，因此 `{"properties": {"default": {"pattern": "("}}}` 这类 schema 会被检出。
 - **默认只发布显式声明的执行提示**（#136）：`READ_ONLY` / `DESTRUCTIVE` 标签可能是为本地权限策略选择的，发布解析后的映射会让该标签变成面向客户端的自动批准声明。`served_execution_hints` 现在优先使用 `Tool.declared_execution_hints`；只有 `RouteTable` 通过 `emit_derived_execution_hints=True` 或 `set_emit_derived_execution_hints(True)` 显式选择加入时，才会发布由标签推导的提示。显式声明的提示不受影响；由于两个适配器读取同一视图，MCP 与 OpenAPI 遵循相同策略。在尚未提供 `declared_execution_hints` 的 core 上，服务端会从 `ToolMetadata` 的提示字段重建相同映射（这些字段在 0.19.x 下限中已存在），因此无需等待 core 发布即可生效；更旧的 core 则不发布任何声明。
 - **比工具模型更严格的参数覆盖会被拒绝**（core #384）：对 model-backed 工具，`override_parameters` 现在拒绝新增 `required`、收紧 `minimum`/`maximum`/`minLength`/`maxLength`、修改 `pattern`、收窄或改变 `enum`、或收窄或改变属性类型的覆盖，因为工具的校验模型不会执行更严格的契约。更宽松的覆盖会保存并发出 `UserWarning`。现有的更严格覆盖需要放宽或改用代理工具；代理工具按发布的 schema 校验，不受影响。拒绝由程序化的 `override_parameters` 调用抛出。`toolregistry-server` 自身不会从配置应用路由参数覆盖，因此升级不会仅因此导致启动失败；下游加载器若确实应用这些覆盖，应捕获 `ValueError`、记录工具名与原因、跳过该条覆盖，使服务仍能启动。
@@ -22,7 +23,7 @@
 - **请求校验不再阻塞 httpserver 的事件循环**（#161）：`_validate_arguments` 过去在 async handler 中同步执行，请求体或 schema 较大时会卡住 SSE 流与同进程的其他请求。两个 OpenAPI 后端现在都在工作线程中校验：httpserver handler 与 FastAPI 异步端点使用 `asyncio.to_thread`，FastAPI 同步端点本来就在其线程池中运行。`HTTPException` 仍以相同的 422 结构返回客户端。
 - **OpenAPI 后端的工具失败日志重新包含堆栈**（#162）：内联 `structlog` 的处理器链没有 `format_exc_info`，`logger.exception()` 到达 `ConsoleRenderer` 时只剩 `exc_info=True`，堆栈被丢弃。两个后端现在与 MCP 路径一样显式传入 `exception=traceback.format_exc()`；FastAPI 适配器改用内联 logger，不再使用标准库 `logging`，以便接受该关键字。返回给客户端的 500 响应体不变。
 - **OpenAPI 请求校验不再执行来自 spec 的正则**（core #384）：OpenAPI 文档中的 `pattern` 或 `patternProperties` 可能发生灾难性回溯并卡住工具调用，因为 Python 的 `re` 没有超时。代理工具现在使用去掉这些关键字的副本校验（移除 `patternProperties` 时同层 `additionalProperties: false` 会放宽），而 `/openapi.json`、MCP 的 `inputSchema` 与路由 ETag 仍发布原始约束。覆盖保留其正则；字段格式以上游 API 为准。
-- **operator 配置中的本地 OpenAPI 路径现在可以加载**（core #376）：core #376 让 `load_openapi_spec()` 默认拒绝本地路径，除非调用方显式开启，而 `register_openapi_source()` 没有开启，因此指向本地文件的 `openapi` 源不会注册任何工具，只记录一条警告。现在，当安装的 core 接受该关键字时，服务端会传入 `allow_local_files=True`；早于 #376 的 core 保持原有行为。面板输入仍然只接受 http(s)。
+- **operator 配置中的本地 OpenAPI 路径现在可以加载**（core #376）：core #376 让 `load_openapi_spec()` 默认拒绝本地路径，除非调用方显式开启，而 `register_openapi_source()` 没有开启，因此指向本地文件的 `openapi` 源不会注册任何工具，只记录一条警告。现在服务端会传入 `allow_local_files=True`；面板输入仍然只接受 http(s)。
 - **httpserver 后端的请求体上限可配置**（#134）：内联后端此前继承 1 MiB 上限，参数超过该值的工具调用在 FastAPI 后端可用，在 httpserver 后端却返回 413。现在可用 `--max-body-size BYTES` 与 `OpenAPIAdapter(max_body_size=...)` 设置该上限；默认仍为 1 MiB，非正值会抛出 `ValueError`，超限请求返回不含 traceback 的 JSON `413`。如果请求体大到服务端拒绝时客户端仍在写入，仍可能表现为连接重置——排空未读请求体必须在内部服务端中完成。
 - **核心层覆写现在会传达到所有对外发布的 schema**：`ToolRegistry.override()` 会替换
   `Tool`，而 `RouteEntry` 持有它的直接引用，但 `RouteTable._on_registry_change()` 忽略了
@@ -35,7 +36,7 @@
   `tests/test_mcp_session.py::TestBackwardCompatibility::test_override_reaches_list_tools_title`
   （MCP `tools/list`）固定。
 - **路由级覆盖会被校验并具有权威性**（#138）：覆盖现在是一份经校验的副本。`override_parameters` 要求对象 schema（接受 `["object", "null"]`），把省略的 `additionalProperties` 规范化为 `false`，从工具的校验模型补齐 `required`，当覆盖缺少模型必填字段时发出警告，并拒绝模型型工具无法执行的带类型 `additionalProperties`。OpenAPI 适配器在走校验模型之前先检查实际发布的 schema，因此覆盖未声明的键会以 `extra_forbidden` 被拒绝，而不会静默传给可调用对象。
-- **两个 OpenAPI 后端的非有限工具结果现在都是严格 JSON**（#130、#135）：FastAPI 通过 pydantic 序列化工具结果，把非有限 `Decimal` 写成字符串 `"NaN"`，而 httpserver 则写出裸 `NaN`。两个后端现在都用 `adapters.openapi.serialisation.encode_tool_result()` 编码结果，非有限浮点数与 `Decimal` 一律输出 `null`。core 0.19.0 尚无该投影，因此由一个兜底编码器在编码前补上，默认测试矩阵与 `core-master` 任务因此断言相同的字节。当服务端下限提升到包含该投影的 core 版本后，检测与兜底会被移除（#159）。由于共用同一个编码器，`bytes` 结果在两个后端上都是 base64（FastAPI 此前按 UTF-8 解码），集合按 `repr` 排序，工具响应的 `Content-Type` 在两个后端上都是 `application/json; charset=utf-8`。
+- **两个 OpenAPI 后端的非有限工具结果现在都是严格 JSON**（#130、#135）：FastAPI 通过 pydantic 序列化工具结果，把非有限 `Decimal` 写成字符串 `"NaN"`，而 httpserver 则写出裸 `NaN`。两个后端现在都用 `adapters.openapi.serialisation.encode_tool_result()` 编码结果，非有限浮点数与 `Decimal` 一律输出 `null`。编码使用 core 的 `ToolResultJSONEncoder`，非有限浮点数与 `Decimal` 输出 `null`（#159）。由于共用同一个编码器，`bytes` 结果在两个后端上都是 base64（FastAPI 此前按 UTF-8 解码），集合按 `repr` 排序，工具响应的 `Content-Type` 在两个后端上都是 `application/json; charset=utf-8`。
 
 ## [0.8.0] - 2026-10-23
 
