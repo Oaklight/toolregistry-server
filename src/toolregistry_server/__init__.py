@@ -31,6 +31,7 @@ from .auth import load_tokens
 from .gateway import GatewayAdapter, create_gateway_app
 from .identity import ServerIdentity
 from .keystore import (
+    SCOPED_DENIED_TOOLS,
     ApiKeyRecord,
     ApiKeyStore,
     CreatedKey,
@@ -70,6 +71,7 @@ __all__ = [
     "GatewayAdapter",
     "Principal",
     "PrincipalResolver",
+    "SCOPED_DENIED_TOOLS",
     "ScopeSpec",
     "ServerIdentity",
     "RouteEntry",

@@ -61,6 +61,16 @@ def table() -> RouteTable:
 
 
 @pytest.fixture
+def discovery_table() -> RouteTable:
+    """A table that also serves the discovery/call_deferred proxy pair."""
+    registry = ToolRegistry()
+    registry.register(add, namespace="alpha")
+    registry.register(echo, namespace="beta")
+    registry.enable_tool_discovery()
+    return RouteTable(registry)
+
+
+@pytest.fixture
 def store(tmp_path):
     database = ApiKeyStore(tmp_path / "keys.db")
     yield database
@@ -255,6 +265,49 @@ async def test_mcp_static_token_keeps_full_access(table, store, resolver, monkey
     assert call.content[0].text == "hello"
 
 
+@pytest.mark.asyncio
+async def test_mcp_scoped_key_cannot_reach_the_proxy_tools(
+    discovery_table, store, resolver, monkeypatch
+):
+    """``call_deferred`` would bypass the scope, so scoped keys lose it."""
+    created = store.create("all", {"namespaces": ["*"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(discovery_table, principal_resolver=resolver)
+
+    async with create_test_client(server) as client:
+        result = await client.list_tools()
+        names = {tool.name for tool in result.tools}
+        message = await _mcp_error_message(
+            client,
+            "call_deferred",
+            {"_target_tool": "beta-echo", "text": "hello"},
+        )
+
+    assert "discover_tools" not in names
+    assert "call_deferred" not in names
+    assert "not permitted" in message
+
+
+@pytest.mark.asyncio
+async def test_mcp_operator_keeps_the_proxy_tools(
+    discovery_table, store, resolver, monkeypatch
+):
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: "operator-token",
+    )
+    server = route_table_to_mcp_server(discovery_table, principal_resolver=resolver)
+
+    async with create_test_client(server) as client:
+        result = await client.list_tools()
+        names = {tool.name for tool in result.tools}
+
+    assert {"discover_tools", "call_deferred"} <= names
+
+
 # ---------------------------------------------------------------------------
 # MCP transport verifier
 # ---------------------------------------------------------------------------
@@ -357,6 +410,45 @@ def test_openapi_static_token_keeps_full_access(table, store, resolver):
     paths = response.json()["paths"]
     assert "/tools/alpha/add" in paths
     assert "/tools/beta/echo" in paths
+
+
+def _operation_ids(document: dict) -> set[str]:
+    return {
+        operation["operationId"]
+        for path in document["paths"].values()
+        for operation in path.values()
+        if "operationId" in operation
+    }
+
+
+def test_openapi_scoped_key_cannot_reach_the_proxy_tools(
+    discovery_table, store, resolver
+):
+    created = store.create("all", {"namespaces": ["*"]})
+    client = _fastapi_client(discovery_table, resolver)
+    headers = _bearer(created.secret)
+
+    document = client.get("/openapi.json", headers=headers).json()
+    route = discovery_table.get_route("call_deferred")
+    assert route is not None
+    denied = client.post(
+        route.path,
+        json={"_target_tool": "beta-echo", "text": "hello"},
+        headers=headers,
+    )
+
+    assert "discover_tools" not in _operation_ids(document)
+    assert "call_deferred" not in _operation_ids(document)
+    assert denied.status_code == 403
+    assert "not permitted" in denied.json()["detail"]
+
+
+def test_openapi_operator_keeps_the_proxy_tools(discovery_table, resolver):
+    client = _fastapi_client(discovery_table, resolver)
+
+    document = client.get("/openapi.json", headers=_bearer("operator-token")).json()
+
+    assert {"discover_tools", "call_deferred"} <= _operation_ids(document)
 
 
 def test_openapi_without_a_resolver_keeps_todays_behaviour(table):
