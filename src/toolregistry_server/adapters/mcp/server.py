@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
     from starlette.applications import Starlette
 
+    from ...keystore import PrincipalResolver
+
 
 def _make_http_exception_handlers() -> dict:
     """Return Starlette exception_handlers that emit JSON-RPC-shaped errors.
@@ -248,6 +250,7 @@ async def run_streamable_http(
     path: str = "/mcp",
     valid_tokens: set[str] | None = None,
     server_url: str | None = None,
+    principal_resolver: "PrincipalResolver | None" = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
@@ -274,6 +277,12 @@ async def run_streamable_http(
             ``valid_tokens`` is set so that Protected Resource
             Metadata can be generated.  Defaults to
             ``http://{host}:{port}{path}``.
+        principal_resolver: Optional API key resolver.  When set, key
+            verification comes from the SQLite store and its namespace
+            scopes are enforced by the handlers, so revocation and expiry
+            apply on the next request.  Static ``valid_tokens`` keep full,
+            unscoped access.  When both are ``None``, authentication is
+            disabled.
     """
     try:
         import uvicorn
@@ -316,7 +325,7 @@ async def run_streamable_http(
     routes: list[Route] = []
     middleware: list = []
 
-    if valid_tokens:
+    if valid_tokens or principal_resolver is not None:
         from mcp.server.auth.middleware.bearer_auth import (
             BearerAuthBackend,
             RequireAuthMiddleware,
@@ -329,9 +338,14 @@ async def run_streamable_http(
         from starlette.middleware import Middleware
         from starlette.middleware.authentication import AuthenticationMiddleware
 
-        from .token_verifier import StaticTokenVerifier
+        if principal_resolver is not None:
+            from .token_verifier import ScopedTokenVerifier
 
-        token_verifier = StaticTokenVerifier(valid_tokens)
+            token_verifier = ScopedTokenVerifier(principal_resolver)
+        else:
+            from .token_verifier import StaticTokenVerifier
+
+            token_verifier = StaticTokenVerifier(valid_tokens or set())
 
         # Resolve the public server URL
         resolved_url = resolve_public_url(server_url, host, port, path)
@@ -370,9 +384,12 @@ async def run_streamable_http(
             )
         )
 
-        logger.info(
-            f"Bearer token authentication enabled ({len(valid_tokens)} token(s))"
-        )
+        if principal_resolver is not None:
+            logger.info("Bearer authentication enabled with API keys from the store")
+        else:
+            logger.info(
+                f"Bearer token authentication enabled ({len(valid_tokens or ())} token(s))"
+            )
     else:
         routes.append(Route(path, endpoint=streamable_http_app))
 

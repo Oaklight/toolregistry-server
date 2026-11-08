@@ -41,6 +41,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ...route_table import RouteEntry, RouteTable
 
 __all__ = ["build_openapi_schema"]
@@ -198,6 +200,7 @@ def build_openapi_schema(
     include_meta: bool = True,
     security_schemes: dict[str, Any] | None = None,
     security: list[dict[str, list[str]]] | None = None,
+    route_filter: Callable[[RouteEntry], bool] | None = None,
 ) -> dict[str, Any]:
     """Build an OpenAPI 3.1 document from a route table.
 
@@ -218,12 +221,18 @@ def build_openapi_schema(
         security: Optional document-level ``security`` requirement list,
             e.g. ``[{"HTTPBearer": []}]``.  Both are needed to keep bearer
             authentication described once the adapter is ported off FastAPI.
+        route_filter: Optional predicate applied to every enabled route.
+            A route it rejects is absent from the document.  The OpenAPI
+            server passes the caller's key scope here so a scoped key sees
+            only the paths it may call.
 
     Returns:
         A JSON-serializable OpenAPI document.
     """
     paths: dict[str, dict[str, Any]] = {}
     for route in route_table.list_routes(enabled_only=True):
+        if route_filter is not None and not route_filter(route):
+            continue
         paths.setdefault(route.path, {})["post"] = _operation(route)
 
     if include_meta:

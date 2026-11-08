@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
     from mcp.types import ContentBlock as MCPContentBlock
 
+    from ...keystore import PrincipalResolver
     from ...route_table import RouteEntry, RouteTable
 
 logger = get_logger()
@@ -95,6 +96,46 @@ def _get_session_context(session_mgr: "SessionManager") -> SessionContext | None
         session_mgr.register_finalizer(mcp_session, session_key)
 
     return ctx
+
+
+def _request_authorization() -> str | None:
+    """Return the bearer credential of the current MCP request, if any.
+
+    The MCP SDK exposes a Starlette-like request on both supported SDK
+    generations.  It is absent on stdio, where there is no HTTP credential.
+
+    Returns:
+        The credential, or ``None`` when the request has no bearer header.
+    """
+    from ...keystore import bearer_credential
+    from ._compat import get_mcp_session_info
+
+    info = get_mcp_session_info()
+    if info is None:
+        return None
+    _, request, _ = info
+    return bearer_credential(getattr(request, "headers", None))
+
+
+def _request_principal(
+    resolver: "PrincipalResolver | None",
+) -> "Any | None":
+    """Resolve the current request's principal.
+
+    A resolver is consulted on every request; no principal is cached across
+    requests, so a revoked or expired key fails on the next call.  When no
+    resolver is configured the caller skips enforcement entirely.
+
+    Args:
+        resolver: The configured resolver, or ``None``.
+
+    Returns:
+        The principal, or ``None`` when no resolver is configured or the
+        request carries no valid credential.
+    """
+    if resolver is None:
+        return None
+    return resolver.resolve(_request_authorization())
 
 
 def _json_default(value: Any) -> Any:
@@ -557,6 +598,128 @@ def _discovery_available(route_table: "RouteTable") -> bool:
     return True
 
 
+def _scoped_routes(
+    route_table: "RouteTable", principal_resolver: "PrincipalResolver | None"
+) -> list:
+    """Return the enabled, non-deferred routes the caller may see."""
+    routes = route_table.list_routes(enabled_only=True, include_deferred=False)
+    if principal_resolver is None:
+        return routes
+    return principal_resolver.filter_routes(
+        _request_principal(principal_resolver), routes
+    )
+
+
+def _refuse_out_of_scope(
+    tool_name: str, route: Any, principal_resolver: "PrincipalResolver | None"
+) -> None:
+    """Raise the protocol error for a route outside the caller's key scope.
+
+    The principal is re-read from the store, so a key revoked or expired
+    since the transport check still fails here.
+    """
+    if principal_resolver is None:
+        return
+    principal = _request_principal(principal_resolver)
+    if principal_resolver.allows_route(principal, route):
+        return
+    from mcp.types import INVALID_PARAMS
+
+    from ._compat import make_mcp_error
+
+    raise make_mcp_error(
+        INVALID_PARAMS,
+        f"Tool '{tool_name}' is not permitted for this credential",
+    )
+
+
+def _mcp_tool_definitions(
+    route_table: "RouteTable", principal_resolver: "PrincipalResolver | None"
+) -> list:
+    """Build the MCP tool definitions for the caller's scope.
+
+    Deferred tools are excluded from the initial listing so that LLMs
+    discover them via ``discover_tools``.  Tools whose metadata declares a
+    title or execution hints carry ``title`` and ``annotations``; everything
+    else keeps the minimal definition.
+    """
+    from ._compat import make_mcp_tool, make_tool_annotations
+
+    tools: list = []
+    for route in _scoped_routes(route_table, principal_resolver):
+        tools.append(
+            make_mcp_tool(
+                name=route.tool_name,
+                description=route.description or "",
+                schema=route.served_parameters_schema,
+                output_schema=route.output_schema,
+                title=route.title,
+                annotations=make_tool_annotations(route.served_execution_hints),
+            )
+        )
+    logger.debug(f"list_tools: returning {len(tools)} enabled tools")
+    return tools
+
+
+async def _mcp_call_tool(
+    tool_name: str,
+    arguments: dict,
+    get_enabled_route: "Callable[[str], Any]",
+    principal_resolver: "PrincipalResolver | None",
+    session_mgr: "SessionManager",
+) -> "tuple[list[MCPContentBlock], Any]":
+    """Resolve, authorize and execute one MCP tool call."""
+    from mcp.types import INTERNAL_ERROR
+
+    from ._compat import McpErrorClass, make_mcp_error, tool_execution_error_message
+
+    # Reuse the route the v1 pre-dispatch hook already resolved, so a call
+    # has one lookup and one outcome on both SDK generations (#97).
+    route = _resolve_route_for_call(tool_name, get_enabled_route)
+    _refuse_out_of_scope(tool_name, route, principal_resolver)
+
+    session_ctx = _get_session_context(session_mgr)
+    token = None
+    if session_ctx is not None:
+        token = session_context_var.set(session_ctx)
+
+    try:
+        result = await _execute_tool(route, arguments, session_ctx, session_mgr)
+        content = _result_to_mcp_content(result)
+        is_multimodal = (
+            _HAS_CONTENT_BLOCKS
+            and isinstance(result, list)
+            and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
+        )
+        structured = (
+            result
+            if route.output_schema
+            and isinstance(result, (dict, list))
+            and not is_multimodal
+            else None
+        )
+        logger.debug(f"call_tool '{tool_name}': success")
+        return content, structured
+
+    except McpErrorClass:
+        raise
+    except Exception as e:
+        # Keep the exception text in the log; it can carry connection
+        # strings, internal paths and upstream URLs.  The client only
+        # needs to know which tool failed.
+        logger.error(
+            "Tool execution failed",
+            tool=tool_name,
+            exception=traceback.format_exc(),
+        )
+        raise make_mcp_error(
+            INTERNAL_ERROR, tool_execution_error_message(tool_name)
+        ) from e
+    finally:
+        if token is not None:
+            session_context_var.reset(token)
+
+
 def route_table_to_mcp_server(
     route_table: "RouteTable",
     name: str = "ToolRegistry-Server",
@@ -565,6 +728,7 @@ def route_table_to_mcp_server(
     list_tools_cache_scope: Literal["public", "private"] | None = None,
     version: str | None = None,
     instructions: str | None = None,
+    principal_resolver: "PrincipalResolver | None" = None,
 ) -> "Server":
     """Create an MCP low-level Server from a RouteTable.
 
@@ -589,6 +753,13 @@ def route_table_to_mcp_server(
         instructions: Usage guidance returned from ``initialize``.  ``None``
             uses :data:`DEFAULT_INSTRUCTIONS` when tool discovery is served,
             and no instructions otherwise.
+        principal_resolver: Optional resolver for inbound API keys.  When
+            set, ``tools/list`` is filtered to the request's principal and
+            ``tools/call`` is refused outside its scope.  The principal is
+            re-read from the store on every request, so revocation and
+            expiry apply immediately.  ``None`` keeps the historical
+            unscoped behaviour; static ``--tokens`` credentials stay
+            unscoped even when a resolver is configured.
 
     Returns:
         A configured mcp.server.lowlevel.Server instance.
@@ -597,16 +768,9 @@ def route_table_to_mcp_server(
         ImportError: If MCP SDK is not installed.
     """
     try:
-        from mcp.types import INTERNAL_ERROR, INVALID_PARAMS
+        from mcp.types import INVALID_PARAMS
 
-        from ._compat import (
-            McpErrorClass,
-            create_mcp_server,
-            make_mcp_error,
-            make_mcp_tool,
-            make_tool_annotations,
-            tool_execution_error_message,
-        )
+        from ._compat import create_mcp_server, make_mcp_error
     except ImportError as e:
         raise ImportError(
             "MCP SDK is required for MCP support. "
@@ -631,32 +795,13 @@ def route_table_to_mcp_server(
         return route
 
     async def handle_list_tools() -> list:
-        """Return MCP tool definitions for non-deferred enabled tools.
-
-        Deferred tools are excluded from the initial listing so that LLMs
-        discover them via discover_tools.  Tools whose metadata declares a
-        title or execution hints carry ``title`` and ``annotations``;
-        everything else keeps the minimal definition.
-        """
-        tools: list = []
-        for route in route_table.list_routes(enabled_only=True, include_deferred=False):
-            tools.append(
-                make_mcp_tool(
-                    name=route.tool_name,
-                    description=route.description or "",
-                    schema=route.served_parameters_schema,
-                    output_schema=route.output_schema,
-                    title=route.title,
-                    annotations=make_tool_annotations(route.served_execution_hints),
-                )
-            )
-        logger.debug(f"list_tools: returning {len(tools)} enabled tools")
-        return tools
+        """Return MCP tool definitions for the caller's scope."""
+        return _mcp_tool_definitions(route_table, principal_resolver)
 
     async def handle_call_tool(
         tool_name: str, arguments: dict
     ) -> "tuple[list[MCPContentBlock], Any]":
-        """Execute a tool by name with the given arguments.
+        """Execute a tool by name, enforcing the caller's key scope.
 
         Args:
             tool_name: The tool name to invoke.
@@ -667,54 +812,16 @@ def route_table_to_mcp_server(
             result when the tool declares an ``outputSchema``, else None.
 
         Raises:
-            McpErrorClass: If the tool is disabled, not found, or its
-                execution fails.
+            McpErrorClass: If the tool is disabled, not found, outside the
+                caller's scope, or its execution fails.
         """
-        # Reuse the route the v1 pre-dispatch hook already resolved, so a
-        # call has one lookup and one outcome on both SDK generations (#97).
-        route = _resolve_route_for_call(tool_name, get_enabled_route)
-
-        # --- Session context & notification tracking ---
-        session_ctx = _get_session_context(session_mgr)
-        token = None
-        if session_ctx is not None:
-            token = session_context_var.set(session_ctx)
-
-        try:
-            result = await _execute_tool(route, arguments, session_ctx, session_mgr)
-            content = _result_to_mcp_content(result)
-            is_multimodal = (
-                _HAS_CONTENT_BLOCKS
-                and isinstance(result, list)
-                and is_content_block_list(result)  # type: ignore[possibly-unresolved-reference]
-            )
-            structured = (
-                result
-                if route.output_schema
-                and isinstance(result, (dict, list))
-                and not is_multimodal
-                else None
-            )
-            logger.debug(f"call_tool '{tool_name}': success")
-            return content, structured
-
-        except McpErrorClass:
-            raise
-        except Exception as e:
-            # Keep the exception text in the log; it can carry connection
-            # strings, internal paths and upstream URLs.  The client only
-            # needs to know which tool failed.
-            logger.error(
-                "Tool execution failed",
-                tool=tool_name,
-                exception=traceback.format_exc(),
-            )
-            raise make_mcp_error(
-                INTERNAL_ERROR, tool_execution_error_message(tool_name)
-            ) from e
-        finally:
-            if token is not None:
-                session_context_var.reset(token)
+        return await _mcp_call_tool(
+            tool_name,
+            arguments,
+            get_enabled_route,
+            principal_resolver,
+            session_mgr,
+        )
 
     # Track active MCP sessions so we can push tool-list-changed
     # notifications when the route table changes.

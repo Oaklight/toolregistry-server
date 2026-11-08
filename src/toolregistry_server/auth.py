@@ -214,6 +214,61 @@ def create_bearer_dependency(auth: BearerTokenAuth) -> "Callable[..., Any]":
     return verify_bearer_token
 
 
+def create_scoped_bearer_dependency(
+    resolver: "Any",
+) -> "Callable[..., Any]":
+    """Create a FastAPI dependency that resolves an API key principal.
+
+    Unlike :func:`create_bearer_dependency`, this dependency returns the
+    :class:`~toolregistry_server.keystore.Principal` rather than the raw
+    token, and stores it on ``request.state.principal`` so the route handler
+    and the document builder enforce the same decision.  Verification runs in
+    a worker thread because scrypt is CPU-bound.
+
+    A missing or unknown credential is a ``401``.  The resolver is consulted
+    on every request, so a revoked or expired key fails immediately.
+
+    Args:
+        resolver: A :class:`~toolregistry_server.keystore.PrincipalResolver`.
+
+    Returns:
+        A FastAPI dependency function.
+
+    Raises:
+        ImportError: If FastAPI is not installed.
+    """
+    try:
+        import asyncio
+        from typing import Annotated
+
+        from fastapi import Depends, HTTPException, Request, status
+        from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+    except ImportError as e:
+        raise ImportError(
+            "FastAPI is required for authentication dependencies. "
+            "Install with: pip install toolregistry-server[openapi]"
+        ) from e
+
+    security = HTTPBearer()
+
+    async def verify_scoped_token(
+        request: Request,
+        credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
+    ) -> "Any":
+        """Resolve the caller's principal and attach it to the request."""
+        principal = await asyncio.to_thread(resolver.resolve, credentials.credentials)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        request.state.principal = principal
+        return principal
+
+    return verify_scoped_token
+
+
 def load_tokens(
     tokens_path: str | None = None,
     *,
@@ -267,6 +322,7 @@ def load_tokens(
 __all__ = [
     "BearerTokenAuth",
     "create_bearer_dependency",
+    "create_scoped_bearer_dependency",
     "load_tokens",
     "verify_token",
 ]

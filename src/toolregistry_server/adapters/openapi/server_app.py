@@ -28,6 +28,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import traceback
@@ -95,10 +96,39 @@ def _error(status: int, detail: Any) -> Response:
     return _json_response({"detail": detail}, status=status)
 
 
-def _tool_listing(route_table: RouteTable, etag: str) -> dict[str, Any]:
-    """Build the ``/tools`` payload."""
+def _request_etag(route_table: RouteTable, principal_resolver: Any, request) -> str:
+    """Return the ETag for one request.
+
+    A scoped request folds a digest of its credential into the tag so two
+    keys that see different tool sets cannot share a cached document.  The
+    header value is a digest, never the token.
+    """
+    if principal_resolver is None:
+        return route_table.etag
+    credential = request.headers.get("authorization", "")
+    suffix = hashlib.sha256(credential.encode("utf-8")).hexdigest()[:16]
+    return f'"{route_table.version}:{suffix}"'
+
+
+def _scope_headers(principal_resolver: Any) -> dict[str, str]:
+    """Return the privacy headers required when the view is per-caller."""
+    if principal_resolver is None:
+        return {}
+    return {"Cache-Control": "private", "Vary": "Authorization"}
+
+
+def _tool_listing(
+    route_table: RouteTable,
+    etag: str,
+    principal_resolver: Any | None = None,
+    principal: Any | None = None,
+) -> dict[str, Any]:
+    """Build the ``/tools`` payload, filtered by the caller's key scope."""
+    routes = route_table.list_routes(enabled_only=True, include_deferred=False)
+    if principal_resolver is not None:
+        routes = principal_resolver.filter_routes(principal, routes)
     tools: list[dict[str, Any]] = []
-    for route in route_table.list_routes(enabled_only=True, include_deferred=False):
+    for route in routes:
         info: dict[str, Any] = {
             "name": route.tool_name,
             "namespace": route.namespace,
@@ -118,6 +148,7 @@ def _make_tool_handler(
     route_table: RouteTable,
     tool_name: str,
     matcher_factory: Callable[[], PatternMatcher] | None = None,
+    principal_resolver: Any | None = None,
 ):
     """Build the POST handler for one tool route."""
 
@@ -125,6 +156,14 @@ def _make_tool_handler(
         current = route_table.get_route(tool_name)
         if current is None or not current.enabled:
             return _error(503, f"Tool '{tool_name}' is currently disabled")
+
+        if principal_resolver is not None:
+            principal = getattr(request.state, "principal", None)
+            if not principal_resolver.allows_route(principal, current):
+                return _error(
+                    403,
+                    f"Tool '{tool_name}' is not permitted for this credential",
+                )
 
         try:
             payload = request.json()
@@ -191,32 +230,60 @@ def _make_tool_handler(
     return _handler
 
 
-def _add_tools_route(app: App, route_table: RouteTable) -> None:
+def _add_tools_route(
+    app: App, route_table: RouteTable, principal_resolver: Any | None = None
+) -> None:
     """Register ``GET /tools`` with the same ETag semantics as FastAPI."""
 
     @app.get("/tools")
     async def _tools(request) -> Response:
-        etag = route_table.etag
+        etag = _request_etag(route_table, principal_resolver, request)
+        headers = {"ETag": etag, **_scope_headers(principal_resolver)}
         if request.headers.get("if-none-match") == etag:
-            return Response(status_code=304, headers={"ETag": etag})
-        return _json_response(_tool_listing(route_table, etag), headers={"ETag": etag})
+            return Response(status_code=304, headers=headers)
+        principal = getattr(request.state, "principal", None)
+        return _json_response(
+            _tool_listing(route_table, etag, principal_resolver, principal),
+            headers=headers,
+        )
 
 
 def _add_openapi_route(
-    app: App, route_table: RouteTable, title: str, version: str, description: str
+    app: App,
+    route_table: RouteTable,
+    title: str,
+    version: str,
+    description: str,
+    principal_resolver: Any | None = None,
 ) -> None:
     """Register ``GET /openapi.json`` from the RouteTable builder."""
     from .spec import build_openapi_schema
 
     @app.get("/openapi.json")
     async def _schema(request) -> Response:
-        etag = route_table.etag
+        etag = _request_etag(route_table, principal_resolver, request)
+        headers = {"ETag": etag, **_scope_headers(principal_resolver)}
         if request.headers.get("if-none-match") == etag:
-            return Response(status_code=304, headers={"ETag": etag})
+            return Response(status_code=304, headers=headers)
+        principal = getattr(request.state, "principal", None)
         document = build_openapi_schema(
-            route_table, title=title, version=version, description=description
+            route_table,
+            title=title,
+            version=version,
+            description=description,
+            security_schemes=(
+                {"HTTPBearer": {"type": "http", "scheme": "bearer"}}
+                if principal_resolver is not None
+                else None
+            ),
+            security=([{"HTTPBearer": []}] if principal_resolver is not None else None),
+            route_filter=(
+                None
+                if principal_resolver is None
+                else lambda route: principal_resolver.allows_route(principal, route)
+            ),
         )
-        return _json_response(document, headers={"ETag": etag})
+        return _json_response(document, headers=headers)
 
 
 def _add_docs_route(app: App, title: str) -> None:
@@ -253,21 +320,12 @@ def _add_docs_route(app: App, title: str) -> None:
         return Response(html_page, content_type="text/html; charset=utf-8")
 
 
-def _add_events_route(
-    app: App,
+def _httpserver_sse_listener(
+    subscribers: set[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop, Any]],
     route_table: RouteTable,
-    max_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
-) -> None:
-    """Register ``GET /events`` streaming tool change events as SSE.
-
-    At most *max_subscribers* clients may stream at once; further requests
-    get a ``503`` instead of growing the subscriber set without bound.
-    """
-    # RouteTable listeners may fire on any thread (an admin request, a
-    # background refresh), so each subscriber pairs its queue with the loop
-    # that reads it and wakes that loop explicitly.
-    subscribers: set[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop]] = set()
-    keepalive_interval = 30.0
+    principal_resolver: Any | None,
+) -> Callable[[str, str], None]:
+    """Return the RouteTable listener that fans change events out as SSE."""
 
     def _deliver(queue: asyncio.Queue[str], message: str) -> None:
         try:
@@ -278,17 +336,33 @@ def _add_events_route(
     def _on_change(tool_name: str, event: str) -> None:
         payload = json.dumps({"tool": tool_name, "event": event})
         message = f"event: tool_change\ndata: {payload}\n\n"
-        for queue, loop in list(subscribers):
+        for queue, loop, principal in list(subscribers):
+            if principal_resolver is not None and tool_name != "*":
+                route = route_table.get_route(tool_name)
+                if route is None or not principal_resolver.allows_route(
+                    principal, route
+                ):
+                    continue
             try:
                 loop.call_soon_threadsafe(_deliver, queue, message)
             except RuntimeError:  # loop already closed
-                subscribers.discard((queue, loop))
+                subscribers.discard((queue, loop, principal))
 
-    route_table.add_listener(_on_change)
-    app.on_shutdown(lambda: route_table.remove_listener(_on_change))
+    return _on_change
+
+
+def _httpserver_sse_endpoint(
+    subscribers: set[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop, Any]],
+    max_subscribers: int,
+    principal_resolver: Any | None,
+):
+    """Return the ``/events`` handler for the configured subscriber set."""
+    keepalive_interval = 30.0
 
     async def _generate(
-        queue: asyncio.Queue[str], loop: asyncio.AbstractEventLoop
+        queue: asyncio.Queue[str],
+        loop: asyncio.AbstractEventLoop,
+        principal: Any,
     ) -> AsyncIterator[str]:
         try:
             while True:
@@ -300,9 +374,8 @@ def _add_events_route(
                     # SSE comment keeps proxies from closing an idle stream.
                     yield ": keepalive\n\n"
         finally:
-            subscribers.discard((queue, loop))
+            subscribers.discard((queue, loop, principal))
 
-    @app.get("/events")
     async def _events(request) -> Response | StreamingResponse:
         if len(subscribers) >= max_subscribers:
             logger.warning(
@@ -311,21 +384,58 @@ def _add_events_route(
                 limit=max_subscribers,
             )
             return _error(503, "Too many event subscribers")
+        principal = getattr(request.state, "principal", None)
+        if principal_resolver is not None and principal is None:
+            return _error(403, "Not authenticated")
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
-        subscribers.add((queue, loop))
+        subscribers.add((queue, loop, principal))
         return StreamingResponse(
-            _generate(queue, loop),
+            _generate(queue, loop, principal),
             content_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    return _events
 
-def _add_auth(app: App, tokens: Sequence[str]) -> None:
+
+def _add_events_route(
+    app: App,
+    route_table: RouteTable,
+    max_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
+    principal_resolver: Any | None = None,
+) -> None:
+    """Register ``GET /events`` streaming tool change events as SSE.
+
+    At most *max_subscribers* clients may stream at once; further requests
+    get a ``503`` instead of growing the subscriber set without bound.  When
+    a resolver is configured, a stream receives events only for tools its
+    key may call; ``"*"`` (a full refresh) carries no name and goes to all.
+    """
+    # RouteTable listeners may fire on any thread (an admin request, a
+    # background refresh), so each subscriber pairs its queue with the loop
+    # that reads it and wakes that loop explicitly.
+    subscribers: set[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop, Any]] = set()
+    listener = _httpserver_sse_listener(subscribers, route_table, principal_resolver)
+    route_table.add_listener(listener)
+    app.on_shutdown(lambda: route_table.remove_listener(listener))
+    app.get("/events")(
+        _httpserver_sse_endpoint(subscribers, max_subscribers, principal_resolver)
+    )
+
+
+def _add_auth(
+    app: App,
+    tokens: Sequence[str],
+    principal_resolver: Any | None = None,
+) -> None:
     """Reject requests whose ``Authorization`` header carries no known token.
 
     The credential is compared against every configured token in constant
-    time (see :func:`toolregistry_server.auth.verify_token`).
+    time (see :func:`toolregistry_server.auth.verify_token`).  When a
+    principal resolver is configured, the token is resolved through the API
+    key store instead, and the caller's principal is stored on the request
+    for the route and document handlers.
     """
 
     @app.before_request
@@ -334,6 +444,13 @@ def _add_auth(app: App, tokens: Sequence[str]) -> None:
         scheme, _, credential = header.partition(" ")
         if scheme.lower() != "bearer" or not credential:
             response = _error(401, "Not authenticated")
+        elif principal_resolver is not None:
+            principal = await asyncio.to_thread(principal_resolver.resolve, credential)
+            if principal is None:
+                response = _error(401, "Invalid authentication token")
+            else:
+                request.state.principal = principal
+                return None
         elif not verify_token(credential, tokens):
             response = _error(401, "Invalid authentication token")
         else:
@@ -345,7 +462,9 @@ def _add_auth(app: App, tokens: Sequence[str]) -> None:
 _ETAG_PATHS = frozenset({"/tools", "/openapi.json"})
 
 
-def _add_etag(app: App, route_table: RouteTable) -> None:
+def _add_etag(
+    app: App, route_table: RouteTable, principal_resolver: Any | None = None
+) -> None:
     """Tenant the ETag on the two cacheable GETs, as the FastAPI middleware did."""
 
     @app.after_request
@@ -356,7 +475,11 @@ def _add_etag(app: App, route_table: RouteTable) -> None:
             and response.status_code == 200
             and "ETag" not in response.headers
         ):
-            response.headers["ETag"] = route_table.etag
+            response.headers["ETag"] = _request_etag(
+                route_table, principal_resolver, request
+            )
+        for name, value in _scope_headers(principal_resolver).items():
+            response.headers.setdefault(name, value)
         return response
 
 
@@ -412,6 +535,7 @@ def create_httpserver_app(
     max_sse_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
     regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
     regex_budget: float = DEFAULT_REGEX_BUDGET,
+    principal_resolver: Any | None = None,
 ) -> App:
     """Build a :class:`~httpserver.App` exposing the RouteTable.
 
@@ -433,6 +557,10 @@ def create_httpserver_app(
             execution and keeps spec patterns out of validation.
         regex_budget: Per-request ceiling for all spec-supplied regex
             matches, in seconds. ``0`` disables execution.
+        principal_resolver: Optional API key resolver. When set, key
+            authentication runs through the SQLite store and the caller's
+            scope filters tool routes, ``/tools``, ``/openapi.json`` and
+            ``/events``. Static *tokens* keep full, unscoped access.
 
     Returns:
         An :class:`~httpserver.App` with the tool routes, ``/tools``,
@@ -457,20 +585,30 @@ def create_httpserver_app(
 
     for route in route_table.list_routes(enabled_only=False):
         app.route(route.path, methods=["POST"])(
-            _make_tool_handler(route_table, route.tool_name, matcher_factory)
+            _make_tool_handler(
+                route_table,
+                route.tool_name,
+                matcher_factory,
+                principal_resolver,
+            )
         )
 
-    _add_tools_route(app, route_table)
-    _add_openapi_route(app, route_table, title, version, description)
+    _add_tools_route(app, route_table, principal_resolver)
+    _add_openapi_route(
+        app, route_table, title, version, description, principal_resolver
+    )
     _add_docs_route(app, title)
-    _add_events_route(app, route_table, max_sse_subscribers)
+    _add_events_route(app, route_table, max_sse_subscribers, principal_resolver)
     _add_framework_errors(app)
 
     if enable_etag:
-        _add_etag(app, route_table)
-    if tokens:
-        _add_auth(app, tokens)
-        logger.info(f"Authentication enabled with {len(tokens)} token(s)")
+        _add_etag(app, route_table, principal_resolver)
+    if tokens or principal_resolver is not None:
+        _add_auth(app, tokens or (), principal_resolver)
+        if principal_resolver is not None:
+            logger.info("API key scoping enabled; static tokens keep full access")
+        else:
+            logger.info(f"Authentication enabled with {len(tokens or ())} token(s)")
 
     return app
 

@@ -336,11 +336,45 @@ def _tool_result_response(result: Any) -> "Response":
     )
 
 
+def _require_route_scope(
+    request: Any, route: RouteEntry, tool_name: str, principal_resolver: Any
+) -> None:
+    """Refuse a route outside the caller's key scope.
+
+    The principal was resolved by the app-level bearer dependency and stored
+    on ``request.state``. A resolver without a principal denies, so a
+    mis-wired app fails closed instead of open.
+
+    Args:
+        request: The incoming request carrying ``state.principal``.
+        route: The route being called.
+        tool_name: The route's tool name, used in the message.
+        principal_resolver: The configured resolver, or ``None`` when key
+            scoping is off.
+
+    Raises:
+        fastapi.HTTPException: ``403`` when the principal may not call the
+            route.
+    """
+    if principal_resolver is None:
+        return
+    principal = getattr(request.state, "principal", None)
+    if principal_resolver.allows_route(principal, route):
+        return
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=403,
+        detail=f"Tool '{tool_name}' is not permitted for this credential",
+    )
+
+
 def _add_route_from_entry(
     router: "APIRouter",
     route: RouteEntry,
     route_table: RouteTable,
     matcher_factory: "Callable[[], PatternMatcher] | None" = None,
+    principal_resolver: "Any | None" = None,
 ) -> None:
     """Create and register a POST route for a single RouteEntry.
 
@@ -362,6 +396,10 @@ def _add_route_from_entry(
         matcher_factory: Optional zero-argument callable returning a fresh
             bounded pattern matcher for one request. ``None`` keeps spec
             regexes out of validation.
+        principal_resolver: Optional API key resolver. When set, a request
+            whose principal may not call this route is refused with ``403``
+            before validation or execution. ``None`` keeps the previous
+            behaviour.
     """
     from fastapi import Body, HTTPException, Request
 
@@ -423,6 +461,7 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
+                _require_route_scope(request, current_route, tname, principal_resolver)
                 matcher = mf() if mf is not None else None
                 # Validation is CPU-bound; keep this loop free while it runs,
                 # the same way the httpserver handler does.
@@ -469,6 +508,7 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
+                _require_route_scope(request, current_route, tname, principal_resolver)
                 matcher = mf() if mf is not None else None
                 arguments = _validate_arguments(
                     current_route, data, pattern_matcher=matcher
@@ -498,6 +538,7 @@ def route_table_to_router(
     route_table: RouteTable,
     prefix: str = "",
     matcher_factory: "Callable[[], PatternMatcher] | None" = None,
+    principal_resolver: "Any | None" = None,
 ) -> "APIRouter":
     """Convert a :class:`~toolregistry_server.RouteTable` into a FastAPI router.
 
@@ -510,6 +551,8 @@ def route_table_to_router(
         route_table: The route table to convert.
         prefix: URL prefix for all generated routes.
         matcher_factory: Optional bounded-matcher factory; see
+            :func:`_add_route_from_entry`.
+        principal_resolver: Optional API key resolver; see
             :func:`_add_route_from_entry`.
 
     Returns:
@@ -529,7 +572,13 @@ def route_table_to_router(
     router = APIRouter(prefix=prefix)
 
     for route in route_table.list_routes(enabled_only=False):
-        _add_route_from_entry(router, route, route_table, matcher_factory)
+        _add_route_from_entry(
+            router,
+            route,
+            route_table,
+            matcher_factory,
+            principal_resolver,
+        )
 
     return router
 
@@ -539,7 +588,11 @@ def route_table_to_router(
 # ---------------------------------------------------------------------------
 
 
-def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
+def add_tools_endpoint(
+    app: "FastAPI",
+    route_table: RouteTable,
+    principal_resolver: "Any | None" = None,
+) -> None:
     """Add a /tools endpoint that returns the list of available tools.
 
     This endpoint supports ETag-based cache validation. The response includes
@@ -548,6 +601,8 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
     Args:
         app: The FastAPI application instance.
         route_table: The RouteTable to query for tools.
+        principal_resolver: Optional API key resolver. When set, the listing
+            contains only the tools the caller's key may call.
 
     Example:
         ```python
@@ -593,8 +648,12 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
 
         # Build tools list — deferred tools are excluded from the initial
         # listing so that LLMs discover them via discover_tools.
+        routes = route_table.list_routes(enabled_only=True, include_deferred=False)
+        if principal_resolver is not None:
+            principal = getattr(request.state, "principal", None)
+            routes = principal_resolver.filter_routes(principal, routes)
         tools = []
-        for route in route_table.list_routes(enabled_only=True, include_deferred=False):
+        for route in routes:
             tool_info: dict[str, Any] = {
                 "name": route.tool_name,
                 "namespace": route.namespace,
@@ -624,11 +683,99 @@ def add_tools_endpoint(app: "FastAPI", route_table: RouteTable) -> None:
 DEFAULT_MAX_SSE_SUBSCRIBERS = 64
 
 
+def _sse_listener(
+    queues: dict[Any, Any], route_table: RouteTable, principal_resolver: Any
+) -> Callable[[str, str], None]:
+    """Return the RouteTable listener that fans change events out as SSE.
+
+    A scoped client is not told about a tool outside its key's scope: a name
+    alone is information it could not obtain from ``tools/list``. ``"*"`` (a
+    full refresh) carries no name, so it goes to everyone.
+    """
+    import asyncio
+    import json as _json
+
+    def _on_change(tool_name: str, event: str) -> None:
+        payload = _json.dumps({"tool": tool_name, "event": event})
+        # TODO: SSE events do not include an ``id:`` field, so clients
+        # cannot resume from a Last-Event-ID after reconnection.
+        msg = f"event: tool_change\ndata: {payload}\n\n"
+        for q, principal in list(queues.items()):
+            if principal_resolver is not None and tool_name != "*":
+                route = route_table.get_route(tool_name)
+                if route is None or not principal_resolver.allows_route(
+                    principal, route
+                ):
+                    continue
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                logger.debug("SSE client queue full, dropping event", tool=tool_name)
+
+    return _on_change
+
+
+def _sse_endpoint(
+    queues: dict[Any, Any],
+    principal_resolver: Any,
+    max_subscribers: int,
+):
+    """Return the ``/events`` handler for the configured subscriber set."""
+    import asyncio
+
+    from fastapi import HTTPException, Request
+    from starlette.responses import StreamingResponse
+
+    keepalive = 30.0
+
+    async def sse_events(request: Request):
+        """Stream tool change events via Server-Sent Events."""
+        if len(queues) >= max_subscribers:
+            logger.warning(
+                "SSE subscriber limit reached, rejecting a connection",
+                subscribers=len(queues),
+                max_subscribers=max_subscribers,
+            )
+            raise HTTPException(status_code=503, detail="Too many event subscribers")
+        principal = getattr(request.state, "principal", None)
+        if principal_resolver is not None and principal is None:
+            raise HTTPException(status_code=403, detail="Not authenticated")
+        q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
+        queues[q] = principal
+
+        async def _generate():
+            try:
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(q.get(), timeout=keepalive)
+                        yield msg
+                    except asyncio.TimeoutError:
+                        # Send SSE comment as keepalive to prevent reverse
+                        # proxies from closing idle connections.
+                        yield ": keepalive\n\n"
+            except asyncio.CancelledError:
+                return
+            finally:
+                queues.pop(q, None)
+
+        return StreamingResponse(
+            _generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return sse_events
+
+
 def add_events_endpoint(
     app: "FastAPI",
     route_table: RouteTable,
     *,
     max_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
+    principal_resolver: "Any | None" = None,
 ) -> None:
     """Add a GET /events SSE endpoint that streams tool change events.
 
@@ -645,82 +792,20 @@ def add_events_endpoint(
         route_table: The RouteTable whose changes are broadcast.
         max_subscribers: Largest number of concurrent streams. Further
             connections get ``503``. ``0`` disables the endpoint.
+        principal_resolver: Optional API key resolver. When set, a stream
+            receives change events only for tools its key may call.
 
     Raises:
         ValueError: If *max_subscribers* is negative.
     """
-    import asyncio
-    import json as _json
-
     if max_subscribers < 0:
         raise ValueError(f"max_subscribers must not be negative, got {max_subscribers}")
 
-    try:
-        from fastapi import HTTPException
-        from starlette.responses import StreamingResponse
-    except ImportError as e:
-        raise ImportError(
-            "Starlette is required for SSE support. "
-            "Install with: pip install toolregistry-server[openapi]"
-        ) from e
-
-    # All currently connected SSE client queues
-    _queues: set[asyncio.Queue[str]] = set()
-
-    def _on_change(tool_name: str, event: str) -> None:
-        """Push a change event to every connected SSE client."""
-        payload = _json.dumps({"tool": tool_name, "event": event})
-        # TODO: SSE events do not include an ``id:`` field, so clients
-        # cannot resume from a Last-Event-ID after reconnection.
-        msg = f"event: tool_change\ndata: {payload}\n\n"
-        for q in list(_queues):
-            try:
-                q.put_nowait(msg)
-            except asyncio.QueueFull:
-                logger.debug("SSE client queue full, dropping event", tool=tool_name)
-
-    route_table.add_listener(_on_change)
-
-    _KEEPALIVE_INTERVAL: float = 30.0  # seconds
-
-    @app.get("/events", tags=["meta"], include_in_schema=True)
-    async def sse_events():
-        """Stream tool change events via Server-Sent Events."""
-        if len(_queues) >= max_subscribers:
-            logger.warning(
-                "SSE subscriber limit reached, rejecting a connection",
-                subscribers=len(_queues),
-                max_subscribers=max_subscribers,
-            )
-            raise HTTPException(status_code=503, detail="Too many event subscribers")
-        q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
-        _queues.add(q)
-
-        async def _generate():
-            try:
-                while True:
-                    try:
-                        msg = await asyncio.wait_for(
-                            q.get(), timeout=_KEEPALIVE_INTERVAL
-                        )
-                        yield msg
-                    except asyncio.TimeoutError:
-                        # Send SSE comment as keepalive to prevent reverse
-                        # proxies from closing idle connections.
-                        yield ": keepalive\n\n"
-            except asyncio.CancelledError:
-                return
-            finally:
-                _queues.discard(q)
-
-        return StreamingResponse(
-            _generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
-        )
+    queues: dict[Any, Any] = {}
+    route_table.add_listener(_sse_listener(queues, route_table, principal_resolver))
+    app.get("/events", tags=["meta"], include_in_schema=True)(
+        _sse_endpoint(queues, principal_resolver, max_subscribers)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -728,7 +813,11 @@ def add_events_endpoint(
 # ---------------------------------------------------------------------------
 
 
-def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
+def setup_dynamic_openapi(
+    app: "FastAPI",
+    route_table: RouteTable,
+    principal_resolver: "Any | None" = None,
+) -> None:
     """Serve ``/openapi.json`` from the RouteTable itself.
 
     The document is built by
@@ -738,9 +827,16 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
     is regenerated on every request, which is what makes enable/disable
     show up immediately.
 
+    When *principal_resolver* is set, the built-in ``/openapi.json`` route is
+    replaced by one that filters the document through the caller's key scope.
+    The app-level bearer dependency has already stored the principal on
+    ``request.state``; a missing principal yields an empty tool section, so a
+    scoped document never discloses a path the key cannot call.
+
     Args:
         app: The FastAPI application instance.
         route_table: The route table to describe.
+        principal_resolver: Optional API key resolver.
     """
     from .spec import build_openapi_schema
 
@@ -753,3 +849,35 @@ def setup_dynamic_openapi(app: "FastAPI", route_table: RouteTable) -> None:
         )
 
     app.openapi = custom_openapi  # ty: ignore[invalid-assignment]
+
+    if principal_resolver is None:
+        return
+
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    openapi_path = getattr(app, "openapi_url", None) or "/openapi.json"
+    # FastAPI registers the built-in document route during construction.
+    # Remove it so the request-aware route below is the only handler for the
+    # path; otherwise the first match would serve an unfiltered document.
+    app.router.routes = [
+        route
+        for route in app.router.routes
+        if getattr(route, "path", None) != openapi_path
+    ]
+
+    @app.get(openapi_path, include_in_schema=False)
+    async def _scoped_openapi(request: Request) -> JSONResponse:
+        principal = getattr(request.state, "principal", None)
+        document = build_openapi_schema(
+            route_table,
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            security_schemes={"HTTPBearer": {"type": "http", "scheme": "bearer"}},
+            security=[{"HTTPBearer": []}],
+            route_filter=lambda route: principal_resolver.allows_route(
+                principal, route
+            ),
+        )
+        return JSONResponse(content=document)

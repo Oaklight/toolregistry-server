@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn, TextIO
+from typing import TYPE_CHECKING, Any, NoReturn, TextIO
 
 if TYPE_CHECKING:
     from .app import App
@@ -150,6 +150,7 @@ class CLI:
         from .adapters.mcp import MCPAdapter
         from .adapters.openapi import OpenAPIAdapter
         from .gateway import GatewayAdapter
+        from .keys_cli import add_keys_subparser
 
         parser = argparse.ArgumentParser(
             prog=self.app.identity.prog,
@@ -160,7 +161,7 @@ class CLI:
 
         sub = parser.add_subparsers(
             dest="command",
-            metavar="{openapi,mcp,gateway}",
+            metavar="{openapi,mcp,gateway,keys}",
         )
 
         openapi_parser = sub.add_parser("openapi", help="Start OpenAPI server")
@@ -177,6 +178,9 @@ class CLI:
         )
         GatewayAdapter.add_cli_arguments(gateway_parser)
         self._add_source_runtime_arguments(gateway_parser)
+
+        keys_parser = sub.add_parser("keys", help="Manage inbound API keys")
+        add_keys_subparser(keys_parser)
 
         self.configure_subparsers(
             {
@@ -246,41 +250,63 @@ class CLI:
 
         Override to add custom commands or pre-processing.
         """
+        if parsed.command == "keys":
+            from .keys_cli import dispatch_keys
+
+            exit_code = dispatch_keys(parsed)
+            if exit_code:
+                sys.exit(exit_code)
+            return
+
         config_path = getattr(parsed, "config", None)
         if config_path is None:
             logger.error("No config file specified. Use --config to provide one.")
             sys.exit(1)
 
+        keys_db = getattr(parsed, "keys_db", None)
+
         if parsed.command == "openapi":
-            self.app.serve_openapi(
-                config_path=config_path,
-                profile=getattr(parsed, "profile", None),
-                host=parsed.host,
-                port=parsed.port,
-                tokens_path=getattr(parsed, "tokens", None),
-                reload=getattr(parsed, "reload", False),
-                backend=getattr(parsed, "backend", "fastapi"),
-                max_body_size=getattr(parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE),
-                regex_timeout=getattr(parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT),
-                regex_budget=getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
-                strict_spec_regex=getattr(parsed, "strict_spec_regex", False),
-                config_reload=getattr(parsed, "config_reload", False),
-                write_config=getattr(parsed, "config_write", True),
-            )
+            options: dict[str, Any] = {
+                "config_path": config_path,
+                "profile": getattr(parsed, "profile", None),
+                "host": parsed.host,
+                "port": parsed.port,
+                "tokens_path": getattr(parsed, "tokens", None),
+                "reload": getattr(parsed, "reload", False),
+                "backend": getattr(parsed, "backend", "fastapi"),
+                "max_body_size": getattr(
+                    parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE
+                ),
+                "regex_timeout": getattr(
+                    parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT
+                ),
+                "regex_budget": getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
+                "strict_spec_regex": getattr(parsed, "strict_spec_regex", False),
+                "config_reload": getattr(parsed, "config_reload", False),
+                "write_config": getattr(parsed, "config_write", True),
+            }
+            if keys_db is not None:
+                options["keys_db"] = keys_db
+            self.app.serve_openapi(**options)
         elif parsed.command == "mcp":
-            self.app.serve_mcp(
-                config_path=config_path,
-                profile=getattr(parsed, "profile", None),
-                host=parsed.host,
-                port=parsed.port,
-                transport=parsed.transport,
-                tokens_path=getattr(parsed, "tokens", None),
-                server_url=getattr(parsed, "server_url", None),
-                tools_list_ttl_ms=getattr(parsed, "tools_list_ttl_ms", None),
-                tools_list_cache_scope=getattr(parsed, "tools_list_cache_scope", None),
-                config_reload=getattr(parsed, "config_reload", False),
-                write_config=getattr(parsed, "config_write", True),
-            )
+            options = {
+                "config_path": config_path,
+                "profile": getattr(parsed, "profile", None),
+                "host": parsed.host,
+                "port": parsed.port,
+                "transport": parsed.transport,
+                "tokens_path": getattr(parsed, "tokens", None),
+                "server_url": getattr(parsed, "server_url", None),
+                "tools_list_ttl_ms": getattr(parsed, "tools_list_ttl_ms", None),
+                "tools_list_cache_scope": getattr(
+                    parsed, "tools_list_cache_scope", None
+                ),
+                "config_reload": getattr(parsed, "config_reload", False),
+                "write_config": getattr(parsed, "config_write", True),
+            }
+            if keys_db is not None:
+                options["keys_db"] = keys_db
+            self.app.serve_mcp(**options)
         elif parsed.command == "gateway":
             self.app.serve_gateway(
                 config_path=config_path,

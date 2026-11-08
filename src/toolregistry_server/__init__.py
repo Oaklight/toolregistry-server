@@ -30,6 +30,14 @@ from .app import App, serve_gateway, serve_mcp, serve_openapi
 from .auth import load_tokens
 from .gateway import GatewayAdapter, create_gateway_app
 from .identity import ServerIdentity
+from .keystore import (
+    ApiKeyRecord,
+    ApiKeyStore,
+    CreatedKey,
+    Principal,
+    PrincipalResolver,
+    ScopeSpec,
+)
 from .registry_builder import (
     PROFILE_DISABLE_REASON,
     PROFILE_DISABLE_TAGS,
@@ -52,11 +60,17 @@ from .source_manager import (
 )
 
 __all__ = [
+    "ApiKeyRecord",
+    "ApiKeyStore",
     "App",
     "__version__",
+    "CreatedKey",
     "PROFILE_DISABLE_REASON",
     "PROFILE_DISABLE_TAGS",
     "GatewayAdapter",
+    "Principal",
+    "PrincipalResolver",
+    "ScopeSpec",
     "ServerIdentity",
     "RouteEntry",
     "RouteTable",

@@ -36,6 +36,7 @@ logger = get_logger()
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
 
+    from ...keystore import PrincipalResolver
     from ...route_table import RouteTable
 
 
@@ -52,6 +53,7 @@ def route_table_to_mcp_server(
     list_tools_cache_scope: Literal["public", "private"] | None = None,
     version: str | None = None,
     instructions: str | None = None,
+    principal_resolver: "PrincipalResolver | None" = None,
 ) -> "Server":
     """Create an MCP low-level server from a RouteTable.
 
@@ -69,6 +71,8 @@ def route_table_to_mcp_server(
             the installed ``toolregistry-server`` version.
         instructions: Usage guidance for ``initialize``.  ``None`` uses the
             deferred-tool hint when discovery is served.
+        principal_resolver: Optional API key resolver, forwarded to the
+            adapter.  ``None`` keeps the historical unscoped behaviour.
 
     Returns:
         A configured MCP Server instance.
@@ -85,6 +89,7 @@ def route_table_to_mcp_server(
         list_tools_cache_scope=list_tools_cache_scope,
         version=version,
         instructions=instructions,
+        principal_resolver=principal_resolver,
     )
 
 
@@ -130,6 +135,7 @@ async def run_streamable_http(
     path: str = "/mcp",
     valid_tokens: set[str] | None = None,
     server_url: str | None = None,
+    principal_resolver: "PrincipalResolver | None" = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
@@ -140,17 +146,63 @@ async def run_streamable_http(
         path: URL path for the MCP endpoint.
         valid_tokens: Optional set of accepted Bearer tokens.
         server_url: Public URL of this server for metadata generation.
+        principal_resolver: Optional API key resolver.  When set, the
+            transport verifies keys through it instead of the static token
+            set, and tool handlers enforce the resolved scope.
     """
     from .server import run_streamable_http as _run_streamable_http
 
     await _run_streamable_http(
-        server, host, port, path, valid_tokens=valid_tokens, server_url=server_url
+        server,
+        host,
+        port,
+        path,
+        valid_tokens=valid_tokens,
+        server_url=server_url,
+        principal_resolver=principal_resolver,
     )
 
 
 # ---------------------------------------------------------------------------
 # Adapter class
 # ---------------------------------------------------------------------------
+
+
+def _build_principal_resolver(
+    keys_db: str | None,
+    tokens_path: str | None,
+    *,
+    transport: str,
+) -> "PrincipalResolver | None":
+    """Open the key store named by ``--keys-db`` and build its resolver.
+
+    Args:
+        keys_db: SQLite database path, or ``None`` when key authentication is
+            not configured.
+        tokens_path: Static token file.  Its tokens become unscoped operator
+            credentials inside the resolver.
+        transport: The selected MCP transport.  stdio carries no request
+            credential, so a key store cannot authenticate anything there;
+            the option is reported and ignored instead of silently emptying
+            the tool list.
+
+    Returns:
+        The resolver, or ``None`` when key authentication is off.
+    """
+    if not keys_db:
+        return None
+    if transport == "stdio":
+        logger.warning(
+            "--keys-db is ignored on the stdio transport: there is no "
+            "request credential to scope"
+        )
+        return None
+
+    from ...auth import load_tokens
+    from ...keystore import ApiKeyStore, PrincipalResolver
+
+    store = ApiKeyStore(keys_db)
+    return PrincipalResolver(store, operator_tokens=load_tokens(tokens_path))
 
 
 class MCPAdapter(Adapter):
@@ -166,6 +218,9 @@ class MCPAdapter(Adapter):
             installed ``toolregistry-server`` version.
         instructions: Usage guidance for ``initialize``.  Defaults to the
             deferred-tool hint when discovery is served.
+        principal_resolver: Optional resolver for inbound API keys.  When
+            set, ``tools/list`` is filtered and ``tools/call`` is scoped;
+            ``None`` keeps static-token behaviour unchanged.
     """
 
     def __init__(
@@ -177,8 +232,10 @@ class MCPAdapter(Adapter):
         list_tools_cache_scope: Literal["public", "private"] | None = None,
         version: str | None = None,
         instructions: str | None = None,
+        principal_resolver: "PrincipalResolver | None" = None,
     ) -> None:
         super().__init__(route_table)
+        self._principal_resolver = principal_resolver
         self._server = route_table_to_mcp_server(
             route_table,
             name,
@@ -186,6 +243,7 @@ class MCPAdapter(Adapter):
             list_tools_cache_scope=list_tools_cache_scope,
             version=version,
             instructions=instructions,
+            principal_resolver=principal_resolver,
         )
 
     @property
@@ -262,6 +320,7 @@ class MCPAdapter(Adapter):
                 port=port,
                 valid_tokens=valid_tokens,
                 server_url=server_url,
+                principal_resolver=self._principal_resolver,
             )
         else:
             raise ValueError(f"Unknown transport type: {transport}")
@@ -297,7 +356,20 @@ class MCPAdapter(Adapter):
             help=(
                 "Path to a file of Bearer tokens (one per line) for "
                 "streamable-http. Falls back to the API_BEARER_TOKEN "
-                "environment variable"
+                "environment variable. These tokens are unscoped bootstrap "
+                "credentials"
+            ),
+        )
+        parser.add_argument(
+            "--keys-db",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help=(
+                "Path to the SQLite API key database. When set, keys from "
+                "this database are authenticated and their namespace scopes "
+                "are enforced on tools/list and tools/call. Static --tokens "
+                "keep full, unscoped access. Omit for the previous behaviour"
             ),
         )
         parser.add_argument(
@@ -342,11 +414,23 @@ class MCPAdapter(Adapter):
 
         Reads ``identity`` from kwargs for server name default.
         Explicit ``name`` kwarg takes precedence over identity.
+
+        When ``keys_db`` is given, an :class:`~toolregistry_server.keystore.
+        ApiKeyStore` is opened and its resolver is attached to the server.
+        Static ``tokens_path`` credentials are passed to the resolver as
+        unscoped operator tokens, so they keep full access.  ``keys_db`` is
+        ignored on the stdio transport, which carries no request credential.
         """
         from ...identity import ServerIdentity
 
         identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         name = kwargs.pop("name", identity.name)
+        keys_db = kwargs.pop("keys_db", None)
+        principal_resolver = _build_principal_resolver(
+            keys_db,
+            kwargs.get("tokens_path"),
+            transport=kwargs.get("transport", "stdio"),
+        )
         adapter = cls(
             route_table,
             name=name,
@@ -354,6 +438,7 @@ class MCPAdapter(Adapter):
             list_tools_cache_scope=kwargs.pop("tools_list_cache_scope", None),
             version=identity.version,
             instructions=kwargs.pop("instructions", None),
+            principal_resolver=principal_resolver,
         )
         adapter.run(**kwargs)
 

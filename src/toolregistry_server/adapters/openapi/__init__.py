@@ -65,6 +65,7 @@ def create_openapi_app(
     max_body_size: int = DEFAULT_MAX_BODY_SIZE,
     regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
     regex_budget: float = DEFAULT_REGEX_BUDGET,
+    principal_resolver: Any | None = None,
 ) -> FastAPI:
     """Create a FastAPI application from a RouteTable.
 
@@ -88,6 +89,12 @@ def create_openapi_app(
             of ignoring spec patterns.
         regex_budget: Per-request ceiling for all spec-supplied regex
             matches, in seconds. ``0`` disables execution.
+        principal_resolver: Optional API key resolver.  When set, tool
+            routes, ``/tools``, ``/openapi.json`` and ``/events`` are all
+            filtered through the caller's key scope.  The caller installs
+            the app-level dependency returned by
+            :func:`toolregistry_server.auth.create_scoped_bearer_dependency`.
+            ``None`` keeps the previous behaviour.
 
     Returns:
         A configured FastAPI application with:
@@ -163,25 +170,34 @@ def create_openapi_app(
 
     # Add ETag middleware for cache validation
     if enable_etag:
-        add_etag_middleware(app, route_table)
+        add_etag_middleware(app, route_table, principal_resolver)
 
     # Add /tools endpoint for listing available tools
-    add_tools_endpoint(app, route_table)
+    add_tools_endpoint(app, route_table, principal_resolver)
 
     # Add /events SSE endpoint for streaming tool change events
     if max_sse_subscribers is None:
-        add_events_endpoint(app, route_table)
+        add_events_endpoint(app, route_table, principal_resolver=principal_resolver)
     else:
-        add_events_endpoint(app, route_table, max_subscribers=max_sse_subscribers)
+        add_events_endpoint(
+            app,
+            route_table,
+            max_subscribers=max_sse_subscribers,
+            principal_resolver=principal_resolver,
+        )
 
     # Add routes from route table
     matcher_factory = build_matcher_factory(regex_timeout, regex_budget)
     log_status(logger, regex_timeout, regex_budget, matcher_factory is not None)
-    router = route_table_to_router(route_table, matcher_factory=matcher_factory)
+    router = route_table_to_router(
+        route_table,
+        matcher_factory=matcher_factory,
+        principal_resolver=principal_resolver,
+    )
     app.include_router(router)
 
     # Setup dynamic OpenAPI schema that filters disabled tools
-    setup_dynamic_openapi(app, route_table)
+    setup_dynamic_openapi(app, route_table, principal_resolver)
 
     # Added last so it wraps every other middleware: an oversized body is
     # rejected before routing, auth or ETag short-circuits see it.
@@ -192,6 +208,27 @@ def create_openapi_app(
 
 #: HTTP backends :class:`OpenAPIAdapter` can serve on.
 _BACKENDS = ("fastapi", "httpserver")
+
+
+def _build_key_resolver(
+    keys_db: str | None, operator_tokens: Sequence[str]
+) -> Any | None:
+    """Open the key store named by ``--keys-db`` and build its resolver.
+
+    Args:
+        keys_db: SQLite database path, or ``None`` when key authentication is
+            not configured.
+        operator_tokens: Static tokens that keep full, unscoped access.
+
+    Returns:
+        The resolver, or ``None`` when key authentication is off.
+    """
+    if not keys_db:
+        return None
+
+    from ...keystore import ApiKeyStore, PrincipalResolver
+
+    return PrincipalResolver(ApiKeyStore(keys_db), operator_tokens=operator_tokens)
 
 
 def _positive_int(text: str) -> int:
@@ -250,6 +287,13 @@ class OpenAPIAdapter(Adapter):
             execution and keeps spec patterns out of validation.
         regex_budget: Per-request ceiling for all spec-supplied regex
             matches, in seconds. ``0`` disables execution.
+        principal_resolver: Optional API key resolver.  When set, the
+            caller's key scope filters tool routes, ``/tools`` and
+            ``/openapi.json``.  Static *tokens* keep full, unscoped access
+            when both are supplied.
+
+    Raises:
+        ValueError: If *backend* is unknown.
     """
 
     def __init__(
@@ -264,6 +308,7 @@ class OpenAPIAdapter(Adapter):
         max_body_size: int = DEFAULT_MAX_BODY_SIZE,
         regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
         regex_budget: float = DEFAULT_REGEX_BUDGET,
+        principal_resolver: Any | None = None,
     ) -> None:
         super().__init__(route_table)
 
@@ -288,11 +333,21 @@ class OpenAPIAdapter(Adapter):
                 max_body_size=max_body_size,
                 regex_timeout=regex_timeout,
                 regex_budget=regex_budget,
+                principal_resolver=principal_resolver,
             )
             return
 
         dependencies = None
-        if tokens:
+        if principal_resolver is not None:
+            from fastapi import Depends
+
+            from ...auth import create_scoped_bearer_dependency
+
+            dependencies = [
+                Depends(create_scoped_bearer_dependency(principal_resolver))
+            ]
+            logger.info("API key scoping enabled; static tokens keep full access")
+        elif tokens:
             from fastapi import Depends
 
             from ...auth import BearerTokenAuth, create_bearer_dependency
@@ -310,6 +365,7 @@ class OpenAPIAdapter(Adapter):
             max_body_size=max_body_size,
             regex_timeout=regex_timeout,
             regex_budget=regex_budget,
+            principal_resolver=principal_resolver,
         )
 
     @property
@@ -369,7 +425,23 @@ class OpenAPIAdapter(Adapter):
             "--tokens",
             type=str,
             default=None,
-            help="Path to a file containing authentication tokens (one per line)",
+            help=(
+                "Path to a file containing authentication tokens (one per "
+                "line). These are unscoped bootstrap credentials"
+            ),
+        )
+        parser.add_argument(
+            "--keys-db",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help=(
+                "Path to the SQLite API key database. When set, keys from "
+                "this database are authenticated and their namespace scopes "
+                "filter tool routes, /tools and /openapi.json. Static "
+                "--tokens keep full, unscoped access. Omit for the previous "
+                "behaviour"
+            ),
         )
         parser.add_argument(
             "--reload",
@@ -438,6 +510,7 @@ class OpenAPIAdapter(Adapter):
 
         identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         tokens = load_tokens(kwargs.pop("tokens_path", None))
+        principal_resolver = _build_key_resolver(kwargs.pop("keys_db", None), tokens)
         adapter = cls(
             route_table,
             tokens=tokens or None,
@@ -448,6 +521,7 @@ class OpenAPIAdapter(Adapter):
             max_body_size=kwargs.pop("max_body_size", DEFAULT_MAX_BODY_SIZE),
             regex_timeout=kwargs.pop("regex_timeout", DEFAULT_REGEX_TIMEOUT),
             regex_budget=kwargs.pop("regex_budget", DEFAULT_REGEX_BUDGET),
+            principal_resolver=principal_resolver,
         )
         adapter.run(**kwargs)
 
