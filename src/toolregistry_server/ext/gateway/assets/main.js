@@ -26,9 +26,10 @@ const STRINGS = {
         'gw.keys.hint': 'Inbound keys for the tool frontends. A secret is shown once, at creation.',
         'gw.keys.label': 'Label',
         'gw.keys.scopes': 'Scopes',
-        'gw.keys.scopesHint': 'Comma-separated namespaces; leave empty to deny every tool.',
+        'gw.keys.scopesHint': 'Comma-separated namespaces; leave empty or omit to deny every tool.',
         'gw.keys.tools': 'Tool overrides',
         'gw.keys.toolsHint': 'One tool=allow or tool=deny per line. An override wins over the namespaces.',
+        'gw.keys.toolsInvalid': 'Fix or remove these tool overrides before creating the key: {lines}',
         'gw.keys.expires': 'Expires',
         'gw.keys.expiresHint': 'Optional, local time.',
         'gw.keys.created': 'Created',
@@ -94,9 +95,10 @@ const STRINGS = {
         'gw.keys.hint': '工具前端的入站密钥。密钥只在创建时显示一次。',
         'gw.keys.label': '名称',
         'gw.keys.scopes': '权限范围',
-        'gw.keys.scopesHint': '以逗号分隔的命名空间；留空表示拒绝所有工具。',
+        'gw.keys.scopesHint': '以逗号分隔的命名空间；留空或省略表示拒绝所有工具。',
         'gw.keys.tools': '按工具覆盖',
         'gw.keys.toolsHint': '每行一个 tool=allow 或 tool=deny。覆盖优先于命名空间。',
+        'gw.keys.toolsInvalid': '创建密钥前请修正或移除这些按工具覆盖项：{lines}',
         'gw.keys.expires': '过期时间',
         'gw.keys.expiresHint': '可选，本地时间。',
         'gw.keys.created': '创建时间',
@@ -413,19 +415,27 @@ async function loadKeys() {
     }
 }
 
+// Parse the overrides textarea.  A line that does not read `name=allow` or
+// `name=deny` is returned in `invalid` rather than dropped: a mistyped deny
+// must not silently leave the tool allowed through its namespace.
 function parseOverrides(text) {
     const tools = {};
+    const invalid = [];
     String(text || '')
         .split(/[\n,]+/)
         .map((item) => item.trim())
         .filter(Boolean)
         .forEach((item) => {
-            const [name, mode] = item.split('=').map((part) => part.trim());
-            const allowed = String(mode || '').toLowerCase();
-            if (!name || (allowed !== 'allow' && allowed !== 'deny')) return;
-            tools[name] = allowed === 'allow';
+            const parts = item.split('=').map((part) => part.trim());
+            const name = parts[0];
+            const mode = parts.length === 2 ? parts[1].toLowerCase() : '';
+            if (!name || (mode !== 'allow' && mode !== 'deny')) {
+                invalid.push(item);
+                return;
+            }
+            tools[name] = mode === 'allow';
         });
-    return tools;
+    return { tools, invalid };
 }
 
 async function createKey(form) {
@@ -434,7 +444,15 @@ async function createKey(form) {
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
-    const tools = parseOverrides(data.get('tools'));
+    const overrides = parseOverrides(data.get('tools'));
+    if (overrides.invalid.length) {
+        root.querySelector('#gw-keys')?.appendChild(message(
+            T('gw.keys.toolsInvalid', { lines: overrides.invalid.join(', ') }),
+            'error',
+        ));
+        return;
+    }
+    const tools = overrides.tools;
     const expiresRaw = String(data.get('expires_at') || '');
     const payload = {
         label: String(data.get('label') || '').trim(),
