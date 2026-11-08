@@ -17,7 +17,7 @@
 
 ### 变更
 
-- **core 下限提升到 0.20.0，兼容层已移除**（#159、#154）：`toolregistry>=0.20.0,<1.0.0`。`register_openapi_source()` 直接传入 `allow_local_files=True`，不再探测加载器签名；OpenAPI 后端直接使用 core 的 `ToolResultJSONEncoder`：非有限兜底编码器与能力探测已删除，工具结果中的 `NaN`、`Infinity` 与非有限 `Decimal` 在两个后端上都输出 `null`。最低 core 版本由安装依赖强制；早于 0.20.0 的 core 不再支持。
+- **core 下限提升到 0.20.1，兼容层已移除**（#159、#154）：`toolregistry>=0.20.1,<1.0.0`。`register_openapi_source()` 直接传入 `allow_local_files=True`，不再探测加载器签名；OpenAPI 后端直接使用 core 的 `ToolResultJSONEncoder`：非有限兜底编码器与能力探测已删除，工具结果中的 `NaN`、`Infinity` 与非有限 `Decimal` 在两个后端上都输出 `null`。最低 core 版本由安装依赖强制；早于 0.20.1 的 core 不再支持。0.20.1 是本轮补丁基线：包含 netpolicy 特殊网段修复（#425）与 discovery 再入修复（#428），因此 0.8.0 不支持 0.20.0。
 - **配置中的 OpenAPI source 现在会遵循 `allow_private_hosts`**（#176）：配置加载器接受该键，但 `register_openapi_source()` 从未把它传下去，因此指向回环或私网地址的 spec／服务器 URL 仍会被拒绝。现在该标记同时传给 `load_openapi_spec()`（spec 拉取与每个 `servers[]` 条目）和工具发起请求所用的 `HttpClientConfig`。它只作用于该 source；不设置或为 `false` 时仍保持默认拒绝。
 - **配置中的 MCP source 可以访问私网地址**（#168）：`register_mcp_source()` 此前没有传递 `MCPSource.allow_private_hosts`，因此配置里写了 `allow_private_hosts: true` 仍会被 core 的出站地址检查拒绝。现在该标记随注册调用一起传递。它只作用于该 source 的 HTTP、SSE 与 WebSocket 传输；不设置或设为 `false` 时仍保持默认拒绝。该拒绝信息会点名 `allow_private_hosts`，且不会打印解析出的地址，地址只保留在异常的 `addresses` 属性上。该字段需要 core 0.20.0，现已由安装下限强制。
 - **非法 spec 正则现在只丢弃受影响的工具**（#171）：加载期会编译 OpenAPI source 工具 schema 中的每个 `pattern` 与 `patternProperties` 键。此前一条非法正则会移除该 source 的全部工具；现在只丢弃自身 schema 含该正则的工具，每个都记录错误日志（工具名、schema 路径、pattern），只有没有任何工具存活时才把 source 报为失败。`--strict-spec-regex` 保留整源失败语义并终止启动。加载期 walker 也不再把这些映射中**名为** `default`、`example`、`enum`、`const` 的属性或定义当作数据关键字，因此 `{"properties": {"default": {"pattern": "("}}}` 这类 schema 会被检出。
