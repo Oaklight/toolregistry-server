@@ -80,6 +80,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "toolregistry_server" = ["py.typed"]
+"toolregistry_server.ext.gateway" = ["assets/*.js", "assets/*.css"]
 
 [tool.ruff]
 line-length = 88

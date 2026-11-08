@@ -1,0 +1,250 @@
+/* Gateway admin extension — page styles.
+ *
+ * Every rule is scoped under the extension container the shell creates, so
+ * the page cannot leak into the core tabs and a shell restyle does not have
+ * to know about these classes.  Colours fall back to the panel's own tokens
+ * where they exist.
+ */
+
+.ext-container[data-ext-name="gateway"] {
+    --gw-line: var(--border-color, #d8dbe0);
+    --gw-muted: var(--text-secondary, #6b7280);
+    --gw-accent: var(--accent-color, #2563eb);
+    --gw-ok: var(--success-color, #0a7d43);
+    --gw-warn: var(--warning-color, #a15c00);
+    --gw-bad: var(--danger-color, #b42318);
+    font-size: 14px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--gw-line);
+    margin-bottom: 16px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-tab {
+    border: 0;
+    background: none;
+    padding: 10px 14px;
+    cursor: pointer;
+    color: var(--gw-muted);
+    border-bottom: 2px solid transparent;
+    font: inherit;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-tab-active {
+    color: inherit;
+    border-bottom-color: var(--gw-accent);
+    font-weight: 600;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-panel-title {
+    margin: 0 0 4px;
+    font-size: 16px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-hint {
+    margin: 0;
+    color: var(--gw-muted);
+    font-size: 12px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-panel-actions,
+.ext-container[data-ext-name="gateway"] .gw-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-table-wrap {
+    overflow-x: auto;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-table th,
+.ext-container[data-ext-name="gateway"] .gw-table td {
+    text-align: left;
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--gw-line);
+    vertical-align: middle;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-table th {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gw-muted);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-empty {
+    color: var(--gw-muted);
+    padding: 12px 0;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-btn {
+    border: 1px solid var(--gw-line);
+    background: transparent;
+    color: inherit;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-btn-primary {
+    background: var(--gw-accent);
+    border-color: var(--gw-accent);
+    color: #fff;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-btn-danger {
+    color: var(--gw-bad);
+    border-color: var(--gw-bad);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-pill-active,
+.ext-container[data-ext-name="gateway"] .gw-pill-applied {
+    background: color-mix(in srgb, var(--gw-ok) 14%, transparent);
+    color: var(--gw-ok);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-pill-expired,
+.ext-container[data-ext-name="gateway"] .gw-pill-excluded {
+    background: color-mix(in srgb, var(--gw-warn) 14%, transparent);
+    color: var(--gw-warn);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-pill-revoked,
+.ext-container[data-ext-name="gateway"] .gw-pill-failed {
+    background: color-mix(in srgb, var(--gw-bad) 14%, transparent);
+    color: var(--gw-bad);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--gw-line);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 160px;
+    flex: 1 1 160px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-field input,
+.ext-container[data-ext-name="gateway"] .gw-field select,
+.ext-container[data-ext-name="gateway"] .gw-input-path {
+    padding: 7px 9px;
+    border: 1px solid var(--gw-line);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-input-path {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-secret-card {
+    border: 1px solid var(--gw-line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 8%);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-secret-card h4 {
+    margin: 0 0 6px;
+    font-size: 15px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-secret-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin: 12px 0;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-secret {
+    flex: 1;
+    padding: 10px;
+    border: 1px dashed var(--gw-line);
+    border-radius: 6px;
+    background: color-mix(in srgb, currentColor 5%, transparent);
+    word-break: break-all;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-message {
+    margin: 10px 0;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-message-error {
+    border-left: 3px solid var(--gw-bad);
+    background: color-mix(in srgb, var(--gw-bad) 8%, transparent);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-message-warn {
+    border-left: 3px solid var(--gw-warn);
+    background: color-mix(in srgb, var(--gw-warn) 8%, transparent);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-message-info {
+    border-left: 3px solid var(--gw-accent);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-note {
+    color: var(--gw-muted);
+    font-size: 12px;
+    margin: 8px 0 0;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-error-cell {
+    color: var(--gw-bad);
+    font-size: 12px;
+    max-width: 280px;
+    word-break: break-word;
+}
