@@ -223,13 +223,17 @@ def register_openapi_source(
 
     When the optional ``regex`` extra is installed, every ``pattern`` and
     ``patternProperties`` key in the registered tool schemas is compiled
-    first.  By default only the tools whose own schema contains an invalid
-    pattern are dropped; the rest of the source stays registered, so one bad
-    pattern in a large document does not cost the healthy tools.  Each drop
-    is logged with the tool name, schema path and pattern text, and the
-    source is reported as failed only when no tool survives.  ``strict=True``
-    restores the all-or-nothing behaviour: every tool from the source is
-    removed and :class:`SpecPatternError` is raised.
+    first.  Every name this call creates or replaces is checked, so a new
+    spec that rewrites an existing tool under the same name is rechecked
+    rather than trusted because no name set changed.  By default only the
+    tools whose own schema contains an invalid pattern are dropped; the rest
+    of the source stays registered, so one bad pattern in a large document
+    does not cost the healthy tools.  Each drop is logged with the tool name,
+    schema path and pattern text, and the summary line reports how many
+    tools were dropped and which ones.  The source is reported as failed
+    only when no tool survives.  ``strict=True`` restores the all-or-nothing
+    behaviour: every tool from the source is removed and
+    :class:`SpecPatternError` is raised.
 
     Args:
         registry: The registry to register tools into.
@@ -261,8 +265,8 @@ def register_openapi_source(
     # tool configuration, which is already trusted (the same file can import
     # Python modules and run stdio commands), so a local path is allowed.
     # ``allow_private_hosts`` applies to this source only: the loader checks
-    # the spec URL and every ``servers[]`` entry, and the client repeats the
-    # check for the request URLs the tools use.
+    # the spec URL and the client checks the base URL it actually uses
+    # (``servers[0]`` or the configured ``base_url``) before a request.
     spec = load_openapi_spec(
         source.url,
         allow_local_files=True,
@@ -278,7 +282,7 @@ def register_openapi_source(
         headers=headers,
         allow_private_hosts=source.allow_private_hosts,
     )
-    before = set(registry.list_tools(include_disabled=True))
+    before_tools = _tool_snapshot(registry)
     registry.register_from_openapi(
         client,
         spec,
@@ -286,38 +290,52 @@ def register_openapi_source(
         persistent=True,
         **_source_filter_kwargs(source),
     )
-    new_names = set(registry.list_tools(include_disabled=True)) - before
+    contributed = {
+        name
+        for name, tool in _tool_snapshot(registry).items()
+        if before_tools.get(name) is not tool
+    }
 
-    failures = _invalid_patterns(registry, new_names)
-    if failures and not _handle_invalid_patterns(
-        registry, source.url, new_names, failures, strict=strict
-    ):
-        return False
+    dropped: list[str] = []
+    failures = _invalid_patterns(registry, contributed)
+    if failures:
+        survived, dropped = _handle_invalid_patterns(
+            registry, source.url, contributed, failures, strict=strict
+        )
+        if not survived:
+            return False
 
-    logger.info(f"Loaded OpenAPI tools from {source.url}")
+    if dropped:
+        logger.info(
+            f"Loaded OpenAPI tools from {source.url}: dropped {len(dropped)} "
+            f"tool(s) with an invalid regex: {dropped}"
+        )
+    else:
+        logger.info(f"Loaded OpenAPI tools from {source.url}")
     return True
 
 
 def _handle_invalid_patterns(
     registry: "ToolRegistry",
     source_url: str,
-    new_names: set[str],
+    contributed: set[str],
     failures: list[tuple[str, str, str, str]],
     *,
     strict: bool,
-) -> bool:
+) -> tuple[bool, list[str]]:
     """Drop tools with an invalid pattern, or fail the whole source.
 
     Args:
         registry: The registry holding the newly registered tools.
         source_url: Source URL, for the log and the raised message.
-        new_names: Every tool name the source contributed.
+        contributed: Every tool name this registration call created or
+            replaced.
         failures: ``(tool, schema_path, pattern, error_class)`` entries.
         strict: Remove every tool from the source and raise.
 
     Returns:
-        ``True`` when at least one tool survives, ``False`` when the source
-        contributed tools but none of them survived.
+        ``(survived, dropped)``: whether any tool from the source remains,
+        and the sorted names removed from the registry.
 
     Raises:
         SpecPatternError: If *strict* is true.
@@ -329,7 +347,7 @@ def _handle_invalid_patterns(
             f"{source_url!r}: invalid regex at {schema_path} "
             f"({error_name}): {pattern!r}"
         )
-    dropped = new_names if strict else bad_tools
+    dropped = sorted(contributed if strict else bad_tools)
     for name in dropped:
         registry._unregister(name)  # ty: ignore[unresolved-attribute]
     if strict:
@@ -337,15 +355,26 @@ def _handle_invalid_patterns(
             f"OpenAPI source {source_url!r} has {len(failures)} invalid "
             f"regex(es); first: tool {failures[0][0]!r} at {failures[0][1]}"
         )
-    if new_names and new_names <= bad_tools:
+    if contributed and contributed <= bad_tools:
         # Nothing survived, so the source counts as failed for callers (the
         # hub records it as such and retries on the next reload).
         logger.error(
             f"OpenAPI source {source_url!r} contributed no usable tool: "
-            f"every tool had an invalid regex"
+            f"every tool had an invalid regex ({len(dropped)}): {dropped}"
         )
-        return False
-    return True
+        return False, dropped
+    return True, dropped
+
+
+def _tool_snapshot(registry: "ToolRegistry") -> dict[str, object]:
+    """Return a shallow copy of the registry's name → ``Tool`` map.
+
+    Registration always stores a new ``Tool`` object, so a name whose object
+    changed was created or replaced by the call being measured.  Comparing
+    objects rather than name sets is what catches a replacement: a source
+    that rewrites an existing name changes no name set.
+    """
+    return dict(registry._tools)  # ty: ignore[unresolved-attribute]
 
 
 def _invalid_patterns(

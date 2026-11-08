@@ -371,6 +371,64 @@ def test_only_the_tool_with_the_bad_pattern_is_dropped(fake_regex, monkeypatch):
     assert "'bad'" in output
     assert "pattern" in output
     assert "'('" in output
+    assert "dropped 1 tool" in output
+    assert "['bad']" in output
+
+
+def test_replaced_tool_is_rechecked_and_dropped(fake_regex, monkeypatch):
+    """A same-name replacement brings a new schema; it must be checked too."""
+    fake_regex()
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="item",
+            description="old schema",
+            parameters=_GOOD,
+            callable=lambda **k: k,
+        )
+    )
+    _patch_openapi_loading(monkeypatch, {"item": _BAD})
+    stream = _capture_builder_logs(monkeypatch)
+
+    registered = register_openapi_source(
+        registry, OpenAPISource(url="https://example.test/openapi.json")
+    )
+
+    # The source contributed only the replacement, and it was dropped.
+    assert registered is False
+    assert registry.list_tools(include_disabled=True) == []
+    output = stream.getvalue()
+    assert "Dropping tool 'item'" in output
+    assert "invalid regex" in output
+
+
+def test_bad_replacement_and_new_tool_are_judged_separately(fake_regex, monkeypatch):
+    """One bad replacement plus one healthy new tool: only the former drops."""
+    fake_regex()
+    registry = ToolRegistry()
+    for name in ("item", "other"):
+        registry.register(
+            Tool(
+                name=name,
+                description="old schema",
+                parameters=_GOOD,
+                callable=lambda **k: k,
+            )
+        )
+    _patch_openapi_loading(monkeypatch, {"item": _BAD, "extra": _GOOD})
+    stream = _capture_builder_logs(monkeypatch)
+
+    registered = register_openapi_source(
+        registry, OpenAPISource(url="https://example.test/openapi.json")
+    )
+
+    assert registered is True
+    # The replacement is gone, the new tool is in, and the untouched tool
+    # was neither checked nor removed.
+    assert sorted(registry.list_tools(include_disabled=True)) == ["extra", "other"]
+    output = stream.getvalue()
+    assert "dropped 1 tool" in output
+    assert "['item']" in output
 
 
 def test_source_is_failed_when_no_tool_survives(fake_regex, monkeypatch):
