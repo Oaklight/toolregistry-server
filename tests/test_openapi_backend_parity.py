@@ -3,9 +3,10 @@
 Both apps are served on ephemeral ports over real sockets and the same
 request matrix is sent to each, so a contract drift shows up as a diff and
 not as a rewritten expectation. The FastAPI app is the reference until the
-switchover lands (epic #101); tool results are rendered by
-``adapters.openapi.serialisation`` on both sides, so non-finite floats and
-Decimals, ``bytes`` and sets reach the wire identically.
+switchover lands (epic #101); both sides encode tool results through
+``adapters.openapi.serialisation``, which uses core's
+``ToolResultJSONEncoder``, so non-finite floats and Decimals, ``bytes`` and
+sets reach the wire identically.
 """
 
 import asyncio
@@ -23,13 +24,7 @@ from toolregistry import ToolRegistry
 
 from toolregistry_server import RouteTable
 from toolregistry_server.adapters.openapi import create_openapi_app
-from toolregistry_server.adapters.openapi.serialisation import (
-    _ENCODER,
-    CORE_PROJECTS_NON_FINITE,
-    _NonFiniteFallbackEncoder,
-    _normalise_non_finite,
-    encode_tool_result,
-)
+from toolregistry_server.adapters.openapi.serialisation import encode_tool_result
 from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
 
 TOKENS = ["secret"]
@@ -307,8 +302,8 @@ class TestToolRoutes:
         ``jsonable_encoder`` is not the reference here: it hands a float NaN
         to ``json`` unchanged and keeps a non-finite ``Decimal`` as a value.
         Both backends go through ``encode_tool_result``, which uses core's
-        projection when the installed core has it and reproduces it
-        otherwise, so this holds on the default matrix and on core master.
+        ``ToolResultJSONEncoder``, so this holds on the default matrix and on
+        core master.
         """
         status, body = compare(both, table.get_route(tool_name).path, {})
         assert status == 200
@@ -351,62 +346,8 @@ class TestResultShapes:
         compare(both, table.get_route(tool).path, {})
 
 
-class TestNonFiniteFallback:
-    """The fallback projection runs even on a core that already has it.
-
-    The parity tests exercise whichever encoder the installed core selects.
-    These tests pin the fallback itself, because CI also runs against core
-    0.19.0, where ``encode_tool_result`` takes the fallback path.
-    """
-
-    @pytest.mark.parametrize(
-        "value",
-        [
-            float("nan"),
-            float("inf"),
-            float("-inf"),
-            Decimal("NaN"),
-            Decimal("sNaN"),
-            Decimal("Infinity"),
-            Decimal("-Infinity"),
-        ],
-    )
-    def test_non_finite_scalars_become_none(self, value):
-        assert _normalise_non_finite(value) is None
-
-    def test_finite_values_survive(self):
-        value = {"a": [1.5, Decimal("2.5")], "b": (float("inf"), "x"), "c": None}
-        assert _normalise_non_finite(value) == {
-            "a": [1.5, Decimal("2.5")],
-            "b": [None, "x"],
-            "c": None,
-        }
-
-    def test_nested_containers_are_walked(self):
-        value = {
-            "a": [float("nan"), {"b": Decimal("Infinity")}],
-            "c": (float("-inf"),),
-        }
-        assert _normalise_non_finite(value) == {
-            "a": [None, {"b": None}],
-            "c": [None],
-        }
-
-    def test_shared_values_that_are_not_cyclic_survive(self):
-        shared = [float("nan")]
-        assert _normalise_non_finite({"a": shared, "b": shared}) == {
-            "a": [None],
-            "b": [None],
-        }
-
-    def test_cycles_raise_value_error_like_json(self):
-        """Both encoder paths reject a cycle with ``ValueError`` (#135)."""
-        cyclic: dict = {}
-        cyclic["self"] = cyclic
-        with pytest.raises(ValueError, match="Circular reference detected"):
-            _normalise_non_finite(cyclic)
-        with pytest.raises(ValueError):
-            encode_tool_result(cyclic)
+class TestToolResultEncoding:
+    """The shared encoder keeps the wire contract strict."""
 
     @pytest.mark.parametrize(
         ("value", "expected"),
@@ -415,45 +356,43 @@ class TestNonFiniteFallback:
             (float("inf"), None),
             ([1.0, float("-inf")], [1.0, None]),
             (Decimal("NaN"), None),
+            (Decimal("sNaN"), None),
             (Decimal("1.5"), "1.5"),
             (b"hello", "aGVsbG8="),
             ({"b", "a"}, ["a", "b"]),
         ],
     )
-    def test_fallback_encoder_matches_the_wire_contract(self, value, expected):
-        """The fallback keeps core's other projections unchanged."""
-        text = json.dumps(value, cls=_NonFiniteFallbackEncoder, separators=(",", ":"))
-        assert json.loads(text, parse_constant=_reject_json_constant) == expected
-
-    def test_fallback_projects_decimal_directly(self):
-        encoder = _NonFiniteFallbackEncoder()
-        assert encoder.default(Decimal("NaN")) is None
-        assert encoder.default(Decimal("2.5")) == "2.5"
-
-    def test_encoder_selection_matches_core_capability(self):
-        from toolregistry.utils import ToolResultJSONEncoder
-
-        expected = (
-            ToolResultJSONEncoder
-            if CORE_PROJECTS_NON_FINITE
-            else (_NonFiniteFallbackEncoder)
-        )
-        assert _ENCODER is expected
-
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            ({"x": float("nan")}, {"x": None}),
-            ([1.0, Decimal("Infinity")], [1.0, None]),
-            (Decimal("1.5"), "1.5"),
-        ],
-    )
-    def test_encode_tool_result_is_strict_json(self, value, expected):
-        """Both encoder paths emit strict JSON with null projections."""
+    def test_non_finite_and_core_projections(self, value, expected):
+        """Non-finite values become ``null``; other projections are unchanged."""
         text = encode_tool_result(value)
         assert "NaN" not in text
         assert "Infinity" not in text
         assert json.loads(text, parse_constant=_reject_json_constant) == expected
+
+    def test_nested_containers_are_walked(self):
+        """A non-finite value inside a nested container is projected."""
+        text = encode_tool_result(
+            {
+                "a": [float("nan"), {"b": Decimal("Infinity")}],
+                "c": (float("-inf"),),
+            }
+        )
+        assert json.loads(text, parse_constant=_reject_json_constant) == {
+            "a": [None, {"b": None}],
+            "c": [None],
+        }
+
+    def test_shared_values_that_are_not_cyclic_survive(self):
+        shared = [float("nan")]
+        text = encode_tool_result({"a": shared, "b": shared})
+        assert json.loads(text) == {"a": [None], "b": [None]}
+
+    def test_cycles_raise_value_error(self):
+        """A circular result still fails with json's own error (#135)."""
+        cyclic: dict = {}
+        cyclic["self"] = cyclic
+        with pytest.raises(ValueError, match="Circular reference detected"):
+            encode_tool_result(cyclic)
 
 
 class TestMetaRoutes:

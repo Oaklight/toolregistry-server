@@ -22,7 +22,6 @@ from toolregistry.config import (
 )
 
 from toolregistry_server.registry_builder import (
-    _allow_local_files_kwargs,
     _should_load_source,
     apply_config,
     register_mcp_source,
@@ -223,27 +222,14 @@ class TestRegisterOpenAPISource:
         assert call_args[1]["namespace"] is False
 
 
-class TestAllowLocalFilesProbe:
-    """Forward the local-file opt-in only to a core that accepts it (#376)."""
-
-    def test_new_core_receives_the_opt_in(self):
-        def loader(uri, *, allow_local_files=False):
-            return {}
-
-        assert _allow_local_files_kwargs(loader) == {"allow_local_files": True}
-
-    def test_old_core_omits_the_keyword(self):
-        def loader(uri):
-            return {}
-
-        assert _allow_local_files_kwargs(loader) == {}
+class TestLocalOpenAPISpecSource:
+    """A local spec path from the operator's config is read (#376)."""
 
     def test_local_path_source_registers(self, tmp_path):
         """An operator-configured local spec path is read, not rejected.
 
-        On a core before #376 the loader reads local paths by default and
-        the probe returns no keyword; after #376 the probe passes
-        ``allow_local_files=True``.  Both paths must register the spec.
+        The source URL comes from the operator's configuration, which is
+        already trusted, so the server passes ``allow_local_files=True``.
         """
         spec_path = tmp_path / "openapi.json"
         spec_path.write_text(json.dumps(MINIMAL_SPEC))
