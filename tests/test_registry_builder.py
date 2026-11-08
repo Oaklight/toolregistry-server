@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,6 +53,7 @@ class TestRegisterMCPSource:
             namespace="mcp_ns",
             persistent=True,
             headers=None,
+            allow_private_hosts=False,
         )
 
     def test_stdio_transport_with_env(self):
@@ -85,6 +87,7 @@ class TestRegisterMCPSource:
             namespace="sse_ns",
             persistent=True,
             headers=None,
+            allow_private_hosts=False,
         )
 
     def test_streamable_http_transport(self):
@@ -101,6 +104,7 @@ class TestRegisterMCPSource:
             namespace="http_ns",
             persistent=True,
             headers=None,
+            allow_private_hosts=False,
         )
 
     def test_with_headers_and_non_persistent(self):
@@ -119,6 +123,7 @@ class TestRegisterMCPSource:
             namespace="mcp_ns",
             persistent=False,
             headers={"X-Custom": "value"},
+            allow_private_hosts=False,
         )
 
     def test_no_namespace(self):
@@ -133,6 +138,37 @@ class TestRegisterMCPSource:
 
         call_args = registry.register_from_mcp.call_args
         assert call_args[1]["namespace"] is False
+
+    def test_allow_private_hosts_is_forwarded(self):
+        """A private-network source lifts the core check for this source."""
+        registry = MagicMock()
+        source = MCPSource(
+            transport="streamable-http",
+            url="http://127.0.0.1:9000/mcp",
+            namespace="local_ns",
+            allow_private_hosts=True,
+        )
+        register_mcp_source(registry, source)
+
+        registry.register_from_mcp.assert_called_once_with(
+            "http://127.0.0.1:9000/mcp",
+            namespace="local_ns",
+            persistent=True,
+            headers=None,
+            allow_private_hosts=True,
+        )
+
+    def test_allow_private_hosts_defaults_to_false(self):
+        """Without the key the source keeps core's private-host refusal."""
+        registry = MagicMock()
+        source = MCPSource(
+            transport="sse",
+            url="http://127.0.0.1:9000/sse",
+            namespace="local_ns",
+        )
+        register_mcp_source(registry, source)
+
+        assert registry.register_from_mcp.call_args[1]["allow_private_hosts"] is False
 
 
 class TestRegisterOpenAPISource:
@@ -477,6 +513,53 @@ class TestApplyConfigMCPOpenAPI:
         mock_logger.warning.assert_called()
         warning_msg = mock_logger.warning.call_args[0][0]
         assert "Failed to load tools" in warning_msg
+
+
+class TestConfigFileAllowPrivateHosts:
+    """The config key survives loading and reaches the registration call."""
+
+    def _write_config(self, tmp_path: Path, entry: dict) -> Path:
+        path = tmp_path / "tools.jsonc"
+        path.write_text(json.dumps({"tools": [entry]}))
+        return path
+
+    def _mcp_entry(self, **overrides) -> dict:
+        entry = {
+            "type": "mcp",
+            "transport": "streamable-http",
+            "url": "http://127.0.0.1:9000/mcp",
+            "namespace": "local_ns",
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_true_flag_reaches_registration(self, tmp_path: Path):
+        """``allow_private_hosts: true`` lifts the check for this source."""
+        from toolregistry.config import load_config
+
+        config = load_config(
+            self._write_config(tmp_path, self._mcp_entry(allow_private_hosts=True))
+        )
+        registry = MagicMock()
+        apply_config(registry, config)
+
+        registry.register_from_mcp.assert_called_once_with(
+            "http://127.0.0.1:9000/mcp",
+            namespace="local_ns",
+            persistent=True,
+            headers=None,
+            allow_private_hosts=True,
+        )
+
+    def test_unset_flag_keeps_the_refusal(self, tmp_path: Path):
+        """Without the key the source keeps core's private-host refusal."""
+        from toolregistry.config import load_config
+
+        config = load_config(self._write_config(tmp_path, self._mcp_entry()))
+        registry = MagicMock()
+        apply_config(registry, config)
+
+        assert registry.register_from_mcp.call_args[1]["allow_private_hosts"] is False
 
 
 class TestApplyConfigMultiSource:

@@ -213,6 +213,11 @@ def register_mcp_source(
 ) -> None:
     """Register tools from an MCP server source.
 
+    ``allow_private_hosts`` travels with the source so a deployment can point
+    an MCP URL transport at a loopback or private address.  Core refuses such
+    a host by default before any connection is opened; the flag only lifts
+    that check for this source.
+
     Args:
         registry: The registry to register tools into.
         source: The MCP source configuration.
@@ -235,6 +240,7 @@ def register_mcp_source(
         namespace=ns,
         persistent=source.persistent,
         headers=source.headers,
+        allow_private_hosts=source.allow_private_hosts,
         **_source_filter_kwargs(source),
     )
     logger.info(f"Loaded MCP tools from {source.url or ' '.join(source.command or [])}")
