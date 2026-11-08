@@ -26,8 +26,9 @@ Example:
 
 __version__ = "0.8.0"
 
-from .app import App, serve_mcp, serve_openapi
+from .app import App, serve_gateway, serve_mcp, serve_openapi
 from .auth import load_tokens
+from .gateway import GatewayAdapter, create_gateway_app
 from .identity import ServerIdentity
 from .registry_builder import (
     PROFILE_DISABLE_REASON,
@@ -55,6 +56,7 @@ __all__ = [
     "__version__",
     "PROFILE_DISABLE_REASON",
     "PROFILE_DISABLE_TAGS",
+    "GatewayAdapter",
     "ServerIdentity",
     "RouteEntry",
     "RouteTable",
@@ -66,12 +68,14 @@ __all__ = [
     "SourceStatus",
     "apply_config",
     "apply_profile",
+    "create_gateway_app",
     "load_config",
     "load_tokens",
     "register_mcp_source",
     "register_openapi_source",
     "register_python_source",
     "registry_from_config",
+    "serve_gateway",
     "serve_mcp",
     "serve_openapi",
 ]

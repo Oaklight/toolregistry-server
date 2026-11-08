@@ -1029,3 +1029,102 @@ class TestApplyNsTags:
 
         tool = registry.get_tool("other-my_tool")
         assert not tool.metadata.tags
+
+
+class TestGatewayCommand:
+    """The gateway subcommand composes the three frontends."""
+
+    def test_gateway_command_defaults(self):
+        """Parsing gateway with no options uses the documented defaults."""
+        parser = CLI().create_parser()
+        args = parser.parse_args(["gateway"])
+
+        assert args.command == "gateway"
+        assert args.host == "0.0.0.0"
+        assert args.port == 8000
+        assert args.config is None
+        assert args.tokens is None
+        assert args.server_url is None
+        assert args.backend == "fastapi"
+        assert args.openapi_path is None
+        assert args.mcp_path is None
+        assert args.sse_path is None
+        assert args.openapi is None
+        assert args.mcp is None
+        assert args.sse is None
+        assert args.write_config is True
+
+    def test_gateway_command_with_options(self):
+        """Paths, switches and the config-write flag are parsed."""
+        parser = CLI().create_parser()
+        args = parser.parse_args(
+            [
+                "gateway",
+                "--config",
+                "tools.yaml",
+                "--port",
+                "9100",
+                "--openapi-path",
+                "/api",
+                "--mcp-path",
+                "/rpc",
+                "--sse-path",
+                "/events",
+                "--no-mcp",
+                "--no-config-write",
+            ]
+        )
+
+        assert args.port == 9100
+        assert args.openapi_path == "/api"
+        assert args.mcp_path == "/rpc"
+        assert args.sse_path == "/events"
+        assert args.openapi is None
+        assert args.mcp is False
+        assert args.sse is None
+        assert args.write_config is False
+
+    def test_gateway_enable_switch_can_be_explicit(self):
+        """A persisted disabled frontend can be force-enabled from the CLI."""
+        parser = CLI().create_parser()
+        args = parser.parse_args(["gateway", "--mcp"])
+        assert args.mcp is True
+
+    @patch("toolregistry_server.app.App.serve_gateway")
+    def test_gateway_command_dispatch(self, mock_serve):
+        """gateway dispatch forwards every option to App.serve_gateway."""
+        main(
+            [
+                "gateway",
+                "--config",
+                "tools.yaml",
+                "--port",
+                "9000",
+                "--no-mcp",
+                "--openapi-path",
+                "/api",
+            ]
+        )
+
+        mock_serve.assert_called_once_with(
+            config_path="tools.yaml",
+            profile=None,
+            host="0.0.0.0",
+            port=9000,
+            tokens_path=None,
+            server_url=None,
+            backend="fastapi",
+            max_body_size=1_048_576,
+            regex_timeout=0.05,
+            regex_budget=0.25,
+            strict_spec_regex=False,
+            tools_list_ttl_ms=None,
+            tools_list_cache_scope=None,
+            openapi_path="/api",
+            mcp_path=None,
+            sse_path=None,
+            openapi_enabled=None,
+            mcp_enabled=False,
+            sse_enabled=None,
+            write_config=True,
+        )
