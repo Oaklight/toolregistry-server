@@ -110,6 +110,12 @@ tools:
 
 自行构建客户端的调用方也可以在 `load_openapi_spec(..., allow_private_hosts=True)`、`validate_spec_url()` 与 `HttpClientConfig` 上传入同一标记。参见[配置](../guides/configuration.md#私网地址)。
 
+### 规范加载与刷新
+
+OpenAPI 源只在注册时读取一次规范文档。路由刷新——`RouteTable.refresh()`、`refresh_all()`，以及 `/tools` 上的 `last_refreshed_at` 字段——只根据注册表中已有的工具重建路由，不会重新下载规范。因此，远端文档新增的 path 在重新注册该源之前不会出现：重启服务器，或在 Hub 中于启用 `--config-reload` 时修改该源在 `tools.jsonc` 中的条目（声明未变化的源不会被重新注册）。
+
+每次重新下载规范都会按该源的 `allow_private_hosts` 重新执行出站校验：规范 URL 与每个 `servers[]` 条目都会在请求发出前再次校验。
+
 ### 请求格式
 
 参数作为 JSON 主体传递：
