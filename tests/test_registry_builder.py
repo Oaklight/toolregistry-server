@@ -145,7 +145,9 @@ class TestRegisterOpenAPISource:
         )
         register_openapi_source(registry, source)
 
-        mock_load.assert_called_once_with("http://example.com/openapi.json")
+        mock_load.assert_called_once_with(
+            "http://example.com/openapi.json", allow_local_files=True
+        )
         registry.register_from_openapi.assert_called_once()
         call_args = registry.register_from_openapi.call_args
         client = call_args[0][0]
