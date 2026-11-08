@@ -71,7 +71,7 @@ class KeyStore(Protocol):
     def create(
         self,
         label: str,
-        scopes: Sequence[str] | None = None,
+        scopes: Sequence[str] | Mapping[str, Any] | None = None,
         *,
         expires_at: str | None = None,
     ) -> Any:
@@ -137,6 +137,12 @@ def _guard(handler: Callable[..., Any]) -> Callable[..., Any]:
 
     The wrapped callable is a method: the router passes the request as the
     first argument after ``self``, so the wrapper keeps that shape.
+
+    ``ValueError`` from a collaborator is reported as 400: the store and the
+    frontend registry raise it for invalid operator input (an unknown
+    frontend, an expiry in the past).  A collaborator bug that also raises
+    ``ValueError`` is therefore reported as a client error; the alternative,
+    a blanket 500, would misreport the common case.
     """
 
     @functools.wraps(handler)
@@ -167,6 +173,55 @@ def _json_body(request: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise _BadRequest("Body must be a JSON object")
     return data
+
+
+def _validated_scopes(value: Any) -> Any:
+    """Validate the ``scopes`` field of a create request.
+
+    Two shapes are accepted.  A list of namespace patterns keeps the simple
+    form; a mapping ``{"namespaces": [...], "tools": {name: bool}}`` adds the
+    per-tool overrides the key store already supports, where an override
+    always wins over the namespace list.
+
+    Args:
+        value: The decoded JSON value.
+
+    Returns:
+        The value to pass to the key store, in the same shape as the input.
+
+    Raises:
+        _BadRequest: If the value is neither shape or a member has the wrong
+            type.
+    """
+    if isinstance(value, list):
+        if not all(isinstance(item, str) and item.strip() for item in value):
+            raise _BadRequest("'scopes' must be a list of non-empty namespace strings")
+        return [item.strip() for item in value]
+    if isinstance(value, Mapping):
+        unknown = set(value) - {"namespaces", "tools"}
+        if unknown:
+            raise _BadRequest(f"'scopes' has unknown keys: {sorted(map(str, unknown))}")
+        namespaces = value.get("namespaces", [])
+        tools = value.get("tools", {})
+        if not isinstance(namespaces, list) or not all(
+            isinstance(item, str) and item.strip() for item in namespaces
+        ):
+            raise _BadRequest("'scopes.namespaces' must be a list of non-empty strings")
+        if not isinstance(tools, Mapping) or not all(
+            isinstance(name, str) and name.strip() and isinstance(allowed, bool)
+            for name, allowed in tools.items()
+        ):
+            raise _BadRequest(
+                "'scopes.tools' must map non-empty tool names to true or false"
+            )
+        return {
+            "namespaces": [item.strip() for item in namespaces],
+            "tools": {name.strip(): allowed for name, allowed in tools.items()},
+        }
+    raise _BadRequest(
+        "'scopes' must be a list of namespaces or "
+        "an object with 'namespaces' and 'tools'"
+    )
 
 
 def _record_dict(value: Any) -> Any:
@@ -308,11 +363,7 @@ class GatewayAdminExtension:
         label = data.get("label")
         if not isinstance(label, str) or not label.strip():
             raise _BadRequest("'label' must be a non-empty string")
-        scopes = data.get("scopes", [])
-        if not isinstance(scopes, list) or not all(
-            isinstance(item, str) for item in scopes
-        ):
-            raise _BadRequest("'scopes' must be a list of strings")
+        scopes = _validated_scopes(data.get("scopes", []))
         expires_at = data.get("expires_at")
         if expires_at is not None and not isinstance(expires_at, str):
             raise _BadRequest("'expires_at' must be an ISO 8601 string or null")

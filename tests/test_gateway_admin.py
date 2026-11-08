@@ -72,17 +72,24 @@ class FakeKeyStore:
     def create(
         self,
         label: str,
-        scopes: Sequence[str] | None = None,
+        scopes: Sequence[str] | Mapping[str, Any] | None = None,
         *,
         expires_at: str | None = None,
     ) -> FakeCreatedKey:
         self._created += 1
         key_id = f"key_{self._created}"
         secret = f"gw_secret_{self._created}"
+        if isinstance(scopes, Mapping):
+            normalized = {
+                "namespaces": list(scopes.get("namespaces", [])),
+                "tools": dict(scopes.get("tools", {})),
+            }
+        else:
+            normalized = {"namespaces": list(scopes or []), "tools": {}}
         record = FakeKeyRecord(
             id=key_id,
             label=label,
-            scopes={"namespaces": list(scopes or []), "tools": {}},
+            scopes=normalized,
             expires_at=expires_at,
         )
         self._records[key_id] = record
@@ -297,12 +304,42 @@ class TestKeys:
         assert "secret" not in keys[0]
         assert "secret_hash" not in keys[0]
 
+    def test_create_accepts_tool_overrides(self, host) -> None:
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={
+                "label": "scoped",
+                "scopes": {
+                    "namespaces": ["web"],
+                    "tools": {"web-dangerous": False, "calculator-add": True},
+                },
+            },
+        )
+        assert status == 201
+        scopes = json.loads(body)["scopes"]
+        assert scopes["namespaces"] == ["web"]
+        assert scopes["tools"] == {"web-dangerous": False, "calculator-add": True}
+
+    def test_create_accepts_the_list_shape(self, host) -> None:
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "simple", "scopes": ["default", "files"]},
+        )
+        assert status == 201
+        assert json.loads(body)["scopes"]["namespaces"] == ["default", "files"]
+
     @pytest.mark.parametrize(
         "payload",
         [
             {},
             {"label": ""},
             {"label": "x", "scopes": "default"},
+            {"label": "x", "scopes": [1]},
+            {"label": "x", "scopes": {"namespaces": "default"}},
+            {"label": "x", "scopes": {"tools": {"web": "yes"}}},
+            {"label": "x", "scopes": {"namespaces": [], "extra": []}},
             {"label": "x", "expires_at": 5},
         ],
     )
