@@ -22,6 +22,13 @@ python openapi_server.py
 - Swagger UI: http://localhost:8000/docs
 - Tool list: http://localhost:8000/tools
 
+### Gateway demo (single process)
+
+`gateway-demo/` serves `/openapi`, `/mcp` and a small admin surface from one
+process, with client keys in a static file. It builds to a Docker image and
+is checked by its own walkthrough. See
+[gateway-demo/README.md](gateway-demo/README.md).
+
 ### MCP stdio server
 
 ```bash

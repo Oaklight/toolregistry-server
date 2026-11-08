@@ -1,0 +1,54 @@
+name: Gateway demo
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "examples/gateway-demo/**"
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/gateway-demo.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "examples/gateway-demo/**"
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/gateway-demo.yml"
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build the demo image
+        run: docker build -f examples/gateway-demo/Dockerfile -t gateway-demo:ci .
+
+      - name: Start the container
+        run: |
+          docker run -d --name gateway-demo -p 8000:8000 \
+            -e GATEWAY_ADMIN_TOKEN=demo-admin \
+            -e GATEWAY_TOOL_SOURCE=local \
+            gateway-demo:ci
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container did not become healthy" >&2
+          docker logs gateway-demo >&2
+          exit 1
+
+      - name: Run the README walkthrough
+        run: bash examples/gateway-demo/walkthrough.sh http://127.0.0.1:8000 demo-admin
+
+      - name: Container logs
+        if: failure()
+        run: docker logs gateway-demo
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f gateway-demo
