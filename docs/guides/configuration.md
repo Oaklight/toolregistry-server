@@ -239,6 +239,65 @@ profiles:
 
 Without a `profiles:` entry the built-in sets apply: `remote` disables `file_system`, `destructive` and `privileged`; `local` disables `network`. An unknown profile name is logged as a warning and ignored.
 
+## Runtime Source Changes
+
+The server can change its source list without a restart. `App.prepare_registry`
+builds a `SourceManager` over the loaded config and keeps it on
+`app.source_manager`; an admin extension or an embedding application calls it
+directly.
+
+```python
+from toolregistry.config import PythonSource
+
+manager = app.source_manager
+manager.list()                      # SourceEntry per declaration
+manager.to_dicts()                  # JSON-ready status list
+
+added = manager.add(PythonSource(class_path="my_tools.Extra", namespace="extra"))
+removed = manager.remove(added.entry.key)
+manager.replace(removed_key, PythonSource(class_path="my_tools.Other"))
+manager.retry(failed_entry.key)     # re-run a failed registration
+```
+
+Each entry reports one of three statuses:
+
+| Status | Meaning |
+|--------|---------|
+| `applied` | Registration succeeded. A source that produced no tools is still `applied` and is not registered again on an unrelated change. |
+| `excluded` | The declaration is in the config but out of scope (`enabled: false`, or filtered by `mode` / `disabled` / `enabled`). Its tools are disabled, not unregistered, and are re-enabled when the source enters scope. |
+| `failed` | Registration raised. `error` carries the redacted message; the source is retried on the next diff. A partial registration is rolled back. |
+
+A source is identified by its declaration, so reordering `tools` is not a
+change. `SourceEntry.key` is the internal identity; `to_dict()` exposes a
+stable `src_<16 hex>` id derived from kind, detail and namespace, together
+with the redacted target, the namespace, the tool names, the enabled/total
+counts and `last_error`.
+
+Tools registered by a change go through the deployment profile that was
+applied at startup. A change is applied under one manager lock and wrapped in
+`RouteTable.batch_changes()` when a route table is attached, so N tool
+registrations produce one route rebuild instead of N; requests never take the
+lock.
+
+### Persistence
+
+An add, remove or replace writes the configuration back to the file the server
+was started with, so a restart reproduces the state. The previous file is
+copied to `<path>.bak` first, and JSONC comments are lost because the parsed
+model does not keep them. `MutationResult.persisted` and `persist_error`
+report the outcome: a read-only path is reported, never silently ignored, and
+the runtime change still applies. `--no-config-write` (or
+`write_config=False`) keeps every change in memory only.
+
+### Watching the file
+
+`--config-reload` starts a watcher that polls the config file and applies the
+same source-level diff when it changes. The manager's own writes are
+recognised by content hash, so a runtime mutation does not trigger a reload;
+the watcher itself never writes. A malformed edit is logged and ignored, and
+the running registry is untouched. The watcher is per process and has no
+cross-process coordination.
+
 ## Environment Variables
 
 The CLI supports loading environment variables from `.env` files:

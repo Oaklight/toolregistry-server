@@ -27,6 +27,8 @@ toolregistry-server [options] <subcommand> [subcommand-options]
 | `--no-env` | Skip loading .env file |
 | `--config PATH` | Path to a JSONC or YAML configuration file |
 | `--profile PROFILE` | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
+| `--config-reload` / `--no-config-reload` | Watch the config file and apply a source-level diff when it changes (default: disabled) |
+| `--no-config-write` | Keep runtime source changes in memory; never rewrite the config file |
 
 ## Subcommands
 
