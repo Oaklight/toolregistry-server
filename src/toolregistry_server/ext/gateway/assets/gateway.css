@@ -170,6 +170,7 @@
 
 .ext-container[data-ext-name="gateway"] .gw-field input,
 .ext-container[data-ext-name="gateway"] .gw-field select,
+.ext-container[data-ext-name="gateway"] .gw-field textarea,
 .ext-container[data-ext-name="gateway"] .gw-input-path {
     padding: 7px 9px;
     border: 1px solid var(--gw-line);

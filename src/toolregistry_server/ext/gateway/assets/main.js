@@ -27,6 +27,8 @@ const STRINGS = {
         'gw.keys.label': 'Label',
         'gw.keys.scopes': 'Scopes',
         'gw.keys.scopesHint': 'Comma-separated namespaces; leave empty to deny every tool.',
+        'gw.keys.tools': 'Tool overrides',
+        'gw.keys.toolsHint': 'One tool=allow or tool=deny per line. An override wins over the namespaces.',
         'gw.keys.expires': 'Expires',
         'gw.keys.expiresHint': 'Optional, local time.',
         'gw.keys.created': 'Created',
@@ -93,6 +95,8 @@ const STRINGS = {
         'gw.keys.label': '名称',
         'gw.keys.scopes': '权限范围',
         'gw.keys.scopesHint': '以逗号分隔的命名空间；留空表示拒绝所有工具。',
+        'gw.keys.tools': '按工具覆盖',
+        'gw.keys.toolsHint': '每行一个 tool=allow 或 tool=deny。覆盖优先于命名空间。',
         'gw.keys.expires': '过期时间',
         'gw.keys.expiresHint': '可选，本地时间。',
         'gw.keys.created': '创建时间',
@@ -365,6 +369,12 @@ function renderKeys() {
                 el('small', { class: 'gw-hint', text: T('gw.keys.scopesHint') }),
             ]),
             el('label', { class: 'gw-field' }, [
+                el('span', { text: T('gw.keys.tools') }),
+                el('textarea', { name: 'tools', rows: '3', autocomplete: 'off',
+                                 placeholder: 'web-dangerous=deny' }),
+                el('small', { class: 'gw-hint', text: T('gw.keys.toolsHint') }),
+            ]),
+            el('label', { class: 'gw-field' }, [
                 el('span', { text: T('gw.keys.expires') }),
                 el('input', { name: 'expires_at', type: 'datetime-local' }),
                 el('small', { class: 'gw-hint', text: T('gw.keys.expiresHint') }),
@@ -403,14 +413,33 @@ async function loadKeys() {
     }
 }
 
+function parseOverrides(text) {
+    const tools = {};
+    String(text || '')
+        .split(/[\n,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .forEach((item) => {
+            const [name, mode] = item.split('=').map((part) => part.trim());
+            const allowed = String(mode || '').toLowerCase();
+            if (!name || (allowed !== 'allow' && allowed !== 'deny')) return;
+            tools[name] = allowed === 'allow';
+        });
+    return tools;
+}
+
 async function createKey(form) {
     const data = new FormData(form);
-    const scopes = String(data.get('scopes') || '')
+    const namespaces = String(data.get('scopes') || '')
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
+    const tools = parseOverrides(data.get('tools'));
     const expiresRaw = String(data.get('expires_at') || '');
-    const payload = { label: String(data.get('label') || '').trim(), scopes };
+    const payload = {
+        label: String(data.get('label') || '').trim(),
+        scopes: { namespaces, tools },
+    };
     if (expiresRaw) payload.expires_at = new Date(expiresRaw).toISOString();
     try {
         const created = await call('post', '/keys', payload);
