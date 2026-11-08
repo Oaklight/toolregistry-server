@@ -252,9 +252,10 @@ manager.list()                      # 每个声明对应一个 SourceEntry
 manager.to_dicts()                  # 可直接序列化的状态列表
 
 added = manager.add(PythonSource(class_path="my_tools.Extra", namespace="extra"))
-removed = manager.remove(added.entry.key)
-manager.replace(removed_key, PythonSource(class_path="my_tools.Other"))
-manager.retry(failed_entry.key)     # 重试失败的注册
+source_id = added.entry.to_dict()["id"]
+removed = manager.remove(source_id)
+manager.replace(source_id, PythonSource(class_path="my_tools.Other"))
+manager.retry(failed_entry.to_dict()["id"])   # 重试失败的注册
 ```
 
 每个条目处于三种状态之一：
@@ -265,9 +266,11 @@ manager.retry(failed_entry.key)     # 重试失败的注册
 | `excluded` | 声明仍在配置中，但不在作用域内（`enabled: false`，或被 `mode` / `disabled` / `enabled` 过滤）。其工具被禁用而非注销，源重新进入作用域时会重新启用。 |
 | `failed` | 注册抛出异常。`error` 保存脱敏后的消息，下次 diff 会重试。部分注册会回滚。 |
 
-源以声明本身标识，因此调整 `tools` 顺序不算变更。`SourceEntry.key` 是内部标识；
-`to_dict()` 提供由类型、详情与命名空间推导、跨重启稳定的 `src_<16 hex>` id，
-以及脱敏后的目标、命名空间、工具名、启用/总数计数与 `last_error`。
+源以声明本身标识，因此调整 `tools` 顺序不算变更。`to_dict()` 只暴露由完整声明推导的
+不透明 `src_<16 hex>` id——同一目标、不同凭据的两个源会得到不同的 id——以及脱敏后的
+详情、命名空间、工具名、启用/总数计数与 `last_error`。原始声明与内部标识保留在管理器内；
+`get`、`remove`、`replace`、`retry` 都接收该 id。`MutationResult.removed` 在删除时为
+`True`，其 entry 状态仍描述最后一次应用尝试。
 
 变更注册的工具会应用启动时的部署配置过滤。变更在管理器的一把锁下执行，并在
 挂载了路由表时包在 `RouteTable.batch_changes()` 中：N 个工具注册只触发一次路由重建；
