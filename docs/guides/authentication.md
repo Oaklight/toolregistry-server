@@ -15,32 +15,44 @@ The authentication module supports:
 
 ### Via Code — `App`-based (recommended)
 
-Load tokens from a file using `auth.load_tokens()` and pass them to `App`:
+`App` forwards `tokens_path` to the adapter, which reads the file and the `API_BEARER_TOKEN` environment variable (comma-separated):
 
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import App
-from toolregistry_server.auth import load_tokens
 
 registry = ToolRegistry()
 registry.register(my_tool)
 
-tokens = load_tokens("tokens.txt")   # one token per line, # comments ignored
-App(registry=registry, tokens=tokens).serve_openapi(host="0.0.0.0", port=8000)
+App().serve_openapi(
+    registry=registry,
+    tokens_path="tokens.txt",   # one token per line, # comments ignored
+    host="0.0.0.0",
+    port=8000,
+)
 ```
 
 The same pattern works for MCP Streamable-HTTP:
 
 ```python
-App(registry=registry, tokens=tokens).serve_mcp(
-    transport="streamable-http", host="0.0.0.0", port=8000
+App().serve_mcp(
+    registry=registry,
+    transport="streamable-http",
+    tokens_path="tokens.txt",
+    host="0.0.0.0",
+    port=8000,
 )
 ```
 
-Pass tokens inline without a file:
+To pass tokens inline without a file, build the OpenAPI adapter directly (the MCP adapter takes a token file or `API_BEARER_TOKEN`):
 
 ```python
-App(registry=registry, tokens=["token-one", "token-two"]).serve_openapi()
+from toolregistry_server import RouteTable
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+OpenAPIAdapter(RouteTable(registry), tokens=["token-one", "token-two"]).run(
+    host="0.0.0.0", port=8000
+)
 ```
 
 ### Via CLI — `--tokens` flag
@@ -64,7 +76,7 @@ token-three
 
 ## MCP Streamable-HTTP Bearer Auth (new in v0.4.0)
 
-Bearer token authentication is now supported for the MCP Streamable-HTTP transport, in addition to OpenAPI. Use the same `--tokens` flag or `App(tokens=...)` API — no extra configuration required.
+Bearer token authentication is now supported for the MCP Streamable-HTTP transport, in addition to OpenAPI. Use the same `--tokens` flag (or pass `tokens_path` to `App().serve_mcp()`) — no extra configuration required.
 
 ```bash
 toolregistry-server mcp \

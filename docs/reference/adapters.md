@@ -40,7 +40,7 @@ When you need fine-grained control, you can bypass `App` and call the adapter la
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
-from toolregistry_server.openapi import OpenAPIAdapter
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
 
 registry = ToolRegistry()
 # ... register tools ...
@@ -54,7 +54,7 @@ OpenAPIAdapter.create_and_run(route_table, host="0.0.0.0", port=8000)
 Similarly for MCP:
 
 ```python
-from toolregistry_server.mcp import MCPAdapter
+from toolregistry_server.adapters.mcp import MCPAdapter
 
 MCPAdapter.create_and_run(route_table, transport="stdio")
 ```
@@ -86,7 +86,7 @@ The OpenAPI adapter validates a request body before calling the tool:
 - Signature-derived tools are checked against their generated model, including coercion and unknown-key filtering.
 - Proxy tools (OpenAPI, MCP, LangChain) have no model, so the body is checked against the tool's JSON Schema.
 
-For proxy tools, a `pattern` or `patternProperties` that came from the OpenAPI document is **not executed**. A spec is untrusted content, Python's `re` has no timeout, and a short catastrophic expression such as `(a+)+$` can hang a request. When `patternProperties` is dropped, `additionalProperties: false` at that same level is relaxed so keys the patterns used to cover are not rejected as unknown. The constraint is still published: `/openapi.json`, the MCP `inputSchema` and the route ETag keep the original schema, and the upstream API remains the authority for the field format. Overrides supplied through `RouteTable.override_parameters` are operator code and keep their regexes.
+For proxy tools, a `pattern` or `patternProperties` that came from the OpenAPI document is **not executed by default**. A spec is untrusted content, Python's `re` has no timeout, and a short catastrophic expression such as `(a+)+$` can hang a request. Without the optional `regex` extra, validation uses a copy without those keywords, and `additionalProperties: false` at a level that carried `patternProperties` is relaxed so keys the patterns used to cover are not rejected as unknown. With the extra installed, the patterns run under a per-match timeout and a per-request budget (`--regex-timeout`, `--regex-budget`). The constraint is always published: `/openapi.json`, the MCP `inputSchema` and the route ETag keep the original schema, and the upstream API remains the authority for the field format. Overrides supplied through `RouteTable.override_parameters` are operator code and keep their regexes.
 
 ## Dynamic Behavior
 

@@ -39,7 +39,7 @@ registry.register(greet)
 registry.register(multiply)
 
 if __name__ == "__main__":
-    App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
+    App().serve_openapi(registry=registry, host="0.0.0.0", port=8000)
 ```
 
 ```bash
@@ -64,7 +64,7 @@ registry.register(greet)
 registry.register(multiply)
 
 if __name__ == "__main__":
-    App(registry=registry).serve_mcp(transport="stdio")
+    App().serve_mcp(registry=registry, transport="stdio")
 ```
 
 ## Custom App Subclass

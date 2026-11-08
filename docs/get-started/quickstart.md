@@ -2,6 +2,8 @@
 
 This guide walks you through the basic usage of `toolregistry-server` to expose your tools as services using the current API.
 
+Requires Python 3.10–3.13 and `toolregistry>=0.20.1`; both are installed with the package (see [Installation](installation.md)).
+
 ## Programmatic Usage: OpenAPI Server
 
 Use the `App` class to serve your tools as RESTful HTTP endpoints:
@@ -24,7 +26,7 @@ class MyApp(App):
             """Add two numbers."""
             return a + b
 
-        self.registry = registry
+        return registry
 
 if __name__ == "__main__":
     MyApp().serve_openapi(host="0.0.0.0", port=8000)
@@ -41,7 +43,7 @@ from toolregistry_server import App
 registry = ToolRegistry()
 registry.register(my_tool)
 
-App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
+App().serve_openapi(registry=registry, host="0.0.0.0", port=8000)
 ```
 
 ## Programmatic Usage: MCP Server
@@ -61,18 +63,19 @@ def greet(name: str) -> str:
 
 if __name__ == "__main__":
     # stdio transport (default, for Claude Desktop, etc.)
-    App(registry=registry).serve_mcp()
+    App().serve_mcp(registry=registry)
 
     # Or streamable-http transport
-    # App(registry=registry).serve_mcp(transport="streamable-http", host="0.0.0.0", port=8000)
+    # App().serve_mcp(registry=registry, transport="streamable-http", host="0.0.0.0", port=8000)
 ```
 
 For a one-call shortcut using the low-level adapter:
 
 ```python
+from toolregistry_server import RouteTable
 from toolregistry_server.adapters.mcp import MCPAdapter
 
-MCPAdapter.create_and_run(registry=registry, transport="stdio")
+MCPAdapter.create_and_run(RouteTable(registry), transport="stdio")
 ```
 
 ## Using the CLI

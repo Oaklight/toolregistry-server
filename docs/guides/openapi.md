@@ -7,12 +7,12 @@ The OpenAPI adapter exposes `ToolRegistry` tools as RESTful HTTP endpoints using
 The adapter automatically:
 
 - Creates POST endpoints for each registered tool
-- Generates dynamic Pydantic models from JSON Schema parameters
+- Validates each request body against the route's served JSON Schema (or, for signature-derived tools, the tool's own validation model)
 - Produces an OpenAPI schema (accessible at `/openapi.json`)
 - Provides a `/tools` metadata endpoint listing available tools
 - Supports runtime enable/disable of individual tools
 - Implements ETag-based HTTP caching
-- Supports `additionalProperties: true` schemas (e.g. `call_deferred`'s `**kwargs`) via Pydantic `extra="allow"`
+- Supports schemas that permit extra properties (`additionalProperties` absent, `true`, or `{}`), such as `call_deferred`'s `**kwargs`
 
 ## Building the document without FastAPI
 
@@ -96,6 +96,20 @@ For example, a tool `evaluate` in namespace `calculator` becomes:
 POST /calculator/evaluate
 ```
 
+### Private addresses
+
+A spec URL, or any `servers[]` entry in the document, that resolves to a loopback, link-local or private address is refused before a connection is opened. Every `servers[]` entry is checked, not only the one used as the base URL, and a redirect is refused by default because the next hop cannot be validated (`follow_redirects=False`). Allow a local or private API per source:
+
+```yaml
+tools:
+  - type: openapi
+    url: http://127.0.0.1:8000/openapi.json
+    namespace: local_api
+    allow_private_hosts: true
+```
+
+The same flag is accepted by `load_openapi_spec(..., allow_private_hosts=True)`, `validate_spec_url()` and `HttpClientConfig` for callers that build the client themselves. See [Configuration](../guides/configuration.md#private-addresses).
+
 ### Request Format
 
 Parameters are passed as a JSON body:
@@ -152,7 +166,21 @@ App().serve_openapi(config_path="tools.yaml", backend="httpserver")
 
 `httpserver` is the zero-dependency path from epic #101. It serves the same routes, the same 422 `{"detail": [...]}` envelope, the same ETag/`304` behaviour on `/tools` and `/openapi.json`, and streams `/events` over Server-Sent Events; a differential test suite exercises both apps over sockets and asserts identical status, `ETag` and body bytes. `--reload` is a uvicorn feature: on `httpserver` it logs a warning and is ignored.
 
-One deliberate difference: a tool that returns `bytes` is base64-encoded by the `httpserver` backend (core's encoder), while FastAPI decodes it as UTF-8 text.
+Both backends encode tool results with the same helper, which uses core's `ToolResultJSONEncoder`: a `bytes` result is base64 on either backend, and non-finite floats and `Decimal` values (`NaN`, `Infinity`) become `null` instead of a bare `NaN` or the string `"NaN"`.
+
+### Request body limit
+
+Both backends share `--max-body-size` (default `1048576`, one MiB):
+
+```bash
+toolregistry-server openapi --config tools.yaml --max-body-size 4194304
+```
+
+```python
+OpenAPIAdapter(route_table, max_body_size=4 * 1024 * 1024)
+```
+
+The value must be a positive integer: the CLI rejects zero or a negative value at parse time, and `OpenAPIAdapter` raises `ValueError`. A body over the limit returns HTTP `413` with a JSON `{"detail": "Request body too large"}` envelope on both backends.
 
 ## Spec-supplied regexes
 

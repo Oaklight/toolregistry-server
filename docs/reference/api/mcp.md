@@ -2,12 +2,12 @@
 
 ## Server Factory
 
-::: toolregistry_server.mcp.create_mcp_server
+::: toolregistry_server.adapters.mcp.route_table_to_mcp_server
 
 ## Adapter
 
-::: toolregistry_server.mcp.adapter
+::: toolregistry_server.adapters.mcp.MCPAdapter
 
 ## Transport Runners
 
-::: toolregistry_server.mcp.server
+::: toolregistry_server.adapters.mcp.server

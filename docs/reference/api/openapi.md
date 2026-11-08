@@ -2,11 +2,15 @@
 
 ## App Factory
 
-::: toolregistry_server.openapi.create_openapi_app
+::: toolregistry_server.adapters.openapi.create_openapi_app
 
 ## Adapter
 
-::: toolregistry_server.openapi.adapter
+::: toolregistry_server.adapters.openapi.OpenAPIAdapter
+
+## Route Builder
+
+::: toolregistry_server.adapters.openapi.adapter
 
 ## Spec Builder
 
@@ -14,4 +18,4 @@
 
 ## Middleware
 
-::: toolregistry_server.openapi.middleware
+::: toolregistry_server.adapters.openapi.middleware

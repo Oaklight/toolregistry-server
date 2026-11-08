@@ -141,6 +141,21 @@ asyncio.run(run_stdio(server))
 
 `http` is accepted as an alias for `streamable-http` and is normalized internally.
 
+### Private addresses
+
+The URL transports (SSE, streamable HTTP, WebSocket) use core's outbound address policy: a host that resolves to a loopback, link-local or private address is refused before a connection is opened. Allow it per source:
+
+```yaml
+tools:
+  - type: mcp
+    transport: sse
+    url: http://192.168.1.20:8080/sse
+    namespace: lan_mcp
+    allow_private_hosts: true
+```
+
+`stdio` starts a subprocess and has no URL, so the flag does not apply. See [Configuration](configuration.md#private-addresses).
+
 ## Authentication (Streamable HTTP)
 
 Pass a Bearer tokens file via `tokens_path`, or set the `API_BEARER_TOKEN` environment variable (comma-separated):

@@ -115,6 +115,9 @@ When `class` is specified, the server instantiates the class and calls `register
 | `headers` | dict | No | HTTP headers for network transports |
 | `namespace` | string | No | Namespace for registered tools |
 | `persistent` | bool | No | Keep connection alive (default: `true`) |
+| `include` | list | No | Name or glob patterns to keep. Mutually exclusive with `exclude` |
+| `exclude` | list | No | Name or glob patterns to drop. Mutually exclusive with `include` |
+| `allow_private_hosts` | bool | No | Allow this source's URL transport to reach a loopback, link-local or private address (default: `false`) |
 | `enabled` | bool | No | Per-source enable/disable (default: `true`) |
 
 !!! tip "`http` Alias"
@@ -132,6 +135,9 @@ When `class` is specified, the server instantiates the class and calls `register
 | `namespace` | string | No | Namespace for registered tools |
 | `auth` | object | No | Authentication configuration |
 | `base_url` | string | No | Override `servers[0].url` from spec |
+| `include` | list | No | Name or glob patterns to keep. Mutually exclusive with `exclude` |
+| `exclude` | list | No | Name or glob patterns to drop. Mutually exclusive with `include` |
+| `allow_private_hosts` | bool | No | Allow the spec URL, every `servers[]` entry and the tools' request URLs to reach a loopback, link-local or private address (default: `false`) |
 | `enabled` | bool | No | Per-source enable/disable (default: `true`) |
 
 #### Auth Configuration
@@ -144,6 +150,26 @@ When `class` is specified, the server instantiates the class and calls `register
 | `header_name` | string | `"Authorization"` | Custom header name (for `type: "header"`) |
 
 If both `token_env` and `token` are specified, `token_env` takes precedence.
+
+### Private Addresses
+
+Both `mcp` and `openapi` sources refuse a URL whose host resolves to a loopback, link-local or private address. The check runs before any connection is opened and fails closed when the name does not resolve. Set `allow_private_hosts: true` on the individual source to allow it:
+
+```yaml
+tools:
+  - type: openapi
+    url: http://127.0.0.1:8000/openapi.json
+    namespace: local_api
+    allow_private_hosts: true
+
+  - type: mcp
+    transport: sse
+    url: http://192.168.1.20:8080/sse
+    namespace: lan_mcp
+    allow_private_hosts: true
+```
+
+The flag applies to that source only. For `mcp` it covers the URL transports (SSE, streamable HTTP, WebSocket); a `stdio` source has no URL and is unaffected. For `openapi` it covers the spec URL, every `servers[]` entry, and the tools' request URLs. The admin panel has its own switch: `enable_admin(allow_private_hosts=True)`.
 
 ## Filtering Modes
 
@@ -192,6 +218,26 @@ tools:
     namespace: external_api
     enabled: false  # skip until API key is configured
 ```
+
+## Deployment Profiles
+
+`--profile` applies a named filter after all sources are registered. A config file can override the built-in defaults under `profiles:`:
+
+```yaml
+profiles:
+  staging:
+    disable_tags: [destructive, privileged]
+    enable: [calculator]      # namespace patterns force-enabled after tag filtering
+    disable: [internal/]      # namespace patterns force-disabled after tag filtering
+```
+
+| Key | Description |
+|-----|-------------|
+| `disable_tags` | Tag names whose tools are disabled. Replaces the built-in set for this profile |
+| `enable` | Namespace patterns force-enabled after tag filtering (highest priority) |
+| `disable` | Namespace patterns force-disabled after tag filtering (applied after `enable`) |
+
+Without a `profiles:` entry the built-in sets apply: `remote` disables `file_system`, `destructive` and `privileged`; `local` disables `network`. An unknown profile name is logged as a warning and ignored.
 
 ## Environment Variables
 

@@ -184,13 +184,12 @@ python -m my_hub_server mcp --transport stdio
 
 ## Authentication in Extended Apps
 
-Use `auth.load_tokens()` to load Bearer tokens from a file and pass them to `App` or directly to adapters:
+Pass a token file to `App`; it forwards `tokens_path` to the adapter, which also reads `API_BEARER_TOKEN` (comma-separated):
 
 ```python
-from toolregistry_server.auth import load_tokens
-
-tokens = load_tokens("/etc/my-server/tokens.txt")
-HubApp(tokens=tokens).serve_openapi(port=8000)
+HubApp().serve_openapi(tokens_path="/etc/my-server/tokens.txt", port=8000)
 ```
+
+To pass a token list inline, construct the adapter directly instead.
 
 See [Authentication](authentication.md) for the full token file format reference.

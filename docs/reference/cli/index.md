@@ -25,6 +25,8 @@ toolregistry-server [options] <subcommand> [subcommand-options]
 |--------|-------------|
 | `--env PATH` | Path to .env file (default: `.env` in the current directory) |
 | `--no-env` | Skip loading .env file |
+| `--config PATH` | Path to a JSONC or YAML configuration file |
+| `--profile PROFILE` | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
 
 ## Subcommands
 
@@ -36,12 +38,17 @@ toolregistry-server openapi [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config PATH` | - | Path to JSONC or YAML configuration file |
+| `--config PATH` | - | Path to a JSONC or YAML configuration file (required) |
 | `--host HOST` | `0.0.0.0` | Bind host |
 | `--port PORT` | `8000` | Bind port |
-| `--tokens PATH` | - | File with bearer tokens (one per line) |
-| `--reload` | `false` | Enable auto-reload for development |
-| `--profile PROFILE` | - | Deployment profile: `remote` or `local` |
+| `--tokens PATH` | - | File of Bearer tokens, one per line (`#` starts a comment). Tokens are compared in constant time; `API_BEARER_TOKEN` (comma-separated) is read as well |
+| `--backend {fastapi,httpserver}` | `fastapi` | HTTP backend: `fastapi` (uvicorn) or the vendored, zero-dependency `httpserver` |
+| `--max-body-size BYTES` | `1048576` (1 MiB) | Largest accepted request body. Must be positive; a larger body returns `413` with a JSON error |
+| `--reload` | `false` | Enable auto-reload for development (FastAPI/uvicorn only; ignored with a warning on `httpserver`) |
+| `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
+| `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes (requires the `regex` extra). `0` disables execution |
+| `--regex-budget SECONDS` | `0.25` | Per-request ceiling shared by all spec-supplied regex matches. `0` disables execution |
+| `--strict-spec-regex` | `false` | Abort startup when an OpenAPI source contains an invalid regex; by default only the tools whose own schema contains it are dropped |
 
 **Example:**
 
@@ -61,12 +68,15 @@ toolregistry-server mcp [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--config PATH` | - | Path to JSON, JSONC, or YAML configuration file |
+| `--config PATH` | - | Path to a JSON, JSONC, or YAML configuration file (required) |
 | `--transport TYPE` | `stdio` | Transport type: `stdio`, `sse`, `streamable-http`, or `http` |
-| `--host HOST` | `0.0.0.0` | Bind host (for HTTP transports) |
-| `--port PORT` | `8000` | Bind port (for HTTP transports) |
-| `--tokens PATH` | - | File with bearer tokens (for streamable-http/http transports) |
-| `--profile PROFILE` | - | Deployment profile: `remote` or `local` |
+| `--host HOST` | `127.0.0.1` | Bind host (for SSE/HTTP transports) |
+| `--port PORT` | `8000` | Bind port (for SSE/HTTP transports) |
+| `--tokens PATH` | - | File of Bearer tokens, one per line, for `streamable-http`/`http`. `API_BEARER_TOKEN` (comma-separated) is read as well |
+| `--server-url URL` | derived from `--host`/`--port` | Public URL advertised in OAuth protected-resource metadata (required behind a reverse proxy) |
+| `--tools-list-ttl-ms MS` | `300000` | `ttlMs` cache hint for `tools/list`; `0` disables caching |
+| `--tools-list-cache-scope {public,private}` | `private` | `cacheScope` hint for `tools/list` |
+| `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
 
 **Examples:**
 
@@ -111,7 +121,7 @@ class MyApp(App):
     def prepare_registry(self):
         registry = ToolRegistry()
         registry.register(my_tool)
-        self.registry = registry
+        return registry
 
 if __name__ == "__main__":
     MyApp().serve_openapi(host="0.0.0.0", port=8000)
@@ -168,8 +178,20 @@ The `--profile` flag applies tag-based tool filtering after the registry is buil
 | Profile | Effect |
 |---------|--------|
 | `remote` | Disables tools tagged `file_system`, `destructive`, or `privileged` |
-| `local` | No tag filter — all tools remain enabled |
+| `local` | Disables tools tagged `network` |
 | *(none)* | No filtering (default) |
+
+A config file can define its own profiles under `profiles:`; those settings take precedence over the built-in tag sets, and an unknown profile name is logged as a warning and ignored:
+
+```yaml
+profiles:
+  staging:
+    disable_tags: [destructive, privileged]
+    enable: [calculator]      # namespace patterns force-enabled after tag filtering
+    disable: [internal/]      # namespace patterns force-disabled after tag filtering
+```
+
+Each profile accepts `disable_tags` (replaces the built-in set), `enable` and `disable` (namespace patterns, applied in that order).
 
 Use `remote` when serving tools to end users who should not have access to the server's own filesystem or privileged operations:
 

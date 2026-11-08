@@ -38,7 +38,7 @@ pip install toolregistry-server[mcp]
 
 This additionally installs:
 
-- `mcp` SDK (>=1.8.0)
+- `mcp` SDK (>=1.22.0,<3)
 
 ### Full Installation
 
@@ -47,6 +47,16 @@ Install all protocol adapters:
 ```bash
 pip install toolregistry-server[all]
 ```
+
+`all` installs the `openapi` and `mcp` extras. The bounded spec-regex support is a separate opt-in:
+
+### Bounded Spec-Regex Validation (optional)
+
+```bash
+pip install 'toolregistry-server[regex]'
+```
+
+This installs `regex` (>=2024.4.16). Without it, a `pattern` or `patternProperties` that came from an OpenAPI document is not executed during request validation; with it, every match runs under the per-match timeout and per-request budget (`--regex-timeout`, `--regex-budget`). See the [OpenAPI guide](../guides/openapi.md#spec-supplied-regexes).
 
 ## Development Installation
 
@@ -67,8 +77,8 @@ The `dev` extra includes:
 
 ## Requirements
 
-- **Python**: 3.10 or higher
-- **Core dependency**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.18.0
+- **Python**: 3.10 or higher (tested on 3.10–3.13)
+- **Core dependency**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.20.1,<1.0.0
 
 ## Verify Installation
 
