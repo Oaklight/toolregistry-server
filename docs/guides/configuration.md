@@ -298,6 +298,82 @@ the watcher itself never writes. A malformed edit is logged and ignored, and
 the running registry is untouched. The watcher is per process and has no
 cross-process coordination.
 
+## Gateway Frontends
+
+The `gateway` subcommand serves the OpenAPI adapter and both MCP HTTP
+transports from one process and one listener:
+
+```bash
+toolregistry-server gateway --config tools.yaml --port 8000
+```
+
+The default mounts are `/openapi` (OpenAPI), `/mcp` (MCP streamable-HTTP) and
+`/sse` (MCP SSE). A config file can change the paths and enable flags under
+`gateway.frontends`:
+
+```yaml
+gateway:
+  frontends:
+    openapi:
+      path: /api
+      enabled: true
+    mcp:
+      path: /rpc
+      enabled: true
+    sse:
+      path: /events
+      enabled: false
+```
+
+| Frontend | Default path | Transport | Default |
+|----------|--------------|-----------|---------|
+| `openapi` | `/openapi` | HTTP | enabled |
+| `mcp` | `/mcp` | `streamable-http` | enabled |
+| `sse` | `/sse` | SSE | enabled |
+
+CLI options `--openapi-path`, `--mcp-path`, `--sse-path`, `--openapi`,
+`--mcp` and `--sse` override the file for one process. The enable flag is read
+on every request: disabling a frontend makes its path answer `404` immediately,
+without a restart and without affecting the other frontends. Changing a path
+also applies to the next request.
+
+One `StreamableHTTPSessionManager` is created when the ASGI lifespan starts and
+closed when it stops. Enabling or disabling the MCP frontend does not rebuild
+it. The gateway always serves all enabled frontends from one ASGI application,
+so multiple frontends require the default `fastapi` backend;
+`--backend httpserver` is rejected when more than one frontend is enabled and
+can serve only the openapi frontend.
+
+`--tokens` (and `API_BEARER_TOKEN`) protect every frontend with the same token
+set. When tokens are configured, the MCP protected-resource metadata is served
+at `/.well-known/oauth-protected-resource<mcp path>` and follows the current
+MCP path.
+
+### Runtime frontend API
+
+The gateway object is available in-process as `App.gateway` after
+`App.create_gateway()` or `App.serve_gateway()`:
+
+```python
+gateway = app.create_gateway(config_path="tools.yaml")
+
+gateway.list_frontends()
+# [{"name": "openapi", "path": "/openapi", "enabled": True, "transport": "http"}, ...]
+
+result = gateway.update_frontend("mcp", enabled=False)
+# {"name": "mcp", "path": "/mcp", "enabled": False, ...,
+#  "persisted": True, "warning": None}
+
+gateway.update_frontend("sse", path="/events")
+```
+
+An update writes the new path and flag back to the config file after copying
+the previous file to `<path>.bak`, so a restart keeps the change.
+`result["persisted"]` says whether the write succeeded and `result["warning"]`
+explains a skipped or failed write; the runtime change still applies when the
+write fails. `--no-config-write` (or `write_config=False`) disables the write
+and reports it in `warning`.
+
 ## Environment Variables
 
 The CLI supports loading environment variables from `.env` files:

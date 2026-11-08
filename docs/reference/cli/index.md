@@ -105,6 +105,54 @@ toolregistry-server mcp \
   --tokens tokens.txt
 ```
 
+### `gateway` - Serve OpenAPI and MCP from one process
+
+```bash
+toolregistry-server gateway [options]
+```
+
+One ASGI application mounts the OpenAPI adapter at `/openapi`, MCP
+streamable-HTTP at `/mcp` and MCP SSE at `/sse`. Each frontend has a
+configurable path and an enable flag that is checked on every request.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--config PATH` | - | Path to a JSONC or YAML configuration file (required) |
+| `--host HOST` | `0.0.0.0` | Bind host |
+| `--port PORT` | `8000` | Bind port |
+| `--tokens PATH` | - | File of Bearer tokens applied to every frontend. `API_BEARER_TOKEN` is read as well |
+| `--server-url URL` | derived from `--host`/`--port` | Public MCP URL used in protected-resource metadata |
+| `--backend {fastapi,httpserver}` | `fastapi` | Multiple frontends require `fastapi`; `httpserver` can serve only the openapi frontend |
+| `--openapi-path PATH` | `/openapi` | OpenAPI mount path |
+| `--mcp-path PATH` | `/mcp` | MCP streamable-HTTP mount path |
+| `--sse-path PATH` | `/sse` | MCP SSE mount path |
+| `--openapi` / `--no-openapi` | enabled | Enable or disable the OpenAPI frontend |
+| `--mcp` / `--no-mcp` | enabled | Enable or disable MCP streamable-HTTP |
+| `--sse` / `--no-sse` | enabled | Enable or disable MCP SSE |
+| `--no-config-write` | `false` | Do not persist runtime frontend changes to the config file |
+| `--max-body-size BYTES` | `1048576` (1 MiB) | Largest request body accepted by the OpenAPI frontend |
+| `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes |
+| `--regex-budget SECONDS` | `0.25` | Per-request ceiling for spec-supplied regexes |
+| `--strict-spec-regex` | `false` | Abort startup on an invalid regex in an OpenAPI source |
+| `--tools-list-ttl-ms MS` | `300000` | `ttlMs` cache hint for MCP `tools/list` |
+| `--tools-list-cache-scope {public,private}` | `private` | `cacheScope` hint for MCP `tools/list` |
+| `--profile PROFILE` | - | Deployment profile |
+
+**Example:**
+
+```bash
+toolregistry-server gateway \
+  --config config.yaml \
+  --port 8000 \
+  --openapi-path /api \
+  --no-sse \
+  --tokens tokens.txt
+```
+
+A disabled frontend answers `404` without touching the registry. Frontend
+paths and flags can also be stored under `gateway.frontends` in the config
+file; see the [Configuration Guide](../../guides/configuration.md#gateway-frontends).
+
 ## Configuration File
 
 See the [Configuration Guide](../../guides/configuration.md) for details on the JSON, JSONC, or YAML configuration format.
