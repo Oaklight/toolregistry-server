@@ -179,7 +179,7 @@ OpenAPIAdapter(route_table, regex_timeout=0.05, regex_budget=0.25)
 
 `0` 表示关闭执行，恢复默认行为；负数或非数字会在启动时报错。安装 extra 会收紧校验：此前因正则被忽略而通过的请求现在可能被拒绝，`additionalProperties` 也不再放宽。
 
-加载期会编译新注册 source 中的每个 pattern。含非法正则的 source 会整体跳过，错误日志记录工具名、schema 路径与 pattern；`--strict-spec-regex` 则改为终止启动。
+加载期会编译新注册 source 中的每个 `pattern` 与 `patternProperties` 键。默认只丢弃自身 schema 含非法正则的工具——每个都会记录错误日志（工具名、schema 路径、pattern）——其余工具保留；只有没有任何工具存活时，才把 source 报为失败。`--strict-spec-regex` 恢复整源失败语义：移除该 source 的全部工具并终止启动。
 
 ## 认证
 
