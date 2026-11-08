@@ -49,7 +49,7 @@
   `tests/test_mcp_session.py::TestBackwardCompatibility::test_override_reaches_list_tools_title`
   （MCP `tools/list`）固定。
 - **路由级覆盖会被校验并具有权威性**（#138）：覆盖现在是一份经校验的副本。`override_parameters` 要求对象 schema（接受 `["object", "null"]`），把省略的 `additionalProperties` 规范化为 `false`，从工具的校验模型补齐 `required`，当覆盖缺少模型必填字段时发出警告，并拒绝模型型工具无法执行的带类型 `additionalProperties`。OpenAPI 适配器在走校验模型之前先检查实际发布的 schema，因此覆盖未声明的键会以 `extra_forbidden` 被拒绝，而不会静默传给可调用对象。
-- **两个 OpenAPI 后端的非有限工具结果现在都是严格 JSON**（#130、#135）：FastAPI 通过 pydantic 序列化工具结果，把非有限 `Decimal` 写成字符串 `"NaN"`，而 httpserver 则写出裸 `NaN`。两个后端现在都用 `adapters.openapi.serialisation.encode_tool_result()` 编码结果，非有限浮点数与 `Decimal` 一律输出 `null`。编码使用 core 的 `ToolResultJSONEncoder`，非有限浮点数与 `Decimal` 输出 `null`（#159）。由于共用同一个编码器，`bytes` 结果在两个后端上都是 base64（FastAPI 此前按 UTF-8 解码），集合按 `repr` 排序，工具响应的 `Content-Type` 在两个后端上都是 `application/json; charset=utf-8`。
+- **两个 OpenAPI 后端的非有限工具结果现在都是严格 JSON**（#130、#135）：FastAPI 通过 pydantic 序列化工具结果，把非有限 `Decimal` 写成字符串 `"NaN"`，而 httpserver 则写出裸 `NaN`。两个后端现在都用 `adapters.openapi.serialisation.encode_tool_result()` 编码结果，非有限浮点数与 `Decimal` 一律输出 `null`。编码器就是 core 的 `ToolResultJSONEncoder`，因此默认矩阵与 `core-master` 任务上的投影一致（#159）。由于共用同一个编码器，`bytes` 结果在两个后端上都是 base64（FastAPI 此前按 UTF-8 解码），集合按 `repr` 排序，工具响应的 `Content-Type` 在两个后端上都是 `application/json; charset=utf-8`。
 - **500 响应不再回显异常文本**（#147、#150）：两个后端此前都把 `str(exc)` 作为执行错误 detail 返回，其中可能含连接串、内部路径与上游 URL。现在执行错误返回点名工具的稳定消息，完整异常只写入服务端日志，不可序列化的结果同样处理。FastAPI 后端遇到意外的 500 时改为返回与 httpserver 相同的 JSON `{"detail": ...}` 结构，而不是纯文本。
 - **MCP 工具失败不再泄漏异常文本**（#153）：此前工具异常会以 `str(e)` 作为 `isError` 结果返回客户端。现在客户端只会收到稳定的 `Tool '<name>' execution failed` 消息，完整异常与堆栈只写入服务端日志。`INVALID_PARAMS` 等协议级错误不变。
 
