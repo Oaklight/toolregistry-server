@@ -27,7 +27,19 @@ class TestNormalizePath:
 
     @pytest.mark.parametrize(
         "path",
-        ["", "mcp", "/", " /mcp", "/mcp ", "/mcp?x=1", "/mcp#frag", "/a//b"],
+        [
+            "",
+            "mcp",
+            "/",
+            " /mcp",
+            "/mcp ",
+            "/mcp?x=1",
+            "/mcp#frag",
+            "/a//b",
+            "/a/./b",
+            "/a/../b",
+            "/..",
+        ],
     )
     def test_rejects_invalid_paths(self, path):
         with pytest.raises(ValueError):

@@ -12,6 +12,7 @@ from toolregistry_server.gateway.persistence import (
     persist_frontend_settings,
     read_config_mapping,
 )
+from toolregistry_server.source_manager import COMMENTS_WARNING
 
 
 def _write(path, text):
@@ -119,7 +120,7 @@ class TestPersistFrontendSettings:
         )
 
         assert persisted is True
-        assert warning is None
+        assert warning == COMMENTS_WARNING
         data = read_config_mapping(destination)
         assert data["mode"] == "allowlist"
         assert data["tools"] == []
@@ -149,7 +150,7 @@ class TestPersistFrontendSettings:
         )
 
         assert persisted is True
-        assert warning is None
+        assert warning == COMMENTS_WARNING
         data = json.loads(destination.read_text(encoding="utf-8"))
         assert data["mode"] == "denylist"
         assert data["gateway"]["frontends"]["openapi"] == {
@@ -237,7 +238,7 @@ class TestUpdateFrontendPersistence:
         assert result["name"] == "mcp"
         assert result["enabled"] is False
         assert result["persisted"] is True
-        assert result["warning"] is None
+        assert result["warning"] == COMMENTS_WARNING
         data = read_config_mapping(destination)
         assert data["gateway"]["frontends"]["mcp"] == {
             "path": "/mcp",
