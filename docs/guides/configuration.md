@@ -286,6 +286,73 @@ add、remove、replace 会把配置写回服务器启动时使用的文件，因
 管理器自己的写入通过内容哈希识别，因此运行期变更不会触发重载；watcher 自身从不写文件。
 格式错误的编辑会记录并忽略，运行中的注册表保持不变。watcher 是进程内的，没有跨进程协调。
 
+## Gateway 前端
+
+`gateway` 子命令在一个进程、一个监听器上同时提供 OpenAPI 适配器与两种 MCP HTTP 传输：
+
+```bash
+toolregistry-server gateway --config tools.yaml --port 8000
+```
+
+默认挂载点为 `/openapi`（OpenAPI）、`/mcp`（MCP streamable-HTTP）与 `/sse`（MCP SSE）。
+配置文件可在 `gateway.frontends` 下修改路径与启用标记：
+
+```yaml
+gateway:
+  frontends:
+    openapi:
+      path: /api
+      enabled: true
+    mcp:
+      path: /rpc
+      enabled: true
+    sse:
+      path: /events
+      enabled: false
+```
+
+| 前端 | 默认路径 | 传输 | 默认 |
+|------|----------|------|------|
+| `openapi` | `/openapi` | HTTP | 启用 |
+| `mcp` | `/mcp` | `streamable-http` | 启用 |
+| `sse` | `/sse` | SSE | 启用 |
+
+命令行选项 `--openapi-path`、`--mcp-path`、`--sse-path`、`--openapi`、`--mcp`
+与 `--sse` 可对本次进程覆盖文件设置。启用标记在每个请求上读取：禁用某个前端后，
+其路径立即返回 `404`，无需重启，也不影响其他前端。修改路径同样在下一个请求生效。
+
+ASGI lifespan 启动时创建一个 `StreamableHTTPSessionManager`，结束时关闭。启用或禁用
+MCP 前端不会重建它。gateway 始终用一个 ASGI 应用提供所有启用的前端，因此多个前端
+必须使用默认的 `fastapi` 后端；启用多个前端时 `--backend httpserver` 会被拒绝，
+该后端只能提供 openapi 前端。
+
+`--tokens`（以及 `API_BEARER_TOKEN`）用同一组令牌保护所有前端。配置令牌后，MCP 的
+受保护资源元数据位于 `/.well-known/oauth-protected-resource<MCP 路径>`，并跟随当前
+MCP 路径。
+
+### 运行期前端 API
+
+调用 `App.create_gateway()` 或 `App.serve_gateway()` 后，可通过 `App.gateway`
+在进程内取得 gateway 对象：
+
+```python
+gateway = app.create_gateway(config_path="tools.yaml")
+
+gateway.list_frontends()
+# [{"name": "openapi", "path": "/openapi", "enabled": True, "transport": "http"}, ...]
+
+result = gateway.update_frontend("mcp", enabled=False)
+# {"name": "mcp", "path": "/mcp", "enabled": False, ...,
+#  "persisted": True, "warning": None}
+
+gateway.update_frontend("sse", path="/events")
+```
+
+更新会先把原文件复制为 `<path>.bak`，再把新路径与标记写回配置文件，因此重启后仍然生效。
+`result["persisted"]` 表示写入是否成功，`result["warning"]` 说明跳过或失败的原因；
+即使写入失败，运行期变更仍然生效。`--no-config-write`（或 `write_config=False`）
+关闭写入，并在 `warning` 中报告。
+
 ## 环境变量
 
 命令行工具支持从 `.env` 文件加载环境变量：

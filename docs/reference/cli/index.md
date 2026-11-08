@@ -105,6 +105,52 @@ toolregistry-server mcp \
   --tokens tokens.txt
 ```
 
+### `gateway` — 单进程提供 OpenAPI 与 MCP
+
+```bash
+toolregistry-server gateway [选项]
+```
+
+一个 ASGI 应用把 OpenAPI 适配器挂载在 `/openapi`、MCP streamable-HTTP 挂载在
+`/mcp`、MCP SSE 挂载在 `/sse`。每个前端的路径可配置，启用标记按请求检查。
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--config PATH` | - | JSONC 或 YAML 配置文件路径（必需） |
+| `--host HOST` | `0.0.0.0` | 绑定主机 |
+| `--port PORT` | `8000` | 绑定端口 |
+| `--tokens PATH` | - | Bearer 令牌文件，作用于所有前端；同时读取 `API_BEARER_TOKEN` |
+| `--server-url URL` | 由 `--host`/`--port` 推导 | 受保护资源元数据中使用的公开 MCP URL |
+| `--backend {fastapi,httpserver}` | `fastapi` | 多个前端必须使用 `fastapi`；`httpserver` 只能提供 openapi 前端 |
+| `--openapi-path PATH` | `/openapi` | OpenAPI 挂载路径 |
+| `--mcp-path PATH` | `/mcp` | MCP streamable-HTTP 挂载路径 |
+| `--sse-path PATH` | `/sse` | MCP SSE 挂载路径 |
+| `--openapi` / `--no-openapi` | 启用 | 启用或禁用 OpenAPI 前端 |
+| `--mcp` / `--no-mcp` | 启用 | 启用或禁用 MCP streamable-HTTP |
+| `--sse` / `--no-sse` | 启用 | 启用或禁用 MCP SSE |
+| `--no-config-write` | `false` | 运行期前端变更不写回配置文件 |
+| `--max-body-size BYTES` | `1048576`（1 MiB） | OpenAPI 前端接受的最大请求体 |
+| `--regex-timeout SECONDS` | `0.05` | 来自 spec 的正则单次匹配上限 |
+| `--regex-budget SECONDS` | `0.25` | 单次请求内所有 spec 正则匹配的上限 |
+| `--strict-spec-regex` | `false` | OpenAPI source 含非法正则时终止启动 |
+| `--tools-list-ttl-ms MS` | `300000` | MCP `tools/list` 的 `ttlMs` 缓存提示 |
+| `--tools-list-cache-scope {public,private}` | `private` | MCP `tools/list` 的 `cacheScope` 提示 |
+| `--profile PROFILE` | - | 部署配置 |
+
+**示例：**
+
+```bash
+toolregistry-server gateway \
+  --config config.yaml \
+  --port 8000 \
+  --openapi-path /api \
+  --no-sse \
+  --tokens tokens.txt
+```
+
+被禁用的前端返回 `404`，不会触达注册表。前端路径与启用标记也可以保存在配置文件的
+`gateway.frontends` 下；参见[配置指南](../../guides/configuration.md)。
+
 ## 配置文件
 
 有关 JSON、JSONC 或 YAML 配置格式的详细说明，请参阅 [配置指南](../../guides/configuration.md)。
