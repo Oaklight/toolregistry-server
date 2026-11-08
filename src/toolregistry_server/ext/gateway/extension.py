@@ -55,8 +55,10 @@ REQUIRES_API = 1
 _ASSETS_DIR = Path(__file__).with_name("assets")
 
 #: Fields a key store must never expose after creation.  They are stripped
-#: defensively from every key record the extension returns.
-_SECRET_FIELDS = frozenset({"secret", "secret_hash", "digest", "salt"})
+#: defensively from every key record the extension returns.  ``secret_digest``
+#: is the column name in the key store schema, so a store bug that names the
+#: digest after its column cannot leak it through the panel.
+_SECRET_FIELDS = frozenset({"secret", "secret_hash", "secret_digest", "digest", "salt"})
 
 
 class KeyStore(Protocol):
@@ -181,7 +183,8 @@ def _validated_scopes(value: Any) -> Any:
     Two shapes are accepted.  A list of namespace patterns keeps the simple
     form; a mapping ``{"namespaces": [...], "tools": {name: bool}}`` adds the
     per-tool overrides the key store already supports, where an override
-    always wins over the namespace list.
+    always wins over the namespace list.  ``None`` means the same as an empty
+    list: a key that can call nothing, matching ``ScopeSpec.coerce(None)``.
 
     Args:
         value: The decoded JSON value.
@@ -193,6 +196,8 @@ def _validated_scopes(value: Any) -> Any:
         _BadRequest: If the value is neither shape or a member has the wrong
             type.
     """
+    if value is None:
+        return []
     if isinstance(value, list):
         if not all(isinstance(item, str) and item.strip() for item in value):
             raise _BadRequest("'scopes' must be a list of non-empty namespace strings")

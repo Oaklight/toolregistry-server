@@ -49,8 +49,9 @@ class FakeKeyRecord:
             "expires_at": self.expires_at,
             "revoked_at": self.revoked_at,
             "last_used_at": self.last_used_at,
-            # Deliberately present: the extension must strip it.
+            # Deliberately present: the extension must strip them.
             "secret_hash": "deadbeef",
+            "secret_digest": "cafebabe",
         }
 
 
@@ -296,6 +297,7 @@ class TestKeys:
         assert created["secret"] == "gw_secret_1"
         assert created["label"] == "ci"
         assert "secret_hash" not in created
+        assert "secret_digest" not in created
 
         status, body, _ = _request(f"{host.url}/ext/gateway/keys")
         assert status == 200
@@ -303,6 +305,7 @@ class TestKeys:
         assert len(keys) == 1
         assert "secret" not in keys[0]
         assert "secret_hash" not in keys[0]
+        assert "secret_digest" not in keys[0]
 
     def test_create_accepts_tool_overrides(self, host) -> None:
         status, body, _ = _request(
@@ -329,6 +332,15 @@ class TestKeys:
         )
         assert status == 201
         assert json.loads(body)["scopes"]["namespaces"] == ["default", "files"]
+
+    def test_null_scopes_create_a_key_that_can_call_nothing(self, host) -> None:
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "empty", "scopes": None},
+        )
+        assert status == 201
+        assert json.loads(body)["scopes"] == {"namespaces": [], "tools": {}}
 
     @pytest.mark.parametrize(
         "payload",
@@ -363,7 +375,9 @@ class TestKeys:
             f"{host.url}/ext/gateway/keys/{key_id}/revoke", method="POST"
         )
         assert status == 200
-        assert json.loads(body)["key"]["revoked_at"]
+        revoked = json.loads(body)["key"]
+        assert revoked["revoked_at"]
+        assert "secret_digest" not in revoked
 
         status, _, _ = _request(
             f"{host.url}/ext/gateway/keys/missing/revoke", method="POST"
