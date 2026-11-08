@@ -210,6 +210,8 @@ class TestMain:
             regex_timeout=0.05,
             regex_budget=0.25,
             strict_spec_regex=False,
+            config_reload=False,
+            write_config=True,
         )
 
     @patch.object(
@@ -240,6 +242,8 @@ class TestMain:
             regex_timeout=0.05,
             regex_budget=0.25,
             strict_spec_regex=False,
+            config_reload=False,
+            write_config=True,
         )
 
     @patch.object(
@@ -264,6 +268,8 @@ class TestMain:
             server_url=None,
             tools_list_ttl_ms=None,
             tools_list_cache_scope=None,
+            config_reload=False,
+            write_config=True,
         )
 
     @patch("toolregistry_server.app.App.serve_mcp")
@@ -332,6 +338,8 @@ class TestMain:
             server_url=None,
             tools_list_ttl_ms=None,
             tools_list_cache_scope=None,
+            config_reload=False,
+            write_config=True,
         )
 
     def test_no_config_exits(self):
