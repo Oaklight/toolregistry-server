@@ -74,10 +74,11 @@ jobs:
       - name: Run MCP adapter tests
         run: python -m pytest tests/test_mcp_adapter.py tests/test_mcp_session.py -q
 
-  # The released core still lacks the non-finite projection (#135), so the
-  # NaN / Infinity / Decimal cases in the differential suite skip there.
-  # Install core's master branch to run them against the code the server
-  # floor will require once it is released (#159).
+  # Forward-compatibility canary: run the OpenAPI suites against core's
+  # master branch, which is ahead of the released floor pinned in
+  # pyproject.toml.  A failure here means an unreleased core change would
+  # break this server, so it must be fixed or coordinated before that core
+  # release lands.
   test-core-master:
     runs-on: ubuntu-latest
     timeout-minutes: 20
