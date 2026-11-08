@@ -6,6 +6,10 @@
 
 ## [未发布]
 
+### 新增
+
+- **可运行的 gateway 演示**（#188）：`examples/gateway-demo/` 在同一进程、同一来源上提供 `/openapi`、`/mcp` 与小型 `/ext/gateway` 管理面；客户端密钥保存在静态 JSON 文件中（只存 SHA-256 摘要，仅在创建时返回一次，可撤销），前端可关闭并返回 404。安装了 `toolregistry-hub` 时使用其工具，否则使用三个本地工具。`Dockerfile` 从仓库根目录构建镜像，`walkthrough.sh` 在 `Gateway demo` CI 工作流中对运行中的服务复跑 README 步骤。示例位于 `src` 之外，不进入 wheel 或 sdist。
+
 ### 修复
 
 - **同名替换会被复查非法 spec 正则，部分丢弃也可见**（#171）：加载时的检查比较的是工具名快照，因此当 source 用同名工具替换已存在的工具时，不会产生*新*名字，替换后的 schema 也就不会被编译——替换引入的坏 `pattern` 会留在注册表中，直到第一次调用才失败。现在改为比较工具对象：本次注册创建或替换的每个名字都会被检查，带非法正则的替换与新工具一样被丢弃。source 的汇总行会报告丢弃数量与工具名（例如 `Loaded OpenAPI tools from '…': dropped 2 tool(s) with an invalid regex: ['a', 'b']`），全部丢弃时的日志也带上数量与列表。`--strict-spec-regex` 与 hub 的 source 失败语义（只有全部丢弃才为 false）不变。
