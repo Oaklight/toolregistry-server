@@ -65,6 +65,10 @@ def normalize_path(path: str) -> str:
     normalized = path.rstrip("/")
     if "//" in normalized:
         raise ValueError(f"frontend path must not contain '//': {path!r}")
+    if any(segment in {".", ".."} for segment in normalized.split("/")):
+        raise ValueError(
+            f"frontend path must not contain '.' or '..' segments: {path!r}"
+        )
     return normalized
 
 

@@ -1052,7 +1052,8 @@ class TestGatewayCommand:
         assert args.openapi is None
         assert args.mcp is None
         assert args.sse is None
-        assert args.write_config is True
+        assert args.config_reload is False
+        assert args.config_write is True
 
     def test_gateway_command_with_options(self):
         """Paths, switches and the config-write flag are parsed."""
@@ -1071,6 +1072,7 @@ class TestGatewayCommand:
                 "--sse-path",
                 "/events",
                 "--no-mcp",
+                "--config-reload",
                 "--no-config-write",
             ]
         )
@@ -1082,7 +1084,8 @@ class TestGatewayCommand:
         assert args.openapi is None
         assert args.mcp is False
         assert args.sse is None
-        assert args.write_config is False
+        assert args.config_reload is True
+        assert args.config_write is False
 
     def test_gateway_enable_switch_can_be_explicit(self):
         """A persisted disabled frontend can be force-enabled from the CLI."""
@@ -1126,5 +1129,6 @@ class TestGatewayCommand:
             openapi_enabled=None,
             mcp_enabled=False,
             sse_enabled=None,
+            config_reload=False,
             write_config=True,
         )

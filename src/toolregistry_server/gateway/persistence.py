@@ -20,8 +20,9 @@ A write follows the same policy as runtime source management:
   written;
 * the new content is written to a temporary file in the same directory and
   moved into place, so a crash cannot leave a truncated configuration;
-* the caller receives an explicit ``persisted`` flag and, when the write was
-  skipped or failed, a ``warning`` string;
+* the caller receives an explicit ``persisted`` flag and a ``warning``
+  string; a skipped or failed write says why, and a successful rewrite
+  carries the same JSONC comment-loss warning as runtime source management;
 * ``--no-config-write`` (``write_config=False``) disables persistence
   entirely and is reported as a warning rather than an error.
 
@@ -41,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from .._vendor.structlog import get_logger
+from ..source_manager import COMMENTS_WARNING
 from .frontends import DEFAULT_PATHS, FRONTEND_NAMES, normalize_path
 
 logger = get_logger()
@@ -335,8 +337,9 @@ def persist_frontend_settings(
 
     Returns:
         ``(persisted, warning)``.  *persisted* is true only when the file was
-        rewritten.  *warning* explains a skipped or failed write and is
-        ``None`` on success.
+        rewritten.  *warning* explains a skipped or failed write; on success
+        it carries :data:`~toolregistry_server.source_manager.COMMENTS_WARNING`
+        because JSONC comments are not preserved.
     """
     if not write_config:
         return False, (
@@ -382,7 +385,7 @@ def persist_frontend_settings(
         enabled=enabled,
         config=str(destination),
     )
-    return True, None
+    return True, COMMENTS_WARNING
 
 
 __all__ = [

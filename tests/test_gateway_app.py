@@ -220,6 +220,17 @@ class TestBackendSelection:
             _gateway(backend="httpserver")
         assert "fastapi" in str(exc_info.value)
 
+    def test_httpserver_rejects_an_openapi_path_override(self):
+        """httpserver serves at the listener root, so a mount path is a lie."""
+        with pytest.raises(ValueError, match="listener root") as exc_info:
+            _gateway(
+                backend="httpserver",
+                openapi_path="/api",
+                mcp_enabled=False,
+                sse_enabled=False,
+            )
+        assert "/api" in str(exc_info.value)
+
     def test_httpserver_allows_openapi_only(self):
         gateway = _gateway(
             backend="httpserver",
@@ -250,6 +261,24 @@ class TestBackendSelection:
         )
         with pytest.raises(ValueError, match="cannot disable"):
             gateway.update_frontend("openapi", enabled=False)
+
+
+class TestSourceManagerCoexistence:
+    """The gateway keeps runtime source management wired up."""
+
+    def test_create_gateway_attaches_the_source_manager(self, tmp_path, monkeypatch):
+        from toolregistry_server import App
+
+        config = tmp_path / "tools.yaml"
+        config.write_text("tools: []\n", encoding="utf-8")
+        monkeypatch.setattr(GatewayAdapter, "_build_mcp_server", lambda self: object())
+
+        app = App()
+        gateway = app.create_gateway(config_path=str(config), tokens=[])
+
+        assert app.gateway is gateway
+        assert app.source_manager is not None
+        assert app.source_manager.route_table is gateway._route_table
 
 
 class _FakeSessionManager:

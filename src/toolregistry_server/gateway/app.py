@@ -476,6 +476,13 @@ class GatewayAdapter(Adapter):
                 f"enabled frontend(s): {enabled or ['<none>']}. "
                 "Use --backend fastapi to serve MCP transports."
             )
+        openapi = self._registry.get("openapi")
+        if openapi.path != DEFAULT_PATHS["openapi"]:
+            raise ValueError(
+                "the httpserver backend serves the openapi frontend at the "
+                "listener root, not at a mount path; remove the openapi path "
+                f"override (got {openapi.path!r})"
+            )
 
     def _build_openapi_app(self) -> Any:
         """Build the OpenAPI application for the configured backend."""
@@ -627,16 +634,17 @@ class GatewayAdapter(Adapter):
         """
         from ..adapters.mcp.server import build_sse_app
 
-        sse_path = self._registry.get("sse").path
-        if self._sse_app is None or self._sse_path != sse_path:
-            self._sse_app = build_sse_app(
-                self._mcp_server,
-                path=sse_path,
-                route_path="/",
-            )
-            self._sse_wrapped = self._wrap_auth(self._sse_app)
-            self._sse_path = sse_path
-        return self._sse_wrapped
+        with self._update_lock:
+            sse_path = self._registry.get("sse").path
+            if self._sse_app is None or self._sse_path != sse_path:
+                self._sse_app = build_sse_app(
+                    self._mcp_server,
+                    path=sse_path,
+                    route_path="/",
+                )
+                self._sse_wrapped = self._wrap_auth(self._sse_app)
+                self._sse_path = sse_path
+            return self._sse_wrapped
 
     async def _serve_metadata(self, scope: Scope, receive: Receive, send: Send) -> bool:
         """Serve RFC 9728 protected-resource metadata when it applies.
