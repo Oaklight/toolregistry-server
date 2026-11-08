@@ -154,6 +154,51 @@ App().serve_openapi(config_path="tools.yaml", backend="httpserver")
 
 One deliberate difference: a tool that returns `bytes` is base64-encoded by the `httpserver` backend (core's encoder), while FastAPI decodes it as UTF-8 text.
 
+## Spec-supplied regexes
+
+Proxied OpenAPI tools publish `pattern` and `patternProperties` from the
+upstream document. Python's `re` has no timeout, so a schema-supplied
+expression can backtrack catastrophically.
+
+Without the optional `regex` extra the server does **not** execute them:
+validation uses a copy without `pattern` and `patternProperties`, and an
+`additionalProperties: false` at a level that carried patterns is relaxed.
+Clients still see the full schema; the upstream API stays the authority for
+the format.
+
+Install the extra to enforce them under a bound:
+
+```bash
+pip install toolregistry-server[regex]
+```
+
+Every match then runs through `regex.search(..., timeout=...)`: 50 ms per
+match and 250 ms per request by default. `patternProperties` calls the
+matcher once per pattern (to compile it, even for an empty object) and once
+per (pattern, key), so 10 patterns over a 200-key object is 2 010 calls
+sharing the 250 ms budget. A match or budget timeout answers `500` with
+`{"detail": "Tool '<name>' validation timed out"}`; the pattern is never
+echoed to the client.
+
+```bash
+toolregistry-server openapi --config tools.yaml \
+  --regex-timeout 0.05 --regex-budget 0.25
+```
+
+```python
+OpenAPIAdapter(route_table, regex_timeout=0.05, regex_budget=0.25)
+```
+
+`0` disables execution and restores the default behaviour. A negative or
+non-numeric bound fails at startup. Installing the extra tightens
+validation: a payload that used to pass because its pattern was ignored can
+now be rejected, and `additionalProperties` is no longer relaxed.
+
+At load time every pattern in a newly registered source is compiled. A
+source with an invalid pattern is skipped as a whole, with an error log
+naming the tool, the schema path and the pattern; `--strict-spec-regex`
+aborts startup instead.
+
 ## Authentication
 
 Pass Bearer tokens via a file or `API_BEARER_TOKEN` env var:
