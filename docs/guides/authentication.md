@@ -151,6 +151,12 @@ The key row is read on every request. Revocation and expiry therefore take
 effect on the next request; there is no restart or cache to wait for.
 `last_used_at` records only the latest successful use.
 
+Scoped keys do not receive the `discover_tools` / `call_deferred` proxy pair.
+`call_deferred` can invoke any registered tool by name, so leaving it reachable
+would let a key bypass its scope; both tools are hidden from listings and the
+document and refused on call. They remain available to operator/static-token
+principals. Scope-aware discovery for scoped keys is a follow-up.
+
 ### Python API
 
 The admin extension (#187) imports the same store in-process:
