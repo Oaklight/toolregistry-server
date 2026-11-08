@@ -8,8 +8,10 @@ protocol adapters (OpenAPI, MCP, etc.).
 import copy
 import functools
 import json
+import threading
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -615,6 +617,14 @@ class RouteTable:
     _execution_hint_overrides: dict[str, dict[str, bool]] = field(
         default_factory=dict, init=False
     )
+    #: Serialises :meth:`batch_changes` nesting across threads.  Request
+    #: threads never take it; it only batches the registry events a source
+    #: diff produces.
+    _batch_lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False
+    )
+    _batch_depth: int = field(default=0, init=False, repr=False)
+    _batch_pending: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize the route table from the registry."""
@@ -652,13 +662,53 @@ class RouteTable:
             ChangeEventType.UNREGISTER,
             ChangeEventType.REFRESH_ALL,
         ):
+            # Inside a batch, one diff must produce one rebuild, not one per
+            # registered or unregistered tool name.
+            with self._batch_lock:
+                if self._batch_depth:
+                    self._batch_pending = True
+                    return
             self.refresh_all()
 
     def _rebuild(self) -> None:
-        """Rebuild route table from registry."""
-        self._routes.clear()
-        for tool_name, tool in self._registry._tools.items():
-            self._routes[tool_name] = self._tool_to_route(tool)
+        """Rebuild route table from registry.
+
+        The new mapping is built first and installed with a single
+        assignment, so a reader never observes a partially filled table.
+        ``list_routes`` captures ``_routes.values()`` at call time, so an
+        iteration that started before the swap keeps the old mapping alive.
+        """
+        routes = {
+            tool_name: self._tool_to_route(tool)
+            for tool_name, tool in list(self._registry._tools.items())
+        }
+        self._routes = routes
+
+    @contextmanager
+    def batch_changes(self) -> Iterator[None]:
+        """Defer route rebuilds until the outermost batch exits.
+
+        Registry ``REGISTER``/``UNREGISTER``/``REFRESH_ALL`` events arriving
+        inside the block are collapsed into one :meth:`refresh_all` at the
+        end.  Nested blocks join the outermost one.  Per-tool
+        enable/disable/metadata events are not deferred: a source diff does
+        not emit them.
+
+        The table is still rebuilt once per batch, so a caller that mutates
+        several sources should wrap the whole change.
+        """
+        with self._batch_lock:
+            self._batch_depth += 1
+        try:
+            yield
+        finally:
+            with self._batch_lock:
+                self._batch_depth -= 1
+                pending = self._batch_depth == 0 and self._batch_pending
+                if pending:
+                    self._batch_pending = False
+            if pending:
+                self.refresh_all()
 
     def _tool_to_route(self, tool: Tool) -> RouteEntry:
         """Convert a Tool to a RouteEntry.

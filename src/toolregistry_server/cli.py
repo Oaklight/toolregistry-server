@@ -167,9 +167,34 @@ class CLI:
         mcp_parser = sub.add_parser("mcp", help="Start MCP server")
         MCPAdapter.add_cli_arguments(mcp_parser)
 
+        for source_parser in (openapi_parser, mcp_parser):
+            self._add_source_runtime_arguments(source_parser)
+
         self.configure_subparsers({"openapi": openapi_parser, "mcp": mcp_parser})
 
         return parser
+
+    @staticmethod
+    def _add_source_runtime_arguments(parser: argparse.ArgumentParser) -> None:
+        """Add the runtime source-management flags shared by both commands."""
+        parser.add_argument(
+            "--config-reload",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Watch the config file and apply a source-level diff when it "
+                "changes (default: disabled)"
+            ),
+        )
+        parser.add_argument(
+            "--no-config-write",
+            dest="config_write",
+            action="store_false",
+            default=True,
+            help=(
+                "Keep runtime source changes in memory; never rewrite the config file"
+            ),
+        )
 
     def configure_subparsers(
         self, subparsers: dict[str, argparse.ArgumentParser]
@@ -225,6 +250,8 @@ class CLI:
                 regex_timeout=getattr(parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT),
                 regex_budget=getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
                 strict_spec_regex=getattr(parsed, "strict_spec_regex", False),
+                config_reload=getattr(parsed, "config_reload", False),
+                write_config=getattr(parsed, "config_write", True),
             )
         elif parsed.command == "mcp":
             self.app.serve_mcp(
@@ -237,6 +264,8 @@ class CLI:
                 server_url=getattr(parsed, "server_url", None),
                 tools_list_ttl_ms=getattr(parsed, "tools_list_ttl_ms", None),
                 tools_list_cache_scope=getattr(parsed, "tools_list_cache_scope", None),
+                config_reload=getattr(parsed, "config_reload", False),
+                write_config=getattr(parsed, "config_write", True),
             )
 
     def main(self, args: list[str] | None = None) -> NoReturn | None:

@@ -42,6 +42,13 @@ from .registry_builder import (
 )
 from .route_table import RouteEntry, RouteTable
 from .session import SessionContext
+from .source_manager import (
+    ConfigWatcher,
+    MutationResult,
+    SourceEntry,
+    SourceManager,
+    SourceStatus,
+)
 
 __all__ = [
     "App",
@@ -52,6 +59,11 @@ __all__ = [
     "RouteEntry",
     "RouteTable",
     "SessionContext",
+    "ConfigWatcher",
+    "MutationResult",
+    "SourceEntry",
+    "SourceManager",
+    "SourceStatus",
     "apply_config",
     "apply_profile",
     "load_config",

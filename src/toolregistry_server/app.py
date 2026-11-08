@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from .adapters import Adapter
     from .identity import ServerIdentity
     from .route_table import RouteTable
+    from .source_manager import SourceManager
 
 
 class App:
@@ -87,6 +88,12 @@ class App:
         from .identity import ServerIdentity
 
         self.identity = identity or ServerIdentity()
+        #: Populated by :meth:`prepare_registry` when a config file was
+        #: loaded.  Downstream code (admin extensions) uses it to change the
+        #: live source list.
+        self.source_manager = None
+        #: The running config watcher, when ``config_reload`` is enabled.
+        self.config_watcher = None
 
     def prepare_registry(self, **kwargs) -> ToolRegistry:
         """Build or resolve a ``ToolRegistry``.
@@ -101,24 +108,39 @@ class App:
             profile: Deployment profile for tag-based filtering.
             strict_spec_regex: Abort startup on an invalid regex in an
                 OpenAPI source instead of skipping that source.
+            write_config: Persist runtime source changes back to
+                ``config_path``.  ``False`` keeps them in memory only.
 
         Returns:
             A configured ``ToolRegistry`` instance.
         """
-        from .registry_builder import apply_profile, load_config, registry_from_config
+        from .registry_builder import apply_profile, load_config
+        from .source_manager import SourceManager
 
         registry: ToolRegistry | None = kwargs.get("registry")
         config_path: str | None = kwargs.get("config_path")
         profile: str | None = kwargs.get("profile")
 
+        manager: SourceManager | None = None
         if registry is not None:
             pass
         elif config_path is not None:
+            from toolregistry import ToolRegistry as _ToolRegistry
+
             config = load_config(config_path)
-            registry = registry_from_config(
+            registry = _ToolRegistry()
+            # The manager owns the source list from startup: it registers the
+            # sources, records which names each produced, and is the object a
+            # runtime add/remove/replace mutates.
+            manager = SourceManager(
+                registry,
                 config,
+                config_path=config_path,
+                profile=profile,
                 strict_spec_regex=kwargs.get("strict_spec_regex", False),
+                write_config=kwargs.get("write_config", True),
             )
+            manager.apply_initial()
         else:
             raise ValueError(
                 "Either 'config_path' or 'registry' must be provided. "
@@ -128,6 +150,7 @@ class App:
         if profile is not None:
             apply_profile(registry, profile)
 
+        self.source_manager = manager
         return registry
 
     def _make_route_table(self, registry: ToolRegistry) -> RouteTable:
@@ -152,7 +175,45 @@ class App:
 
         registry = self.prepare_registry(**kwargs)
         route_table = self._make_route_table(registry)
+        manager = getattr(self, "source_manager", None)
+        if manager is not None:
+            # One source diff produces one route rebuild instead of one per
+            # registry event.
+            manager.attach_route_table(route_table)
+            if kwargs.get("config_reload"):
+                self._start_config_watcher(manager)
         adapter_cls.create_and_run(route_table, **kwargs)
+
+    def _start_config_watcher(self, manager: SourceManager) -> None:
+        """Start the config watcher, or explain why it cannot run."""
+        import atexit
+
+        from .source_manager import ConfigWatcher
+
+        config_path = getattr(manager, "config_path", None)
+        if not config_path:
+            logger.warning(
+                "--config-reload was requested, but no config file was loaded; "
+                "nothing to watch"
+            )
+            return
+        watcher = ConfigWatcher(manager)
+        watcher.start()
+        self.config_watcher = watcher
+        atexit.register(self.stop_config_watcher)
+        logger.info(f"Config hot reload watching {config_path}")
+
+    def stop_config_watcher(self, timeout: float | None = 2.0) -> None:
+        """Stop the config watcher, if one is running.
+
+        Args:
+            timeout: Seconds to wait for the thread to exit, or ``None``.
+        """
+        watcher = self.config_watcher
+        if watcher is None:
+            return
+        watcher.stop(timeout=timeout)
+        self.config_watcher = None
 
     def serve_openapi(self, **kwargs) -> None:
         """Build registry and start an OpenAPI server."""
