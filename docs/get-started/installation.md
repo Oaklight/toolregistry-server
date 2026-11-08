@@ -8,7 +8,7 @@
 pip install toolregistry-server
 ```
 
-这将安装核心路由层（`RouteTable`、`RouteEntry`），不包含任何协议适配器。
+这会安装核心路由层（`RouteTable`、`RouteEntry`）以及零依赖的 `httpserver` OpenAPI 后端。FastAPI 后端与 MCP 支持属于 extra。
 
 ## 协议支持
 

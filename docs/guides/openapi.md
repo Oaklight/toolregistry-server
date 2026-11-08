@@ -1,6 +1,6 @@
 # OpenAPI 适配器
 
-OpenAPI 适配器使用 [FastAPI](https://fastapi.tiangolo.com/) 将 `ToolRegistry` 工具暴露为 RESTful HTTP 端点。
+OpenAPI 适配器将 `ToolRegistry` 工具暴露为 RESTful HTTP 端点，可使用 [FastAPI](https://fastapi.tiangolo.com/) 或内联的零依赖 `httpserver` 后端。
 
 ## 概述
 

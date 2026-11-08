@@ -24,7 +24,7 @@ title: API 参考
 
 | 模块 | 描述 |
 |------|------|
-| [OpenAPI](openapi.md) | 基于 FastAPI 的 REST API 适配器 — `OpenAPIAdapter`、`Adapter.create_and_run()` |
+| [OpenAPI](openapi.md) | REST API 适配器（FastAPI 或内联 `httpserver`）— `OpenAPIAdapter`、`Adapter.create_and_run()` |
 | [MCP](mcp.md) | 模型上下文协议适配器 — `MCPAdapter`、`Adapter.create_and_run()` |
 
 ## 认证
