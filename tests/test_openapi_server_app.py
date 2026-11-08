@@ -257,7 +257,7 @@ class TestToolRoutes:
         entered = threading.Event()
         release = threading.Event()
 
-        def blocking_validate(route, payload):
+        def blocking_validate(route, payload, **_kwargs):
             entered.set()
             assert release.wait(5)
             return payload
@@ -295,7 +295,7 @@ class TestToolRoutes:
 
         import toolregistry_server.adapters.openapi.server_app as server_app
 
-        def rejecting_validate(route, payload):
+        def rejecting_validate(route, payload, **_kwargs):
             raise HTTPException(
                 status_code=422,
                 detail=[
