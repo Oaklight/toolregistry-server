@@ -39,17 +39,22 @@ class Point:
 
 @dataclass
 class Metric:
-    """A dataclass whose float field can be non-finite."""
-
-    label: str
-    value: float
-
-
-class Reading(BaseModel):
-    """A Pydantic model whose Decimal field can be non-finite."""
+    """A dataclass whose Decimal field can be non-finite."""
 
     label: str
     value: Decimal
+
+
+class Reading(BaseModel):
+    """A Pydantic model whose float field can be non-finite.
+
+    The field is ``float`` because pydantic 2.14 rejects a non-finite
+    ``Decimal`` at validation time; a model must accept the value before the
+    encoder can be asked to project it.
+    """
+
+    label: str
+    value: float
 
 
 def add(a: int, b: int) -> int:
@@ -107,14 +112,14 @@ def decimal_neg_inf() -> Decimal:
     return Decimal("-Infinity")
 
 
-def dataclass_nan() -> Metric:
-    """Return a dataclass carrying a NaN float."""
-    return Metric("temp", float("nan"))
+def dataclass_neg_inf() -> Metric:
+    """Return a dataclass carrying a negative-infinity Decimal."""
+    return Metric("temp", Decimal("-Infinity"))
 
 
 def model_nan() -> Reading:
-    """Return a Pydantic model carrying a non-finite Decimal."""
-    return Reading(label="temp", value=Decimal("-Infinity"))
+    """Return a Pydantic model carrying a NaN float."""
+    return Reading(label="temp", value=float("nan"))
 
 
 def blob() -> bytes:
@@ -156,7 +161,7 @@ def build_table() -> RouteTable:
         decimal_nan,
         decimal_finite,
         decimal_neg_inf,
-        dataclass_nan,
+        dataclass_neg_inf,
         model_nan,
         blob,
         unordered,
@@ -329,7 +334,7 @@ class TestToolRoutes:
             ("decimal_nan", None),
             ("decimal_finite", "1.5"),
             ("decimal_neg_inf", None),
-            ("dataclass_nan", {"label": "temp", "value": None}),
+            ("dataclass_neg_inf", {"label": "temp", "value": None}),
             ("model_nan", {"label": "temp", "value": None}),
         ],
     )
@@ -424,8 +429,8 @@ class TestToolResultEncoding:
         """Projections are sanitised inside dataclasses and Pydantic models."""
         text = encode_tool_result(
             {
-                "metric": Metric("temp", float("nan")),
-                "reading": Reading(label="temp", value=Decimal("-Infinity")),
+                "metric": Metric("temp", Decimal("-Infinity")),
+                "reading": Reading(label="temp", value=float("nan")),
             }
         )
         assert "NaN" not in text
