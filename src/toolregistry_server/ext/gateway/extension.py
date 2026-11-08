@@ -62,20 +62,26 @@ _SECRET_FIELDS = frozenset({"secret", "secret_hash", "digest", "salt"})
 class KeyStore(Protocol):
     """The key lifecycle surface the Keys page needs (#186).
 
-    Records are JSON-ready mappings without the secret; ``create`` is the
-    only call that returns one.
+    This is the shape of ``toolregistry_server.keystore.ApiKeyStore``: records
+    are objects that serialise through ``to_dict`` (or plain mappings), and
+    ``create`` is the only call that returns the secret, inside a
+    ``(record, secret)`` pair or a ``CreatedKey``-like object.
     """
 
     def create(
-        self, label: str, scopes: Sequence[str], expires_at: str | None = None
-    ) -> tuple[str, Mapping[str, Any]]:
-        """Create a key and return ``(secret, record)``."""
+        self,
+        label: str,
+        scopes: Sequence[str] | None = None,
+        *,
+        expires_at: str | None = None,
+    ) -> Any:
+        """Create a key and return its record together with the secret."""
 
-    def list(self) -> Sequence[Mapping[str, Any]]:
+    def list(self) -> Sequence[Any]:
         """Return every key record, secrets excluded."""
 
-    def revoke(self, key_id: str) -> Mapping[str, Any] | None:
-        """Revoke a key and return its record, or ``None`` when unknown."""
+    def revoke(self, key_id: str) -> Any:
+        """Revoke a key and return its record; raise ``KeyError`` if unknown."""
 
 
 class FrontendControl(Protocol):
@@ -127,12 +133,16 @@ def _error(status: int, error: str, message: str) -> tuple[dict[str, str], int]:
 
 
 def _guard(handler: Callable[..., Any]) -> Callable[..., Any]:
-    """Map extension exceptions onto the panel's error responses."""
+    """Map extension exceptions onto the panel's error responses.
+
+    The wrapped callable is a method: the router passes the request as the
+    first argument after ``self``, so the wrapper keeps that shape.
+    """
 
     @functools.wraps(handler)
-    def wrapped(request: Any, **params: Any) -> Any:
+    def wrapped(self: Any, request: Any, **params: Any) -> Any:
         try:
-            return handler(request, **params)
+            return handler(self, request, **params)
         except _BadRequest as exc:
             return _error(400, "Bad Request", str(exc))
         except _Unavailable as exc:
@@ -159,13 +169,6 @@ def _json_body(request: Any) -> dict[str, Any]:
     return data
 
 
-def _public_key(record: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a key record with any secret-bearing field removed."""
-    if not isinstance(record, Mapping):
-        raise ValueError("key store returned a record that is not a mapping")
-    return {key: value for key, value in record.items() if key not in _SECRET_FIELDS}
-
-
 def _record_dict(value: Any) -> Any:
     """Serialise a record that may expose ``to_dict``."""
     if hasattr(value, "to_dict"):
@@ -173,6 +176,39 @@ def _record_dict(value: Any) -> Any:
     if isinstance(value, Mapping):
         return dict(value)
     return value
+
+
+def _public_key(record: Any) -> dict[str, Any]:
+    """Return a key record with any secret-bearing field removed."""
+    data = _record_dict(record)
+    if not isinstance(data, Mapping):
+        raise ValueError("key store returned a record that is not a mapping")
+    return {key: value for key, value in data.items() if key not in _SECRET_FIELDS}
+
+
+def _created_parts(created: Any) -> tuple[str, dict[str, Any]]:
+    """Return ``(secret, public record)`` from a store's create result.
+
+    Accepts both shapes the key store may use: a ``(record, secret)`` tuple,
+    or an object with ``record`` and ``secret`` attributes (the shape of
+    ``ApiKeyStore.create``'s ``CreatedKey``).
+    """
+    if isinstance(created, tuple) and len(created) == 2:
+        first, second = created
+        # A tuple may be (secret, record) or (record, secret); the secret is
+        # the value that is a string.
+        if isinstance(first, str) and not isinstance(second, str):
+            secret, record = first, second
+        else:
+            record, secret = first, second
+    else:
+        secret = getattr(created, "secret", None)
+        record = getattr(created, "record", None)
+        if secret is None or record is None:
+            raise ValueError("key store create() must return a record and a secret")
+    if not isinstance(secret, str):
+        raise ValueError("key store returned a non-string secret")
+    return secret, _public_key(record)
 
 
 def _mutation_json(result: Any) -> dict[str, Any]:
@@ -281,13 +317,11 @@ class GatewayAdminExtension:
         if expires_at is not None and not isinstance(expires_at, str):
             raise _BadRequest("'expires_at' must be an ISO 8601 string or null")
 
-        secret, record = store.create(label.strip(), scopes, expires_at)
-        # A secret in a response body must not be stored by a cache.
-        return (
-            {**_public_key(record), "secret": secret},
-            201,
-            {"Cache-Control": "no-store"},
+        secret, record = _created_parts(
+            store.create(label.strip(), scopes, expires_at=expires_at)
         )
+        # A secret in a response body must not be stored by a cache.
+        return ({**record, "secret": secret}, 201, {"Cache-Control": "no-store"})
 
     @_guard
     def revoke_key(self, request: Any, key_id: str) -> Any:
