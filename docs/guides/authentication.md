@@ -15,32 +15,44 @@
 
 ### 编程方式 — 使用 `App`（推荐）
 
-使用 `auth.load_tokens()` 从文件加载令牌，并传递给 `App`：
+`App` 会把 `tokens_path` 转发给适配器，后者读取该文件以及 `API_BEARER_TOKEN` 环境变量（逗号分隔）：
 
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import App
-from toolregistry_server.auth import load_tokens
 
 registry = ToolRegistry()
 registry.register(my_tool)
 
-tokens = load_tokens("tokens.txt")   # 每行一个令牌，# 开头为注释
-App(registry=registry, tokens=tokens).serve_openapi(host="0.0.0.0", port=8000)
+App().serve_openapi(
+    registry=registry,
+    tokens_path="tokens.txt",   # 每行一个令牌，# 开头为注释
+    host="0.0.0.0",
+    port=8000,
+)
 ```
 
 同样的方式适用于 MCP Streamable-HTTP：
 
 ```python
-App(registry=registry, tokens=tokens).serve_mcp(
-    transport="streamable-http", host="0.0.0.0", port=8000
+App().serve_mcp(
+    registry=registry,
+    transport="streamable-http",
+    tokens_path="tokens.txt",
+    host="0.0.0.0",
+    port=8000,
 )
 ```
 
-直接内联传入令牌（无需文件）：
+如需直接内联令牌（不用文件），请直接构造 OpenAPI 适配器（MCP 适配器只接受令牌文件或 `API_BEARER_TOKEN`）：
 
 ```python
-App(registry=registry, tokens=["token-one", "token-two"]).serve_openapi()
+from toolregistry_server import RouteTable
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+OpenAPIAdapter(RouteTable(registry), tokens=["token-one", "token-two"]).run(
+    host="0.0.0.0", port=8000
+)
 ```
 
 ### 命令行方式 — `--tokens` 参数
@@ -64,7 +76,7 @@ token-three
 
 ## MCP Streamable-HTTP Bearer 认证（v0.4.0 新特性）
 
-Bearer Token 认证现已支持 MCP Streamable-HTTP 传输，与 OpenAPI 一样。使用相同的 `--tokens` 参数或 `App(tokens=...)` API，无需额外配置。
+Bearer Token 认证现已支持 MCP Streamable-HTTP 传输，与 OpenAPI 一样。使用相同的 `--tokens` 参数（或给 `App().serve_mcp()` 传 `tokens_path`），无需额外配置。
 
 ```bash
 toolregistry-server mcp \

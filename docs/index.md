@@ -80,7 +80,7 @@ def greet(name: str) -> str:
     """按名字问候某人。"""
     return f"Hello, {name}!"
 
-App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
+App().serve_openapi(registry=registry, host="0.0.0.0", port=8000)
 ```
 
 [安装 →](get-started/installation.md) · [快速开始 →](get-started/quickstart.md) · [示例 →](examples/)

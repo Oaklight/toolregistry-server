@@ -40,7 +40,7 @@ CLI（可选，位于 App 之上）
 ```python
 from toolregistry import ToolRegistry
 from toolregistry_server import RouteTable
-from toolregistry_server.openapi import OpenAPIAdapter
+from toolregistry_server.adapters.openapi import OpenAPIAdapter
 
 registry = ToolRegistry()
 # ... 注册工具 ...
@@ -54,7 +54,7 @@ OpenAPIAdapter.create_and_run(route_table, host="0.0.0.0", port=8000)
 MCP 同理：
 
 ```python
-from toolregistry_server.mcp import MCPAdapter
+from toolregistry_server.adapters.mcp import MCPAdapter
 
 MCPAdapter.create_and_run(route_table, transport="stdio")
 ```
@@ -86,7 +86,7 @@ OpenAPI 适配器在调用工具前校验请求体：
 - 由签名生成的工具走生成的模型，包括类型转换和未知键过滤。
 - 代理工具（OpenAPI、MCP、LangChain）没有模型，因此按工具自己的 JSON Schema 校验。
 
-对代理工具而言，来自 OpenAPI 文档的 `pattern` 与 `patternProperties` **不会被执行**。spec 属于不可信内容，Python 的 `re` 没有超时机制，像 `(a+)+$` 这样很短的灾难性表达式就能卡住请求。移除 `patternProperties` 时，同一层的 `additionalProperties: false` 会放宽，以免原本被这些模式覆盖的键被误判为未知键。这些约束仍会发布：`/openapi.json`、MCP 的 `inputSchema` 与路由 ETag 保留原始 schema；字段格式以上游 API 为准。通过 `RouteTable.override_parameters` 提供的覆盖属于 operator 代码，其正则仍会执行。
+对代理工具而言，来自 OpenAPI 文档的 `pattern` 与 `patternProperties` **默认不会被执行**。spec 属于不可信内容，Python 的 `re` 没有超时机制，像 `(a+)+$` 这样很短的灾难性表达式就能卡住请求。未安装可选的 `regex` extra 时，校验使用去掉这些关键字的副本，并在含 `patternProperties` 的层把 `additionalProperties: false` 放宽，以免原本被这些模式覆盖的键被误判为未知键。安装 extra 后，这些正则在单次超时与每请求预算（`--regex-timeout`、`--regex-budget`）内执行。这些约束始终会发布：`/openapi.json`、MCP 的 `inputSchema` 与路由 ETag 保留原始 schema；字段格式以上游 API 为准。通过 `RouteTable.override_parameters` 提供的覆盖属于 operator 代码，其正则仍会执行。
 
 ## 动态行为
 

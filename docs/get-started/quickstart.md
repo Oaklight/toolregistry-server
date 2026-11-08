@@ -2,6 +2,8 @@
 
 本指南带您了解使用 `toolregistry-server` 当前版本 API 将工具发布为服务的基本用法。
 
+需要 Python 3.10–3.13 与 `toolregistry>=0.20.1`；两者随包安装（参见[安装](installation.md)）。
+
 ## 编程方式：OpenAPI 服务器
 
 使用 `App` 类将工具以 RESTful HTTP 端点的形式发布：
@@ -24,7 +26,7 @@ class MyApp(App):
             """将两个数字相加。"""
             return a + b
 
-        self.registry = registry
+        return registry
 
 if __name__ == "__main__":
     MyApp().serve_openapi(host="0.0.0.0", port=8000)
@@ -41,7 +43,7 @@ from toolregistry_server import App
 registry = ToolRegistry()
 registry.register(my_tool)
 
-App(registry=registry).serve_openapi(host="0.0.0.0", port=8000)
+App().serve_openapi(registry=registry, host="0.0.0.0", port=8000)
 ```
 
 ## 编程方式：MCP 服务器
@@ -61,18 +63,19 @@ def greet(name: str) -> str:
 
 if __name__ == "__main__":
     # stdio 传输（默认，适用于 Claude Desktop 等）
-    App(registry=registry).serve_mcp()
+    App().serve_mcp(registry=registry)
 
     # 或使用 streamable-http 传输
-    # App(registry=registry).serve_mcp(transport="streamable-http", host="0.0.0.0", port=8000)
+    # App().serve_mcp(registry=registry, transport="streamable-http", host="0.0.0.0", port=8000)
 ```
 
 使用底层适配器的一步调用方式：
 
 ```python
+from toolregistry_server import RouteTable
 from toolregistry_server.adapters.mcp import MCPAdapter
 
-MCPAdapter.create_and_run(registry=registry, transport="stdio")
+MCPAdapter.create_and_run(RouteTable(registry), transport="stdio")
 ```
 
 ## 使用命令行工具

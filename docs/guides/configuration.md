@@ -115,6 +115,9 @@ tools:
 | `headers` | dict | 否 | 网络传输的 HTTP 头 |
 | `namespace` | string | 否 | 注册工具的命名空间 |
 | `persistent` | bool | 否 | 保持连接（默认：`true`） |
+| `include` | list | 否 | 保留的名称或 glob 模式。与 `exclude` 互斥 |
+| `exclude` | list | 否 | 丢弃的名称或 glob 模式。与 `include` 互斥 |
+| `allow_private_hosts` | bool | 否 | 允许该源的 URL 传输访问 loopback、link-local 或私网地址（默认：`false`） |
 | `enabled` | bool | 否 | 按源启用/禁用（默认：`true`） |
 
 !!! tip "`http` 别名"
@@ -132,6 +135,9 @@ tools:
 | `namespace` | string | 否 | 注册工具的命名空间 |
 | `auth` | object | 否 | 认证配置 |
 | `base_url` | string | 否 | 覆盖规范中的 `servers[0].url` |
+| `include` | list | 否 | 保留的名称或 glob 模式。与 `exclude` 互斥 |
+| `exclude` | list | 否 | 丢弃的名称或 glob 模式。与 `include` 互斥 |
+| `allow_private_hosts` | bool | 否 | 允许规范 URL、每个 `servers[]` 条目以及工具的请求 URL 访问 loopback、link-local 或私网地址（默认：`false`） |
 | `enabled` | bool | 否 | 按源启用/禁用（默认：`true`） |
 
 #### 认证配置
@@ -144,6 +150,26 @@ tools:
 | `header_name` | string | `"Authorization"` | 自定义头名称（用于 `type: "header"`） |
 
 如果同时指定了 `token_env` 和 `token`，`token_env` 优先。
+
+### 私网地址
+
+`mcp` 与 `openapi` 源都会拒绝解析到 loopback、link-local 或私网地址的 URL。检查在任何连接建立之前执行，名称无法解析时按失败处理。在单个源上设置 `allow_private_hosts: true` 即可放行：
+
+```yaml
+tools:
+  - type: openapi
+    url: http://127.0.0.1:8000/openapi.json
+    namespace: local_api
+    allow_private_hosts: true
+
+  - type: mcp
+    transport: sse
+    url: http://192.168.1.20:8080/sse
+    namespace: lan_mcp
+    allow_private_hosts: true
+```
+
+该标记只作用于这个源。对 `mcp` 而言，它覆盖 URL 传输（SSE、streamable HTTP、WebSocket）；`stdio` 源没有 URL，不受影响。对 `openapi` 而言，它覆盖规范 URL、每个 `servers[]` 条目以及工具的请求 URL。管理面板有自己的开关：`enable_admin(allow_private_hosts=True)`。
 
 ## 过滤模式
 
@@ -192,6 +218,26 @@ tools:
     namespace: external_api
     enabled: false  # 等 API 密钥配置好再启用
 ```
+
+## 部署配置
+
+`--profile` 在所有源注册完成后应用命名过滤器。配置文件可以在 `profiles:` 下覆盖内置默认值：
+
+```yaml
+profiles:
+  staging:
+    disable_tags: [destructive, privileged]
+    enable: [calculator]      # 标签过滤后强制启用的命名空间模式
+    disable: [internal/]      # 标签过滤后强制禁用的命名空间模式
+```
+
+| 键 | 说明 |
+|----|------|
+| `disable_tags` | 要禁用的标签名。替换该部署配置的内置集合 |
+| `enable` | 标签过滤后强制启用的命名空间模式（最高优先级） |
+| `disable` | 标签过滤后强制禁用的命名空间模式（在 `enable` 之后应用） |
+
+没有 `profiles:` 条目时使用内置集合：`remote` 禁用 `file_system`、`destructive` 与 `privileged`；`local` 禁用 `network`。未知的部署配置名会记录警告并被忽略。
 
 ## 环境变量
 

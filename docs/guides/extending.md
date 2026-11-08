@@ -184,13 +184,12 @@ python -m my_hub_server mcp --transport stdio
 
 ## 扩展应用中的认证
 
-使用 `auth.load_tokens()` 从文件加载 Bearer 令牌，并将其传给 `App` 或直接传给适配器：
+把令牌文件传给 `App`；它会将 `tokens_path` 转发给适配器，适配器同时读取 `API_BEARER_TOKEN`（逗号分隔）：
 
 ```python
-from toolregistry_server.auth import load_tokens
-
-tokens = load_tokens("/etc/my-server/tokens.txt")
-HubApp(tokens=tokens).serve_openapi(port=8000)
+HubApp().serve_openapi(tokens_path="/etc/my-server/tokens.txt", port=8000)
 ```
+
+如需内联传入令牌列表，请直接构造适配器。
 
 完整的令牌文件格式参考请参见 [认证](authentication.md)。

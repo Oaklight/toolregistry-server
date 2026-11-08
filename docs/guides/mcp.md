@@ -126,6 +126,21 @@ asyncio.run(run_stdio(server))
 
 `http` 是 `streamable-http` 的别名，内部会自动归一化。
 
+### 私网地址
+
+URL 传输（SSE、streamable HTTP、WebSocket）受 core 的出站地址策略约束：解析到 loopback、link-local 或私网地址的主机会在建立连接前被拒绝。按源放行：
+
+```yaml
+tools:
+  - type: mcp
+    transport: sse
+    url: http://192.168.1.20:8080/sse
+    namespace: lan_mcp
+    allow_private_hosts: true
+```
+
+`stdio` 启动子进程，没有 URL，因此该标记不适用。参见[配置](configuration.md#私网地址)。
+
 ## 认证（Streamable HTTP）
 
 通过 `tokens_path` 指定 Bearer token 文件，或设置 `API_BEARER_TOKEN` 环境变量（逗号分隔）：

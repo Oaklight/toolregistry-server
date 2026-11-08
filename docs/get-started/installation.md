@@ -38,7 +38,7 @@ pip install toolregistry-server[mcp]
 
 这将额外安装：
 
-- `mcp` SDK (>=1.8.0)
+- `mcp` SDK (>=1.22.0,<3)
 
 ### 完整安装
 
@@ -47,6 +47,16 @@ pip install toolregistry-server[mcp]
 ```bash
 pip install toolregistry-server[all]
 ```
+
+`all` 会安装 `openapi` 与 `mcp` extra。有界的 spec 正则校验是单独的可选项：
+
+### 有界的 Spec 正则校验（可选）
+
+```bash
+pip install 'toolregistry-server[regex]'
+```
+
+这会安装 `regex` (>=2024.4.16)。未安装时，OpenAPI 文档提供的 `pattern` 与 `patternProperties` 不会在请求校验中执行；安装后，每次匹配都受单次超时与每请求预算（`--regex-timeout`、`--regex-budget`）约束。参见 [OpenAPI 指南](../guides/openapi.md#来自-spec-的正则)。
 
 ## 开发安装
 
@@ -67,8 +77,8 @@ pip install -e ".[all,dev]"
 
 ## 系统要求
 
-- **Python**: 3.10 或更高版本
-- **核心依赖**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.18.0
+- **Python**: 3.10 或更高版本（已在 3.10–3.13 上测试）
+- **核心依赖**: [`toolregistry`](https://toolregistry.readthedocs.io/) >= 0.20.1,<1.0.0
 
 ## 验证安装
 

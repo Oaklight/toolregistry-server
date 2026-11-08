@@ -2,11 +2,15 @@
 
 ## 应用工厂
 
-::: toolregistry_server.openapi.create_openapi_app
+::: toolregistry_server.adapters.openapi.create_openapi_app
 
 ## 适配器
 
-::: toolregistry_server.openapi.adapter
+::: toolregistry_server.adapters.openapi.OpenAPIAdapter
+
+## 路由构建器
+
+::: toolregistry_server.adapters.openapi.adapter
 
 ## 文档构建器
 
@@ -14,4 +18,4 @@
 
 ## 中间件
 
-::: toolregistry_server.openapi.middleware
+::: toolregistry_server.adapters.openapi.middleware

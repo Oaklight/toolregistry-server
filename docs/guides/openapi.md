@@ -7,12 +7,12 @@ OpenAPI 适配器使用 [FastAPI](https://fastapi.tiangolo.com/) 将 `ToolRegist
 适配器自动：
 
 - 为每个注册的工具创建 POST 端点
-- 从 JSON Schema 参数生成动态 Pydantic 模型
+- 按路由发布的 JSON Schema（签名派生的工具则按工具自身的校验模型）校验每个请求体
 - 生成 OpenAPI 模式（可在 `/openapi.json` 访问）
 - 提供 `/tools` 元数据端点，列出可用工具
 - 支持运行时启用/禁用单个工具
 - 实现基于 ETag 的 HTTP 缓存
-- 支持 `additionalProperties: true` 的 schema（如 `call_deferred` 的 `**kwargs`），通过 Pydantic `extra="allow"` 实现
+- 支持允许额外属性的 schema（`additionalProperties` 缺省、为 `true` 或 `{}`），例如 `call_deferred` 的 `**kwargs`
 
 ## 不使用 FastAPI 构建文档
 
@@ -96,6 +96,20 @@ POST /{namespace}/{tool_name}
 POST /calculator/evaluate
 ```
 
+### 私网地址
+
+规范 URL 或文档中的任何 `servers[]` 条目，只要解析到 loopback、link-local 或私网地址，都会在建立连接前被拒绝。检查覆盖每个 `servers[]` 条目，而不只是用作 base URL 的那一个；重定向默认也被拒绝，因为下一跳无法校验（`follow_redirects=False`）。按源放行本地或私网 API：
+
+```yaml
+tools:
+  - type: openapi
+    url: http://127.0.0.1:8000/openapi.json
+    namespace: local_api
+    allow_private_hosts: true
+```
+
+自行构建客户端的调用方也可以在 `load_openapi_spec(..., allow_private_hosts=True)`、`validate_spec_url()` 与 `HttpClientConfig` 上传入同一标记。参见[配置](../guides/configuration.md#私网地址)。
+
 ### 请求格式
 
 参数作为 JSON 主体传递：
@@ -152,7 +166,21 @@ App().serve_openapi(config_path="tools.yaml", backend="httpserver")
 
 `httpserver` 是 epic #101 的零依赖路径：路由、422 `{"detail": [...]}` 结构、`/tools` 与 `/openapi.json` 上的 ETag/`304` 行为、以及 `/events` 的 Server-Sent Events 流都一致。有一组差分测试同时启动两个实现并通过真实 socket 断言状态码、`ETag` 与响应体字节完全相同。`--reload` 是 uvicorn 的特性，在 `httpserver` 后端上只会记录一条告警并被忽略。
 
-有一处刻意的差异：工具返回 `bytes` 时，`httpserver` 后端按 core 编码器做 base64，而 FastAPI 按 UTF-8 文本解码。
+两个后端都用同一个辅助函数编码工具结果，该函数使用 core 的 `ToolResultJSONEncoder`：`bytes` 结果在两个后端上都是 base64，非有限浮点数与 `Decimal`（`NaN`、`Infinity`）都输出 `null`，而不是裸 `NaN` 或字符串 `"NaN"`。
+
+### 请求体上限
+
+两个后端共用 `--max-body-size`（默认 `1048576`，即 1 MiB）：
+
+```bash
+toolregistry-server openapi --config tools.yaml --max-body-size 4194304
+```
+
+```python
+OpenAPIAdapter(route_table, max_body_size=4 * 1024 * 1024)
+```
+
+该值必须是正整数：CLI 在解析参数时拒绝零或负数，`OpenAPIAdapter` 会抛出 `ValueError`。超过上限的请求在两个后端上都返回 HTTP `413`，响应体为 JSON `{"detail": "Request body too large"}`。
 
 ## 来自 spec 的正则
 
