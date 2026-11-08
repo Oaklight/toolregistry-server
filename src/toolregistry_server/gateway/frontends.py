@@ -62,9 +62,10 @@ def normalize_path(path: str) -> str:
         raise ValueError(f"frontend path must not contain '?' or '#': {path!r}")
     if any(character.isspace() for character in path):
         raise ValueError(f"frontend path must not contain whitespace: {path!r}")
-    if "//" in path:
+    normalized = path.rstrip("/")
+    if "//" in normalized:
         raise ValueError(f"frontend path must not contain '//': {path!r}")
-    return path.rstrip("/")
+    return normalized
 
 
 @dataclass(frozen=True)

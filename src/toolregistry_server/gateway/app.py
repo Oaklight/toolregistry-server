@@ -432,10 +432,9 @@ class GatewayAdapter(Adapter):
         self._validate_backend()
 
         self._openapi_app = self._build_openapi_app()
-        if backend == "httpserver":
-            self._mcp_server = None
-        else:
-            self._mcp_server = self._build_mcp_server()
+        self._mcp_server: Any = (
+            None if backend == "httpserver" else self._build_mcp_server()
+        )
 
         self._session_manager: Any = None
         self._exit_stack: AsyncExitStack | None = None

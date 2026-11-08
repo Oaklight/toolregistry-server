@@ -197,7 +197,7 @@ class TestBuildSseApp:
 
         paths = {route.path for route in app.routes}
         assert "/events" in paths
-        assert "/events/messages/" in paths
+        assert "/events/messages" in paths
 
     def test_gateway_routes_are_relative(self):
         from toolregistry_server.adapters.mcp.server import build_sse_app
@@ -206,4 +206,4 @@ class TestBuildSseApp:
 
         paths = {route.path for route in app.routes}
         assert "/" in paths
-        assert "/messages/" in paths
+        assert "/messages" in paths
