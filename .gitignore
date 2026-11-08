@@ -164,3 +164,6 @@ docs_zh/
 uv.lock
 .claude/
 .complexipy_cache/
+
+# Gateway demo writes its key digests here when run from the example.
+examples/gateway-demo/keys.json
