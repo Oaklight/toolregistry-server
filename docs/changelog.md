@@ -6,10 +6,14 @@
 
 ## [未发布]
 
+## [0.8.0] - 2026-11-08
+
 ### 新增
 
 - **来自 spec 的正则可在时间上限内执行**（#160）：新增可选的 `regex` extra（不属于 `all`），为请求校验提供 `pattern_matcher`，代理 OpenAPI 工具的 `pattern` 与 `patternProperties` 得以执行，默认单次 50 ms、每请求 250 ms。`patternProperties` 先对每个 pattern 调用一次（空对象也校验），再对每个 (pattern, key) 调用一次。超时返回 `500`，detail 为 `{"detail": "Tool '<name>' validation timed out"}`；正则无法编译时返回 `500` 与 `"validation failed"`，两者都不回显 pattern。未安装 extra 时行为不变：不执行 spec 正则，含 pattern 的层级继续放宽 `additionalProperties`。安装 extra 会收紧校验，此前因正则被忽略而通过的请求现在可能被拒绝。`--regex-timeout` / `--regex-budget` 配置上限（`0` 关闭执行）；`--strict-spec-regex` 让非法正则终止启动，而不是跳过该 source。
 - **路由级覆盖：发布用的参数 schema 与执行提示**（#137）：`RouteTable.override_parameters(name, schema)` 与 `override_execution_hints(name, hints)` 可改变单个路由发布的内容，而不改动注册表中的 `Tool` 或其 `schema_hash`。`RouteEntry` 通过 `served_parameters_schema` / `served_execution_hints` 暴露结果，两个适配器都读取该视图，因此 MCP 的 `inputSchema` / `annotations` 与 OpenAPI 的请求 schema / `x-` 扩展保持一致。`{}` 会抑制所有注解/扩展；`None` 清除覆盖。覆盖在 `refresh()` 与 `refresh_all()` 后仍然保留，并会通知监听者，因此 ETag 与 `tools/list_changed` 能反映变化。这取代了包裹私有 `tools/list` handler 的做法。
+- **OpenAPI 适配器新增零依赖 HTTP 后端**（#127、#128，epic #101）：`--backend httpserver`（或 `OpenAPIAdapter(..., backend="httpserver")`）在内联的 `httpserver` 上提供完全相同的线上契约——工具路由、带 ETag/`304` 的 `/tools` 与 `/openapi.json`、`/docs`，以及 SSE 的 `/events`——且无需安装 FastAPI/uvicorn。默认仍是 `fastapi`；`--reload` 在新后端上会明确提示不支持。返回值统一用 core 的 `ToolResultJSONEncoder` 序列化，dataclass、pydantic 模型、集合、日期时间与嵌套容器都与 FastAPI 路径产出相同的 JSON 形状；`bytes` 依旧按设计使用 base64。
+- **两种后端的差分比对测试**（#129）：同时启动两个实现并通过真实 socket 发送同一批请求，断言状态码、`ETag` 与响应体字节完全一致，覆盖工具调用、错误结构、条件请求、404/405、禁用工具的 503 以及三种鉴权情形。
 
 ### 变更
 
@@ -19,6 +23,8 @@
 - **非法 spec 正则现在只丢弃受影响的工具**（#171）：加载期会编译 OpenAPI source 工具 schema 中的每个 `pattern` 与 `patternProperties` 键。此前一条非法正则会移除该 source 的全部工具；现在只丢弃自身 schema 含该正则的工具，每个都记录错误日志（工具名、schema 路径、pattern），只有没有任何工具存活时才把 source 报为失败。`--strict-spec-regex` 保留整源失败语义并终止启动。加载期 walker 也不再把这些映射中**名为** `default`、`example`、`enum`、`const` 的属性或定义当作数据关键字，因此 `{"properties": {"default": {"pattern": "("}}}` 这类 schema 会被检出。
 - **默认只发布显式声明的执行提示**（#136）：`READ_ONLY` / `DESTRUCTIVE` 标签可能是为本地权限策略选择的，发布解析后的映射会让该标签变成面向客户端的自动批准声明。`served_execution_hints` 现在优先使用 `Tool.declared_execution_hints`；只有 `RouteTable` 通过 `emit_derived_execution_hints=True` 或 `set_emit_derived_execution_hints(True)` 显式选择加入时，才会发布由标签推导的提示。显式声明的提示不受影响；由于两个适配器读取同一视图，MCP 与 OpenAPI 遵循相同策略。在尚未提供 `declared_execution_hints` 的 core 上，服务端会从 `ToolMetadata` 的提示字段重建相同映射（这些字段在 0.19.x 下限中已存在），因此无需等待 core 发布即可生效；更旧的 core 则不发布任何声明。
 - **比工具模型更严格的参数覆盖会被拒绝**（core #384）：对 model-backed 工具，`override_parameters` 现在拒绝新增 `required`、收紧 `minimum`/`maximum`/`minLength`/`maxLength`、修改 `pattern`、收窄或改变 `enum`、或收窄或改变属性类型的覆盖，因为工具的校验模型不会执行更严格的契约。更宽松的覆盖会保存并发出 `UserWarning`。现有的更严格覆盖需要放宽或改用代理工具；代理工具按发布的 schema 校验，不受影响。拒绝由程序化的 `override_parameters` 调用抛出。`toolregistry-server` 自身不会从配置应用路由参数覆盖，因此升级不会仅因此导致启动失败；下游加载器若确实应用这些覆盖，应捕获 `ValueError`、记录工具名与原因、跳过该条覆盖，使服务仍能启动。
+- **OpenAPI 请求校验不再依赖 pydantic 模型**（#123，epic #101）：`_schema_to_pydantic`、`_resolve_type` 以及 `__annotations__` 的修补全部移除。请求体现在改走两条路径：由函数签名生成的工具直接调用 `Tool.validate_parameters()`——与 `invoke` 相同的类型转换与未声明键过滤；代理工具（MCP / OpenAPI / LangChain，没有 `parameters_model`）则使用内联的 `jsonschema.schema_validate()`。两者都沿用既有的 422 `{"detail": [...]}` 结构（含 `loc` / `msg` / `type`），客户端错误处理无需改动。非 JSON 对象（数组、字符串、数字、`null`、表单提交）现在返回 422，而不是在参数处理阶段失败。
+- **`/openapi.json` 由 `RouteTable` 构建器生成**（#124，epic #101）：文档改由 `build_openapi_schema(route_table)` 生成，而不再通过 FastAPI 的 `get_openapi()` 遍历生成的 pydantic 模型，应用发布的文档与独立构建器输出的文档不会再出现偏差。被禁用的路由天然不在文档中。
 
 ### 修复
 
@@ -39,18 +45,6 @@
   （MCP `tools/list`）固定。
 - **路由级覆盖会被校验并具有权威性**（#138）：覆盖现在是一份经校验的副本。`override_parameters` 要求对象 schema（接受 `["object", "null"]`），把省略的 `additionalProperties` 规范化为 `false`，从工具的校验模型补齐 `required`，当覆盖缺少模型必填字段时发出警告，并拒绝模型型工具无法执行的带类型 `additionalProperties`。OpenAPI 适配器在走校验模型之前先检查实际发布的 schema，因此覆盖未声明的键会以 `extra_forbidden` 被拒绝，而不会静默传给可调用对象。
 - **两个 OpenAPI 后端的非有限工具结果现在都是严格 JSON**（#130、#135）：FastAPI 通过 pydantic 序列化工具结果，把非有限 `Decimal` 写成字符串 `"NaN"`，而 httpserver 则写出裸 `NaN`。两个后端现在都用 `adapters.openapi.serialisation.encode_tool_result()` 编码结果，非有限浮点数与 `Decimal` 一律输出 `null`。编码使用 core 的 `ToolResultJSONEncoder`，非有限浮点数与 `Decimal` 输出 `null`（#159）。由于共用同一个编码器，`bytes` 结果在两个后端上都是 base64（FastAPI 此前按 UTF-8 解码），集合按 `repr` 排序，工具响应的 `Content-Type` 在两个后端上都是 `application/json; charset=utf-8`。
-
-## [0.8.0] - 2026-10-23
-
-### 新增
-
-- **OpenAPI 适配器新增零依赖 HTTP 后端**（#127、#128，epic #101）：`--backend httpserver`（或 `OpenAPIAdapter(..., backend="httpserver")`）在内联的 `httpserver` 上提供完全相同的线上契约——工具路由、带 ETag/`304` 的 `/tools` 与 `/openapi.json`、`/docs`，以及 SSE 的 `/events`——且无需安装 FastAPI/uvicorn。默认仍是 `fastapi`；`--reload` 在新后端上会明确提示不支持。返回值统一用 core 的 `ToolResultJSONEncoder` 序列化，dataclass、pydantic 模型、集合、日期时间与嵌套容器都与 FastAPI 路径产出相同的 JSON 形状；`bytes` 依旧按设计使用 base64。
-- **两种后端的差分比对测试**（#129）：同时启动两个实现并通过真实 socket 发送同一批请求，断言状态码、`ETag` 与响应体字节完全一致，覆盖工具调用、错误结构、条件请求、404/405、禁用工具的 503 以及三种鉴权情形。
-
-### 变更
-
-- **OpenAPI 请求校验不再依赖 pydantic 模型**（#123，epic #101）：`_schema_to_pydantic`、`_resolve_type` 以及 `__annotations__` 的修补全部移除。请求体现在改走两条路径：由函数签名生成的工具直接调用 `Tool.validate_parameters()`——与 `invoke` 相同的类型转换与未声明键过滤；代理工具（MCP / OpenAPI / LangChain，没有 `parameters_model`）则使用内联的 `jsonschema.schema_validate()`。两者都沿用既有的 422 `{"detail": [...]}` 结构（含 `loc` / `msg` / `type`），客户端错误处理无需改动。非 JSON 对象（数组、字符串、数字、`null`、表单提交）现在返回 422，而不是在参数处理阶段失败。
-- **`/openapi.json` 由 `RouteTable` 构建器生成**（#124，epic #101）：文档改由 `build_openapi_schema(route_table)` 生成，而不再通过 FastAPI 的 `get_openapi()` 遍历生成的 pydantic 模型，应用发布的文档与独立构建器输出的文档不会再出现偏差。被禁用的路由天然不在文档中。
 
 ## [0.7.0] - 2026-10-23
 
