@@ -250,20 +250,24 @@ def register_openapi_source(
 
     When the optional ``regex`` extra is installed, every ``pattern`` and
     ``patternProperties`` key in the registered tool schemas is compiled
-    first.  A source with an invalid pattern is skipped as a whole — its
-    tools are removed again — and the failure is logged with the tool name,
-    schema path and pattern text.  ``strict=True`` raises instead, aborting
-    startup.
+    first.  By default only the tools whose own schema contains an invalid
+    pattern are dropped; the rest of the source stays registered, so one bad
+    pattern in a large document does not cost the healthy tools.  Each drop
+    is logged with the tool name, schema path and pattern text, and the
+    source is reported as failed only when no tool survives.  ``strict=True``
+    restores the all-or-nothing behaviour: every tool from the source is
+    removed and :class:`SpecPatternError` is raised.
 
     Args:
         registry: The registry to register tools into.
         source: The OpenAPI source configuration.
-        strict: Raise :class:`SpecPatternError` on an invalid pattern
-            instead of skipping the source.
+        strict: Fail the whole source (and raise) when any pattern is
+            invalid, instead of dropping only the affected tools.
 
     Returns:
-        ``True`` if the source was registered, ``False`` if it was skipped
-        because one of its patterns does not compile.
+        ``True`` if the source contributed at least one tool or had none to
+        contribute; ``False`` when every tool it contributed was dropped
+        because of an invalid pattern.
 
     Raises:
         SpecPatternError: If *strict* is true and a pattern is invalid.
@@ -301,25 +305,62 @@ def register_openapi_source(
     new_names = set(registry.list_tools(include_disabled=True)) - before
 
     failures = _invalid_patterns(registry, new_names)
-    if failures:
-        for name in new_names:
-            # The whole source is skipped: a partially registered source
-            # would serve tools whose validation silently ignores patterns.
-            registry._unregister(name)  # ty: ignore[unresolved-attribute]
-        for tool_name, schema_path, pattern, error_name in failures:
-            logger.error(
-                f"Skipping OpenAPI source {source.url!r}: tool {tool_name!r} "
-                f"has an invalid regex at {schema_path} "
-                f"({error_name}): {pattern!r}"
-            )
-        if strict:
-            raise SpecPatternError(
-                f"OpenAPI source {source.url!r} has {len(failures)} invalid "
-                f"regex(es); first: tool {failures[0][0]!r} at {failures[0][1]}"
-            )
+    if failures and not _handle_invalid_patterns(
+        registry, source.url, new_names, failures, strict=strict
+    ):
         return False
 
     logger.info(f"Loaded OpenAPI tools from {source.url}")
+    return True
+
+
+def _handle_invalid_patterns(
+    registry: "ToolRegistry",
+    source_url: str,
+    new_names: set[str],
+    failures: list[tuple[str, str, str, str]],
+    *,
+    strict: bool,
+) -> bool:
+    """Drop tools with an invalid pattern, or fail the whole source.
+
+    Args:
+        registry: The registry holding the newly registered tools.
+        source_url: Source URL, for the log and the raised message.
+        new_names: Every tool name the source contributed.
+        failures: ``(tool, schema_path, pattern, error_class)`` entries.
+        strict: Remove every tool from the source and raise.
+
+    Returns:
+        ``True`` when at least one tool survives, ``False`` when the source
+        contributed tools but none of them survived.
+
+    Raises:
+        SpecPatternError: If *strict* is true.
+    """
+    bad_tools = {tool_name for tool_name, *_ in failures}
+    for tool_name, schema_path, pattern, error_name in failures:
+        logger.error(
+            f"Dropping tool {tool_name!r} from OpenAPI source "
+            f"{source_url!r}: invalid regex at {schema_path} "
+            f"({error_name}): {pattern!r}"
+        )
+    dropped = new_names if strict else bad_tools
+    for name in dropped:
+        registry._unregister(name)  # ty: ignore[unresolved-attribute]
+    if strict:
+        raise SpecPatternError(
+            f"OpenAPI source {source_url!r} has {len(failures)} invalid "
+            f"regex(es); first: tool {failures[0][0]!r} at {failures[0][1]}"
+        )
+    if new_names and new_names <= bad_tools:
+        # Nothing survived, so the source counts as failed for callers (the
+        # hub records it as such and retries on the next reload).
+        logger.error(
+            f"OpenAPI source {source_url!r} contributed no usable tool: "
+            f"every tool had an invalid regex"
+        )
+        return False
     return True
 
 
