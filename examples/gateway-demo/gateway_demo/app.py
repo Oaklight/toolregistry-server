@@ -65,6 +65,19 @@ def _frontend_for(path: str) -> str | None:
     return None
 
 
+def _token_matches(token: str, expected: str) -> bool:
+    """Compare a header token with the operator token in constant time.
+
+    ``hmac.compare_digest`` raises ``TypeError`` for non-ASCII *str*
+    operands, so the values are compared as UTF-8 bytes; an unencodable
+    header value is simply a mismatch.
+    """
+    try:
+        return hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+
+
 async def _admin_response(request: Request, admin_token: str, call_next: Any) -> Any:
     if not admin_token:
         return JSONResponse(
@@ -72,7 +85,7 @@ async def _admin_response(request: Request, admin_token: str, call_next: Any) ->
             status_code=503,
         )
     token = _bearer(request)
-    if token is None or not hmac.compare_digest(token, admin_token):
+    if token is None or not _token_matches(token, admin_token):
         return JSONResponse(
             {"detail": "operator token required"},
             status_code=401,
@@ -107,14 +120,17 @@ def _attach_admin(app: FastAPI, keys: FileKeyStore, frontends: FrontendState) ->
     def create_key(payload: dict[str, Any], response: Response) -> dict[str, Any]:
         name = payload.get("name")
         scopes = payload.get("scopes")
-        if not isinstance(name, str):
-            raise HTTPException(status_code=422, detail="'name' must be a string")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=422, detail="'name' must be a non-empty string"
+            )
         if scopes is not None and (
             not isinstance(scopes, list)
-            or not all(isinstance(item, str) for item in scopes)
+            or not scopes
+            or not all(isinstance(item, str) and item for item in scopes)
         ):
             raise HTTPException(
-                status_code=422, detail="'scopes' must be a list of strings"
+                status_code=422, detail="'scopes' must be a non-empty list of strings"
             )
         try:
             secret, record = keys.create(name, scopes)
