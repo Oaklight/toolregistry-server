@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A same-name replacement is rechecked for an invalid spec regex, and partial drops are visible** (#171): the load-time check compared tool-name snapshots, so a source that replaced an existing tool with the same name contributed no *new* name and the replacement schema was never compiled — a bad `pattern` introduced by the replacement stayed registered and only failed on the first call. The check now compares tool objects: every name the registration created or replaced is inspected, and a replacement with an invalid pattern is dropped like a new tool. The source summary line now reports how many tools were dropped and which ones (for example `Loaded OpenAPI tools from '…': dropped 2 tool(s) with an invalid regex: ['a', 'b']`), and the all-dropped line carries the count and the list too. `--strict-spec-regex` and the hub's failed-source semantics (false only when nothing survives) are unchanged.
+
 ## [0.8.0] - 2026-11-08
 
 ### Added

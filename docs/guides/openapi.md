@@ -110,6 +110,20 @@ tools:
 
 The same flag is accepted by `load_openapi_spec(..., allow_private_hosts=True)`, `validate_spec_url()` and `HttpClientConfig` for callers that build the client themselves. See [Configuration](../guides/configuration.md#private-addresses).
 
+### Spec loading and refresh
+
+An OpenAPI source loads its document once, when the source is registered. A
+route refresh — `RouteTable.refresh()`, `refresh_all()`, and the
+`last_refreshed_at` field on `/tools` — rebuilds routes from the tools already
+in the registry. It does not download the spec again, so a path added to the
+remote document stays invisible until the source is registered again: restart
+the server, or, in the Hub, change that source's entry in `tools.jsonc` while
+`--config-reload` is on (an unchanged declaration is not re-registered).
+
+Every download of the spec repeats the outbound check with the source's
+`allow_private_hosts`: the spec URL and every `servers[]` entry are validated
+again before the request is sent.
+
 ### Request Format
 
 Parameters are passed as a JSON body:
