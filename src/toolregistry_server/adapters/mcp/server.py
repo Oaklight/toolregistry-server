@@ -30,6 +30,7 @@ logger = get_logger()
 
 if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
+    from starlette.applications import Starlette
 
 
 def _make_http_exception_handlers() -> dict:
@@ -92,6 +93,74 @@ async def run_stdio(server: "Server") -> None:
         logger.info("MCP stdio server shutdown requested (CancelledError)")
 
 
+def build_sse_app(
+    server: "Server",
+    *,
+    path: str = "/sse",
+    route_path: str | None = None,
+) -> "Starlette":
+    """Build a Starlette application for the SSE transport.
+
+    Args:
+        server: The MCP Server instance to serve.
+        path: External path of the SSE endpoint.  The transport advertises
+            ``{path}/messages/`` to clients, so this must be the path the
+            client can reach even when *route_path* is different.
+        route_path: Internal path the GET route is registered at.  Defaults
+            to *path*.  The gateway passes ``"/"`` because it strips the
+            frontend prefix from the request scope before dispatch.
+
+    Returns:
+        A Starlette app serving the SSE stream and its message endpoint.
+
+    Raises:
+        ImportError: If the MCP SDK or Starlette is not installed.
+    """
+    try:
+        from mcp.server.sse import SseServerTransport
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.responses import Response
+        from starlette.routing import Mount, Route
+    except ImportError as e:
+        raise ImportError(
+            "MCP SDK and Starlette are required for SSE transport. "
+            "Install with: pip install toolregistry-server[mcp] starlette uvicorn"
+        ) from e
+
+    route_path = path if route_path is None else route_path
+    messages_path = "/messages/" if route_path == "/" else f"{path}/messages/"
+
+    # The advertised endpoint is always the external path: a gateway strips
+    # its prefix before the internal route runs, but the client posts to the
+    # public URL.
+    sse = SseServerTransport(f"{path}/messages/")
+
+    async def handle_sse(request: Request) -> Response:
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            from ._compat import tools_changed_notification_options
+
+            await server.run(
+                streams[0],
+                streams[1],
+                server.create_initialization_options(
+                    notification_options=tools_changed_notification_options(),
+                ),
+            )
+        # Return empty response to avoid NoneType error when client disconnects
+        return Response()
+
+    return Starlette(
+        routes=[
+            Route(route_path, endpoint=handle_sse, methods=["GET"]),
+            Mount(messages_path, app=sse.handle_post_message),
+        ],
+        exception_handlers=_make_http_exception_handlers(),
+    )
+
+
 async def run_sse(
     server: "Server",
     host: str = "127.0.0.1",
@@ -111,46 +180,15 @@ async def run_sse(
     """
     try:
         import uvicorn
-        from mcp.server.sse import SseServerTransport
-        from starlette.applications import Starlette
-        from starlette.requests import Request
-        from starlette.responses import Response
-        from starlette.routing import Mount, Route
     except ImportError as e:
         raise ImportError(
-            "MCP SDK and Starlette are required for SSE transport. "
+            "uvicorn is required for SSE transport. "
             "Install with: pip install toolregistry-server[mcp] starlette uvicorn"
         ) from e
 
     logger.info(f"Starting MCP server with SSE transport on {host}:{port}{path}")
 
-    # Create SSE transport
-    sse = SseServerTransport(f"{path}/messages/")
-
-    # SSE endpoint handler - must accept Request and return Response
-    # See MCP SDK documentation for the correct pattern
-    async def handle_sse(request: Request) -> Response:
-        async with sse.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
-            from ._compat import tools_changed_notification_options
-
-            await server.run(
-                streams[0],
-                streams[1],
-                server.create_initialization_options(
-                    notification_options=tools_changed_notification_options(),
-                ),
-            )
-        # Return empty response to avoid NoneType error when client disconnects
-        return Response()
-
-    # Create Starlette app
-    routes = [
-        Route(path, endpoint=handle_sse, methods=["GET"]),
-        Mount(f"{path}/messages/", app=sse.handle_post_message),
-    ]
-    app = Starlette(routes=routes, exception_handlers=_make_http_exception_handlers())
+    app = build_sse_app(server, path=path)
 
     # Run with uvicorn
     config = uvicorn.Config(app, host=host, port=port, log_level="info")

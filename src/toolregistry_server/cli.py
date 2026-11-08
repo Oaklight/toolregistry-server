@@ -6,6 +6,7 @@ packages subclass to customize parser, banner, and dispatch.
 Usage:
     toolregistry-server openapi --config tools.yaml [OPTIONS]
     toolregistry-server mcp --config tools.yaml [OPTIONS]
+    toolregistry-server gateway --config tools.yaml [OPTIONS]
 
 Subclassing (e.g. Hub)::
 
@@ -148,6 +149,7 @@ class CLI:
         """
         from .adapters.mcp import MCPAdapter
         from .adapters.openapi import OpenAPIAdapter
+        from .gateway import GatewayAdapter
 
         parser = argparse.ArgumentParser(
             prog=self.app.identity.prog,
@@ -158,7 +160,7 @@ class CLI:
 
         sub = parser.add_subparsers(
             dest="command",
-            metavar="{openapi,mcp}",
+            metavar="{openapi,mcp,gateway}",
         )
 
         openapi_parser = sub.add_parser("openapi", help="Start OpenAPI server")
@@ -170,7 +172,19 @@ class CLI:
         for source_parser in (openapi_parser, mcp_parser):
             self._add_source_runtime_arguments(source_parser)
 
-        self.configure_subparsers({"openapi": openapi_parser, "mcp": mcp_parser})
+        gateway_parser = sub.add_parser(
+            "gateway", help="Serve OpenAPI and MCP from one process"
+        )
+        GatewayAdapter.add_cli_arguments(gateway_parser)
+        self._add_source_runtime_arguments(gateway_parser)
+
+        self.configure_subparsers(
+            {
+                "openapi": openapi_parser,
+                "mcp": mcp_parser,
+                "gateway": gateway_parser,
+            }
+        )
 
         return parser
 
@@ -264,6 +278,30 @@ class CLI:
                 server_url=getattr(parsed, "server_url", None),
                 tools_list_ttl_ms=getattr(parsed, "tools_list_ttl_ms", None),
                 tools_list_cache_scope=getattr(parsed, "tools_list_cache_scope", None),
+                config_reload=getattr(parsed, "config_reload", False),
+                write_config=getattr(parsed, "config_write", True),
+            )
+        elif parsed.command == "gateway":
+            self.app.serve_gateway(
+                config_path=config_path,
+                profile=getattr(parsed, "profile", None),
+                host=parsed.host,
+                port=parsed.port,
+                tokens_path=getattr(parsed, "tokens", None),
+                server_url=getattr(parsed, "server_url", None),
+                backend=getattr(parsed, "backend", "fastapi"),
+                max_body_size=getattr(parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE),
+                regex_timeout=getattr(parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT),
+                regex_budget=getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
+                strict_spec_regex=getattr(parsed, "strict_spec_regex", False),
+                tools_list_ttl_ms=getattr(parsed, "tools_list_ttl_ms", None),
+                tools_list_cache_scope=getattr(parsed, "tools_list_cache_scope", None),
+                openapi_path=getattr(parsed, "openapi_path", None),
+                mcp_path=getattr(parsed, "mcp_path", None),
+                sse_path=getattr(parsed, "sse_path", None),
+                openapi_enabled=getattr(parsed, "openapi", None),
+                mcp_enabled=getattr(parsed, "mcp", None),
+                sse_enabled=getattr(parsed, "sse", None),
                 config_reload=getattr(parsed, "config_reload", False),
                 write_config=getattr(parsed, "config_write", True),
             )

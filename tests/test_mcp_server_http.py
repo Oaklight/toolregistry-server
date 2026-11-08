@@ -185,3 +185,25 @@ class TestResolvePublicUrl:
         warning = recording_logger.messages[0]
         assert "no client can reach" in warning
         assert "--server-url" in warning
+
+
+class TestBuildSseApp:
+    """The extracted SSE app builder keeps both mounting modes working."""
+
+    def test_standalone_routes_match_the_public_path(self):
+        from toolregistry_server.adapters.mcp.server import build_sse_app
+
+        app = build_sse_app(object(), path="/events")
+
+        paths = {route.path for route in app.routes}
+        assert "/events" in paths
+        assert "/events/messages/" in paths
+
+    def test_gateway_routes_are_relative(self):
+        from toolregistry_server.adapters.mcp.server import build_sse_app
+
+        app = build_sse_app(object(), path="/events", route_path="/")
+
+        paths = {route.path for route in app.routes}
+        assert "/" in paths
+        assert "/messages/" in paths

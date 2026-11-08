@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from toolregistry import ToolRegistry
 
     from .adapters import Adapter
+    from .gateway import GatewayAdapter
     from .identity import ServerIdentity
     from .route_table import RouteTable
     from .source_manager import SourceManager
@@ -94,6 +95,13 @@ class App:
         self.source_manager = None
         #: The running config watcher, when ``config_reload`` is enabled.
         self.config_watcher = None
+        #: The gateway adapter created by :meth:`create_gateway`, if any.
+        self._gateway: GatewayAdapter | None = None
+
+    @property
+    def gateway(self) -> GatewayAdapter | None:
+        """The gateway adapter created by :meth:`create_gateway`, if any."""
+        return self._gateway
 
     def prepare_registry(self, **kwargs) -> ToolRegistry:
         """Build or resolve a ``ToolRegistry``.
@@ -175,14 +183,28 @@ class App:
 
         registry = self.prepare_registry(**kwargs)
         route_table = self._make_route_table(registry)
-        manager = getattr(self, "source_manager", None)
-        if manager is not None:
-            # One source diff produces one route rebuild instead of one per
-            # registry event.
-            manager.attach_route_table(route_table)
-            if kwargs.get("config_reload"):
-                self._start_config_watcher(manager)
+        self._attach_source_manager(route_table, **kwargs)
         adapter_cls.create_and_run(route_table, **kwargs)
+
+    def _attach_source_manager(self, route_table: RouteTable, **kwargs) -> None:
+        """Attach the runtime source manager to *route_table*, if present.
+
+        The gateway builds its own route table instead of calling
+        :meth:`serve`, so both paths use this helper to keep runtime source
+        changes and the config watcher working.
+
+        Args:
+            route_table: The route table that will serve the registry.
+            **kwargs: Startup options; ``config_reload`` enables the watcher.
+        """
+        manager = getattr(self, "source_manager", None)
+        if manager is None:
+            return
+        # One source diff produces one route rebuild instead of one per
+        # registry event.
+        manager.attach_route_table(route_table)
+        if kwargs.get("config_reload"):
+            self._start_config_watcher(manager)
 
     def _start_config_watcher(self, manager: SourceManager) -> None:
         """Start the config watcher, or explain why it cannot run."""
@@ -227,6 +249,40 @@ class App:
 
         self.serve(MCPAdapter, **kwargs)
 
+    def create_gateway(self, **kwargs) -> GatewayAdapter:
+        """Build a gateway adapter without starting its listener.
+
+        The returned object exposes :meth:`GatewayAdapter.list_frontends`
+        and :meth:`GatewayAdapter.update_frontend`, so an in-process admin
+        extension can change a frontend without an HTTP round trip.
+
+        Args:
+            **kwargs: Split between :meth:`prepare_registry` and gateway
+                construction options.  ``config_path`` or ``registry`` is
+                required, as for :meth:`serve`.
+
+        Returns:
+            The configured gateway adapter.
+        """
+        from .gateway import GatewayAdapter
+
+        kwargs.setdefault("identity", self.identity)
+        registry = self.prepare_registry(**kwargs)
+        route_table = self._make_route_table(registry)
+        self._attach_source_manager(route_table, **kwargs)
+        gateway = GatewayAdapter.create(route_table, **kwargs)
+        self._gateway = gateway
+        return gateway
+
+    def serve_gateway(self, **kwargs) -> None:
+        """Build registry and serve all enabled frontends from one process."""
+        gateway = self.create_gateway(**kwargs)
+        gateway.run(
+            host=kwargs.get("host", "0.0.0.0"),
+            port=kwargs.get("port", 8000),
+            reload=kwargs.get("reload", False),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Module-level convenience functions (lazy-init default App)
@@ -251,3 +307,8 @@ def serve_openapi(**kwargs) -> None:
 def serve_mcp(**kwargs) -> None:
     """Build registry and start an MCP server."""
     _get_default_app().serve_mcp(**kwargs)
+
+
+def serve_gateway(**kwargs) -> None:
+    """Build registry and serve all enabled gateway frontends."""
+    _get_default_app().serve_gateway(**kwargs)
