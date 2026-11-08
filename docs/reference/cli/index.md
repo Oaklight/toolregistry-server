@@ -27,6 +27,8 @@ toolregistry-server [选项] <子命令> [子命令选项]
 | `--no-env` | 跳过加载 .env 文件 |
 | `--config PATH` | JSONC 或 YAML 配置文件路径 |
 | `--profile PROFILE` | 部署配置：`remote`、`local`，或配置文件 `profiles:` 中声明的名称 |
+| `--config-reload` / `--no-config-reload` | 监听配置文件，变化时应用源级 diff（默认：禁用） |
+| `--no-config-write` | 运行期来源变更只保留在内存中，不重写配置文件 |
 
 ## 子命令
 

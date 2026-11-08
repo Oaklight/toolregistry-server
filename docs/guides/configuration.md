@@ -239,6 +239,53 @@ profiles:
 
 没有 `profiles:` 条目时使用内置集合：`remote` 禁用 `file_system`、`destructive` 与 `privileged`；`local` 禁用 `network`。未知的部署配置名会记录警告并被忽略。
 
+## 运行期来源变更
+
+服务器无需重启即可变更来源列表。`App.prepare_registry` 在加载配置后构建
+`SourceManager` 并保存在 `app.source_manager` 上；管理扩展或嵌入式应用可直接调用。
+
+```python
+from toolregistry.config import PythonSource
+
+manager = app.source_manager
+manager.list()                      # 每个声明对应一个 SourceEntry
+manager.to_dicts()                  # 可直接序列化的状态列表
+
+added = manager.add(PythonSource(class_path="my_tools.Extra", namespace="extra"))
+removed = manager.remove(added.entry.key)
+manager.replace(removed_key, PythonSource(class_path="my_tools.Other"))
+manager.retry(failed_entry.key)     # 重试失败的注册
+```
+
+每个条目处于三种状态之一：
+
+| 状态 | 含义 |
+|------|------|
+| `applied` | 注册成功。没有产出任何工具的源仍记为 `applied`，不会在无关变更时被再次注册。 |
+| `excluded` | 声明仍在配置中，但不在作用域内（`enabled: false`，或被 `mode` / `disabled` / `enabled` 过滤）。其工具被禁用而非注销，源重新进入作用域时会重新启用。 |
+| `failed` | 注册抛出异常。`error` 保存脱敏后的消息，下次 diff 会重试。部分注册会回滚。 |
+
+源以声明本身标识，因此调整 `tools` 顺序不算变更。`SourceEntry.key` 是内部标识；
+`to_dict()` 提供由类型、详情与命名空间推导、跨重启稳定的 `src_<16 hex>` id，
+以及脱敏后的目标、命名空间、工具名、启用/总数计数与 `last_error`。
+
+变更注册的工具会应用启动时的部署配置过滤。变更在管理器的一把锁下执行，并在
+挂载了路由表时包在 `RouteTable.batch_changes()` 中：N 个工具注册只触发一次路由重建；
+请求路径不获取该锁。
+
+### 持久化
+
+add、remove、replace 会把配置写回服务器启动时使用的文件，因此重启后状态保持。
+写入前先把原文件复制为 `<path>.bak`；解析模型不保留 JSONC 注释，因此注释会丢失。
+`MutationResult.persisted` 与 `persist_error` 报告结果：只读路径会被报告而不会静默忽略，
+运行期变更仍然生效。`--no-config-write`（或 `write_config=False`）让所有变更只保留在内存中。
+
+### 监听文件
+
+`--config-reload` 启动轮询配置文件的 watcher，文件变化时应用同一套源级 diff。
+管理器自己的写入通过内容哈希识别，因此运行期变更不会触发重载；watcher 自身从不写文件。
+格式错误的编辑会记录并忽略，运行中的注册表保持不变。watcher 是进程内的，没有跨进程协调。
+
 ## 环境变量
 
 命令行工具支持从 `.env` 文件加载环境变量：

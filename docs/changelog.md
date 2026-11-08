@@ -8,6 +8,7 @@
 
 ### 新增
 
+- **运行期工具来源**（#185）：`SourceManager` 把 Hub 的热重载 diff 移入服务器。`add`、`remove`、`replace`、`retry` 与 `list` 无需重启即可变更对外提供的工具集合，并为每个来源保留 `applied` / `excluded` / `failed` 状态、脱敏后的最近错误以及稳定的 `src_<16 hex>` id（`to_dicts()` 返回可直接序列化的列表）。由 API 发起的变更会在复制 `<path>.bak` 后重写配置文件，并报告 `persisted` / `persist_error`；JSONC 注释不会被保留，只读路径会被报告而不是静默忽略，`--no-config-write` 让变更只保留在内存中。`--config-reload` 的 watcher 成为同一管理器的薄驱动，并忽略管理器自身的写入。diff 注册的工具会应用部署配置过滤；一次 diff 只触发一次路由重建：`RouteTable.batch_changes()` 合并逐个事件的 `refresh_all`，`_rebuild` 以一次赋值安装新建的映射，而不是清空正在使用的映射。
 - **可运行的 gateway 演示**（#188）：`examples/gateway-demo/` 在同一进程、同一来源上提供 `/openapi`、`/mcp` 与小型 `/ext/gateway` 管理面；客户端密钥保存在静态 JSON 文件中（只存 SHA-256 摘要，仅在创建时返回一次，可撤销），前端可关闭并返回 404。安装了 `toolregistry-hub` 时使用其工具，否则使用三个本地工具。`Dockerfile` 从仓库根目录构建镜像，`walkthrough.sh` 在 `Gateway demo` CI 工作流中对运行中的服务复跑 README 步骤。示例位于 `src` 之外，不进入 wheel 或 sdist。
 
 ### 修复
