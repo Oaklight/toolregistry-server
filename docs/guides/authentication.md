@@ -132,6 +132,8 @@ toolregistry-server mcp --config config.json --transport streamable-http \
 
 每次请求都会读取密钥行。因此吊销和过期在下一个请求立即生效，无需重启或等待缓存。`last_used_at` 只记录最近一次成功使用时间。
 
+限定作用域的密钥不会获得 `discover_tools` / `call_deferred` 代理工具对。`call_deferred` 可以按名称调用任意已注册工具，若保持可达，密钥就能绕过作用域；因此两者都不会出现在列表和文档中，调用也会被拒绝。它们仍对运维/静态令牌 principal 可用。作用域感知的发现功能将在后续实现。
+
 ### Python API
 
 管理扩展（#187）在进程内导入同一个存储：
