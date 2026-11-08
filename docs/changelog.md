@@ -8,6 +8,7 @@
 
 ### 新增
 
+- **来自 spec 的正则可在时间上限内执行**（#160）：新增可选的 `regex` extra（不属于 `all`），为请求校验提供 `pattern_matcher`，代理 OpenAPI 工具的 `pattern` 与 `patternProperties` 得以执行，默认单次 50 ms、每请求 250 ms。`patternProperties` 先对每个 pattern 调用一次（空对象也校验），再对每个 (pattern, key) 调用一次。超时返回 `500`，detail 为 `{"detail": "Tool '<name>' validation timed out"}`；正则无法编译时返回 `500` 与 `"validation failed"`，两者都不回显 pattern。未安装 extra 时行为不变：不执行 spec 正则，含 pattern 的层级继续放宽 `additionalProperties`。安装 extra 会收紧校验，此前因正则被忽略而通过的请求现在可能被拒绝。`--regex-timeout` / `--regex-budget` 配置上限（`0` 关闭执行）；`--strict-spec-regex` 让非法正则终止启动，而不是跳过该 source。
 - **路由级覆盖：发布用的参数 schema 与执行提示**（#137）：`RouteTable.override_parameters(name, schema)` 与 `override_execution_hints(name, hints)` 可改变单个路由发布的内容，而不改动注册表中的 `Tool` 或其 `schema_hash`。`RouteEntry` 通过 `served_parameters_schema` / `served_execution_hints` 暴露结果，两个适配器都读取该视图，因此 MCP 的 `inputSchema` / `annotations` 与 OpenAPI 的请求 schema / `x-` 扩展保持一致。`{}` 会抑制所有注解/扩展；`None` 清除覆盖。覆盖在 `refresh()` 与 `refresh_all()` 后仍然保留，并会通知监听者，因此 ETag 与 `tools/list_changed` 能反映变化。这取代了包裹私有 `tools/list` handler 的做法。
 
 ### 变更

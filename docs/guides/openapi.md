@@ -154,6 +154,33 @@ App().serve_openapi(config_path="tools.yaml", backend="httpserver")
 
 有一处刻意的差异：工具返回 `bytes` 时，`httpserver` 后端按 core 编码器做 base64，而 FastAPI 按 UTF-8 文本解码。
 
+## 来自 spec 的正则
+
+代理的 OpenAPI 工具会发布上游文档里的 `pattern` 与 `patternProperties`。Python 的 `re` 没有超时，schema 提供的表达式可能灾难性回溯。
+
+未安装可选的 `regex` extra 时，服务端**不执行**这些正则：校验使用去掉 `pattern` 与 `patternProperties` 的副本，并且在该层把 `additionalProperties: false` 放宽。客户端仍能看到完整 schema；字段格式以上游 API 为准。
+
+安装 extra 后即可在有界前提下执行：
+
+```bash
+pip install toolregistry-server[regex]
+```
+
+每次匹配都经过 `regex.search(..., timeout=...)`：默认单次 50 ms、每请求 250 ms。`patternProperties` 会先对每个 pattern 调用一次（即使对象为空也编译校验），再对每个 (pattern, key) 调用一次，因此 10 个 pattern 作用于 200 个键时共 2 010 次调用，共享 250 ms 预算。单次或预算超时会返回 `500`，detail 为 `{"detail": "Tool '<name>' validation timed out"}`；pattern 不会回显给客户端。
+
+```bash
+toolregistry-server openapi --config tools.yaml \
+  --regex-timeout 0.05 --regex-budget 0.25
+```
+
+```python
+OpenAPIAdapter(route_table, regex_timeout=0.05, regex_budget=0.25)
+```
+
+`0` 表示关闭执行，恢复默认行为；负数或非数字会在启动时报错。安装 extra 会收紧校验：此前因正则被忽略而通过的请求现在可能被拒绝，`additionalProperties` 也不再放宽。
+
+加载期会编译新注册 source 中的每个 pattern。含非法正则的 source 会整体跳过，错误日志记录工具名、schema 路径与 pattern；`--strict-spec-regex` 则改为终止启动。
+
 ## 认证
 
 通过 token 文件或 `API_BEARER_TOKEN` 环境变量设置 Bearer 认证：
