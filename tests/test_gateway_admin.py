@@ -314,13 +314,16 @@ class TestKeys:
         assert json.loads(body)["error"] == "Bad Request"
 
     def test_revoke_marks_the_key_and_404s_afterwards(self, host) -> None:
-        _request(
+        status, body, _ = _request(
             f"{host.url}/ext/gateway/keys",
             method="POST",
             data={"label": "ci", "scopes": ["default"]},
         )
+        assert status == 201
+        key_id = json.loads(body)["id"]
+
         status, body, _ = _request(
-            f"{host.url}/ext/gateway/keys/k1/revoke", method="POST"
+            f"{host.url}/ext/gateway/keys/{key_id}/revoke", method="POST"
         )
         assert status == 200
         assert json.loads(body)["key"]["revoked_at"]
@@ -373,15 +376,16 @@ class TestSources:
         )
         assert status == 201
         added = json.loads(body)
+        source_id = added["source"]["id"]
         assert added["source"]["kind"] == "openapi"
         assert added["persisted"] is True
 
         status, body, _ = _request(f"{host.url}/ext/gateway/sources")
         assert status == 200
-        assert [record["id"] for record in json.loads(body)["sources"]] == ["s1"]
+        assert [record["id"] for record in json.loads(body)["sources"]] == [source_id]
 
         status, body, _ = _request(
-            f"{host.url}/ext/gateway/sources/s1",
+            f"{host.url}/ext/gateway/sources/{source_id}",
             method="PUT",
             data={"type": "mcp", "url": "https://example.test/mcp"},
         )
@@ -389,13 +393,13 @@ class TestSources:
         assert json.loads(body)["counts"] == {"registered": 1, "unregistered": 1}
 
         status, body, _ = _request(
-            f"{host.url}/ext/gateway/sources/s1/retry", method="POST"
+            f"{host.url}/ext/gateway/sources/{source_id}/retry", method="POST"
         )
         assert status == 200
         assert json.loads(body)["source"]["status"] == "applied"
 
         status, body, _ = _request(
-            f"{host.url}/ext/gateway/sources/s1", method="DELETE"
+            f"{host.url}/ext/gateway/sources/{source_id}", method="DELETE"
         )
         assert status == 200
         assert json.loads(body)["removed"] is True
