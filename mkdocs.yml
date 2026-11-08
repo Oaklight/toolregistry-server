@@ -130,6 +130,9 @@ nav:
       - Protocol Adapters: reference/adapters.md
       - API Reference:
           - reference/api/index.md
+          - App: reference/api/app.md
+          - CLI: reference/api/cli.md
+          - ServerIdentity: reference/api/server_identity.md
           - RouteTable & RouteEntry: reference/api/core/route_table.md
           - OpenAPI Module: reference/api/openapi.md
           - MCP Module: reference/api/mcp.md
