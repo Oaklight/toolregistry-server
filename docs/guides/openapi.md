@@ -114,7 +114,7 @@ tools:
 
 OpenAPI 源只在注册时读取一次规范文档。路由刷新——`RouteTable.refresh()`、`refresh_all()`，以及 `/tools` 上的 `last_refreshed_at` 字段——只根据注册表中已有的工具重建路由，不会重新下载规范。因此，远端文档新增的 path 在重新注册该源之前不会出现：重启服务器，或在 Hub 中于启用 `--config-reload` 时修改该源在 `tools.jsonc` 中的条目（声明未变化的源不会被重新注册）。
 
-该源的 `allow_private_hosts` 同时作用于两项检查：规范 URL 在拉取前校验，客户端在每次请求前校验实际使用的 base URL（`servers[0]` 或配置的 `base_url`）。
+该源的 `allow_private_hosts` 同时作用于两项检查：规范 URL 在拉取前校验，客户端在每次请求前校验实际使用的 base URL（`servers[0]` 或配置的 `base_url`）。重新注册该源时会重新下载文档，并同样经过出站地址策略；没有任何刷新路径会跳过该校验。
 
 ### 请求格式
 
