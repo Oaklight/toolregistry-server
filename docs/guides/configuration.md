@@ -254,9 +254,10 @@ manager.list()                      # SourceEntry per declaration
 manager.to_dicts()                  # JSON-ready status list
 
 added = manager.add(PythonSource(class_path="my_tools.Extra", namespace="extra"))
-removed = manager.remove(added.entry.key)
-manager.replace(removed_key, PythonSource(class_path="my_tools.Other"))
-manager.retry(failed_entry.key)     # re-run a failed registration
+source_id = added.entry.to_dict()["id"]
+removed = manager.remove(source_id)
+manager.replace(source_id, PythonSource(class_path="my_tools.Other"))
+manager.retry(failed_entry.to_dict()["id"])   # re-run a failed registration
 ```
 
 Each entry reports one of three statuses:
@@ -268,10 +269,13 @@ Each entry reports one of three statuses:
 | `failed` | Registration raised. `error` carries the redacted message; the source is retried on the next diff. A partial registration is rolled back. |
 
 A source is identified by its declaration, so reordering `tools` is not a
-change. `SourceEntry.key` is the internal identity; `to_dict()` exposes a
-stable `src_<16 hex>` id derived from kind, detail and namespace, together
-with the redacted target, the namespace, the tool names, the enabled/total
-counts and `last_error`.
+change. `to_dict()` exposes only an opaque `src_<16 hex>` id derived from the
+full declaration — two sources with the same target and different credentials
+get different ids — plus the redacted detail, namespace, tool names,
+enabled/total counts and `last_error`. The raw declaration and the internal
+identity stay inside the manager; `get`, `remove`, `replace` and `retry` take
+that id. `MutationResult.removed` is `True` for a removal, whose entry status
+still describes the last apply attempt.
 
 Tools registered by a change go through the deployment profile that was
 applied at startup. A change is applied under one manager lock and wrapped in
