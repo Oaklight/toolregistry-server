@@ -157,8 +157,10 @@ local tools. Tool names then follow the hub namespaces, so adjust the
   runtime source manager (#185) replaces it with sources an operator adds
   without a restart.
 - **Keys** — `FileKeyStore` hashes secrets, shows them once, and supports
-  revocation. Scopes are recorded but not yet enforced; expiry,
-  `last_used` and SQLite storage arrive with #186.
+  revocation. The digest here is an unsalted SHA-256; #186 stores keys with
+  a password-style KDF (scrypt), so this file is not the scheme to copy.
+  Scopes are recorded but not yet enforced; expiry, `last_used` and SQLite
+  storage also arrive with #186.
 - **Admin** — `/ext/gateway` is a plain FastAPI router. The admin extension
   contract (#187) replaces it with pages inside the core admin panel.
 

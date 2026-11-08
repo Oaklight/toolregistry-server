@@ -104,7 +104,7 @@ def _attach_admin(app: FastAPI, keys: FileKeyStore, frontends: FrontendState) ->
         return {"keys": [_record_json(record) for record in keys.list()]}
 
     @app.post("/ext/gateway/keys", status_code=201)
-    def create_key(payload: dict[str, Any]) -> dict[str, Any]:
+    def create_key(payload: dict[str, Any], response: Response) -> dict[str, Any]:
         name = payload.get("name")
         scopes = payload.get("scopes")
         if not isinstance(name, str):
@@ -121,6 +121,8 @@ def _attach_admin(app: FastAPI, keys: FileKeyStore, frontends: FrontendState) ->
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         # The secret is returned exactly once; only its digest is stored.
+        # Keep it out of any shared or on-disk HTTP cache.
+        response.headers["Cache-Control"] = "no-store"
         return {**_record_json(record), "key": secret}
 
     @app.delete("/ext/gateway/keys/{name}", status_code=204)
