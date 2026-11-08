@@ -346,7 +346,9 @@ closed when it stops. Enabling or disabling the MCP frontend does not rebuild
 it. The gateway always serves all enabled frontends from one ASGI application,
 so multiple frontends require the default `fastapi` backend;
 `--backend httpserver` is rejected when more than one frontend is enabled and
-can serve only the openapi frontend.
+can serve only the openapi frontend. That backend serves OpenAPI at the
+listener root, so an openapi path override is rejected rather than silently
+ignored.
 
 `--tokens` (and `API_BEARER_TOKEN`) protect every frontend with the same token
 set. When tokens are configured, the MCP protected-resource metadata is served
@@ -366,17 +368,20 @@ gateway.list_frontends()
 
 result = gateway.update_frontend("mcp", enabled=False)
 # {"name": "mcp", "path": "/mcp", "enabled": False, ...,
-#  "persisted": True, "warning": None}
+#  "persisted": True,
+#  "warning": "the config file was rewritten; JSONC comments are not preserved"}
 
 gateway.update_frontend("sse", path="/events")
 ```
 
 An update writes the new path and flag back to the config file after copying
 the previous file to `<path>.bak`, so a restart keeps the change.
-`result["persisted"]` says whether the write succeeded and `result["warning"]`
-explains a skipped or failed write; the runtime change still applies when the
-write fails. `--no-config-write` (or `write_config=False`) disables the write
-and reports it in `warning`.
+`result["persisted"]` says whether the write succeeded. `result["warning"]`
+explains a skipped or failed write; a successful write carries the same
+comment-loss warning as runtime source management, because JSONC comments are
+not preserved. The runtime change still applies when the write fails.
+`--no-config-write` (or `write_config=False`) disables the write and reports it
+in `warning`.
 
 ## Environment Variables
 

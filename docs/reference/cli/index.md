@@ -123,7 +123,7 @@ configurable path and an enable flag that is checked on every request.
 | `--tokens PATH` | - | File of Bearer tokens applied to every frontend. `API_BEARER_TOKEN` is read as well |
 | `--server-url URL` | derived from `--host`/`--port` | Public MCP URL used in protected-resource metadata |
 | `--backend {fastapi,httpserver}` | `fastapi` | Multiple frontends require `fastapi`; `httpserver` can serve only the openapi frontend |
-| `--openapi-path PATH` | `/openapi` | OpenAPI mount path |
+| `--openapi-path PATH` | `/openapi` | OpenAPI mount path (rejected with `--backend httpserver`, which serves at the listener root) |
 | `--mcp-path PATH` | `/mcp` | MCP streamable-HTTP mount path |
 | `--sse-path PATH` | `/sse` | MCP SSE mount path |
 | `--openapi` / `--no-openapi` | enabled | Enable or disable the OpenAPI frontend |
