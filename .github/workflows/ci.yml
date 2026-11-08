@@ -100,6 +100,12 @@ jobs:
       - name: Run OpenAPI differential tests
         run: python -m pytest tests/test_openapi_backend_parity.py tests/test_openapi_adapter.py -q
 
+      # The gateway admin extension targets the extension contract that is on
+      # core master ahead of the released floor; on the released core its
+      # tests skip, so this job is where they actually execute.
+      - name: Run gateway admin extension tests
+        run: python -m pytest tests/test_gateway_admin.py -q
+
   # The `regex` extra is optional and deliberately not part of `all`, so the
   # default matrix covers the "spec patterns are not executed" fallback. This
   # job installs it and re-runs the OpenAPI suites, because installing it
