@@ -31,6 +31,12 @@ from typing import TYPE_CHECKING, Any
 
 from ..._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
 from ..._vendor.structlog import get_logger
+from ...regex_guard import (
+    DEFAULT_REGEX_BUDGET,
+    DEFAULT_REGEX_TIMEOUT,
+    build_matcher_factory,
+    log_status,
+)
 from .. import Adapter
 
 logger = get_logger()
@@ -57,6 +63,8 @@ def create_openapi_app(
     enable_etag: bool = True,
     max_sse_subscribers: int | None = None,
     max_body_size: int = DEFAULT_MAX_BODY_SIZE,
+    regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
+    regex_budget: float = DEFAULT_REGEX_BUDGET,
 ) -> FastAPI:
     """Create a FastAPI application from a RouteTable.
 
@@ -74,6 +82,12 @@ def create_openapi_app(
         max_body_size: Largest request body accepted, in bytes. Larger bodies
             return ``413`` with ``{"detail": "Request body too large"}``.
             Defaults to 1 MiB, the same as the httpserver backend.
+        regex_timeout: Per-match ceiling for spec-supplied regexes, in
+            seconds. Only used when the optional ``regex`` extra is
+            installed; ``0`` disables execution and restores the behaviour
+            of ignoring spec patterns.
+        regex_budget: Per-request ceiling for all spec-supplied regex
+            matches, in seconds. ``0`` disables execution.
 
     Returns:
         A configured FastAPI application with:
@@ -85,7 +99,8 @@ def create_openapi_app(
 
     Raises:
         ImportError: If FastAPI is not installed.
-        ValueError: If *max_body_size* is not positive.
+        ValueError: If *max_body_size* is not positive, or either regex
+            bound is negative or not finite.
     """
     try:
         from fastapi import FastAPI, Request
@@ -160,7 +175,9 @@ def create_openapi_app(
         add_events_endpoint(app, route_table, max_subscribers=max_sse_subscribers)
 
     # Add routes from route table
-    router = route_table_to_router(route_table)
+    matcher_factory = build_matcher_factory(regex_timeout, regex_budget)
+    log_status(logger, regex_timeout, regex_budget, matcher_factory is not None)
+    router = route_table_to_router(route_table, matcher_factory=matcher_factory)
     app.include_router(router)
 
     # Setup dynamic OpenAPI schema that filters disabled tools
@@ -192,6 +209,19 @@ def _positive_int(text: str) -> int:
     return value
 
 
+def _non_negative_float(text: str) -> float:
+    """Argparse type for a time bound in seconds; ``0`` disables it."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid float value: {text!r}") from exc
+    if value != value or value in (float("inf"), float("-inf")):
+        raise argparse.ArgumentTypeError("must be a finite number of seconds")
+    if value < 0:
+        raise argparse.ArgumentTypeError("must not be negative")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Adapter class
 # ---------------------------------------------------------------------------
@@ -215,6 +245,11 @@ class OpenAPIAdapter(Adapter):
         max_body_size: Largest request body accepted, in bytes. Both backends
             enforce it and return the same ``413`` envelope. Defaults to
             1 MiB.
+        regex_timeout: Per-match ceiling for spec-supplied regexes, in
+            seconds. Requires the optional ``regex`` extra; ``0`` disables
+            execution and keeps spec patterns out of validation.
+        regex_budget: Per-request ceiling for all spec-supplied regex
+            matches, in seconds. ``0`` disables execution.
     """
 
     def __init__(
@@ -227,6 +262,8 @@ class OpenAPIAdapter(Adapter):
         description: str = "OpenAPI server for ToolRegistry tools",
         backend: str = "fastapi",
         max_body_size: int = DEFAULT_MAX_BODY_SIZE,
+        regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
+        regex_budget: float = DEFAULT_REGEX_BUDGET,
     ) -> None:
         super().__init__(route_table)
 
@@ -249,6 +286,8 @@ class OpenAPIAdapter(Adapter):
                 description=description,
                 tokens=tokens,
                 max_body_size=max_body_size,
+                regex_timeout=regex_timeout,
+                regex_budget=regex_budget,
             )
             return
 
@@ -269,6 +308,8 @@ class OpenAPIAdapter(Adapter):
             description=description,
             dependencies=dependencies,
             max_body_size=max_body_size,
+            regex_timeout=regex_timeout,
+            regex_budget=regex_budget,
         )
 
     @property
@@ -354,6 +395,35 @@ class OpenAPIAdapter(Adapter):
                 f"(default: {DEFAULT_MAX_BODY_SIZE}); larger bodies return 413"
             ),
         )
+        parser.add_argument(
+            "--regex-timeout",
+            type=_non_negative_float,
+            default=DEFAULT_REGEX_TIMEOUT,
+            metavar="SECONDS",
+            help=(
+                "Per-match ceiling for spec-supplied regexes when the regex "
+                f"extra is installed (default: {DEFAULT_REGEX_TIMEOUT:g}); "
+                "0 disables execution and ignores spec patterns"
+            ),
+        )
+        parser.add_argument(
+            "--regex-budget",
+            type=_non_negative_float,
+            default=DEFAULT_REGEX_BUDGET,
+            metavar="SECONDS",
+            help=(
+                "Per-request ceiling for all spec-supplied regex matches "
+                f"(default: {DEFAULT_REGEX_BUDGET:g}); 0 disables execution"
+            ),
+        )
+        parser.add_argument(
+            "--strict-spec-regex",
+            action="store_true",
+            help=(
+                "Abort startup when an OpenAPI source contains an invalid "
+                "regex; by default that source is skipped and logged"
+            ),
+        )
 
     @classmethod
     def create_and_run(cls, route_table: RouteTable, **kwargs) -> None:
@@ -376,6 +446,8 @@ class OpenAPIAdapter(Adapter):
             description=kwargs.pop("description", identity.description),
             backend=kwargs.pop("backend", "fastapi"),
             max_body_size=kwargs.pop("max_body_size", DEFAULT_MAX_BODY_SIZE),
+            regex_timeout=kwargs.pop("regex_timeout", DEFAULT_REGEX_TIMEOUT),
+            regex_budget=kwargs.pop("regex_budget", DEFAULT_REGEX_BUDGET),
         )
         adapter.run(**kwargs)
 

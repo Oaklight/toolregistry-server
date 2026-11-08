@@ -45,6 +45,11 @@ openapi = ["fastapi>=0.119.0", "uvicorn[standard]>=0.24.0"]
 # pydantic 2.12+ removed, so those versions fail at import with a current
 # pydantic (see #95).
 mcp = ["mcp>=1.22.0,<3"]
+# Bounded execution of spec-supplied regexes.  Without this extra the server
+# does not execute spec patterns at all; with it, every match is bounded by a
+# per-match timeout and a per-request budget.  Kept out of ``all`` so the
+# default test matrix keeps covering the no-regex fallback.
+regex = ["regex>=2024.4.16"]
 all = ["toolregistry-server[openapi]", "toolregistry-server[mcp]"]
 dev = [
     "pytest>=7.0.0",

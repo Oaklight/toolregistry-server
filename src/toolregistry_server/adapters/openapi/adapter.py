@@ -7,6 +7,7 @@ and dynamically creating Pydantic request models and route handlers.
 
 import asyncio
 import traceback
+from collections.abc import Callable
 from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -14,6 +15,7 @@ from toolregistry import ValidationError
 
 from ..._vendor.jsonschema import SchemaValidationError, schema_validate
 from ..._vendor.structlog import get_logger
+from ...regex_guard import PatternMatcher, SpecPatternError
 from ...route_table import RouteEntry, RouteTable, _allows_additional_properties
 from .serialisation import encode_tool_result
 
@@ -132,7 +134,12 @@ def _without_spec_regex(node: Any) -> Any:
 
 
 # Read-only: never accesses RouteTable and may run in a worker thread.
-def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
+def _validate_arguments(
+    route: RouteEntry,
+    raw: Any,
+    *,
+    pattern_matcher: PatternMatcher | None = None,
+) -> dict[str, Any]:
     """Validate a request body and return the arguments for the tool call.
 
     Signature-derived tools go through ``Tool.validate_parameters`` so the
@@ -149,12 +156,17 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
         route: The route being called.
         raw: The decoded JSON request body. Tool arguments are named, so
             anything other than a JSON object is rejected.
+        pattern_matcher: Optional bounded matcher, built once per request.
+            When given, spec-supplied ``pattern`` / ``patternProperties``
+            are enforced under its bounds; when absent they are stripped
+            from the validation copy instead.
 
     Returns:
         Arguments to pass to the handler.
 
     Raises:
-        fastapi.HTTPException: 422 when validation fails.
+        fastapi.HTTPException: 422 when validation fails; 500 when a
+            spec-supplied regex times out or does not compile.
 
     Threading:
         Read-only, does not access ``RouteTable``, and may run in a worker
@@ -227,15 +239,40 @@ def _validate_arguments(route: RouteEntry, raw: Any) -> dict[str, Any]:
         return validated
 
     # An override is operator code, so its regexes are trusted.  A proxy
-    # tool's schema is derived from the spec, so its regexes are not executed
-    # (see ``_without_spec_regex``).
-    validation_schema = (
-        served_schema if override_active else _without_spec_regex(served_schema)
-    )
+    # tool's schema is derived from the spec, so its regexes are executed
+    # only through a bounded matcher; without one they are stripped (see
+    # ``_without_spec_regex``).
+    if override_active or pattern_matcher is not None:
+        validation_schema = served_schema
+    else:
+        validation_schema = _without_spec_regex(served_schema)
     try:
-        schema_validate(payload, validation_schema)
+        schema_validate(payload, validation_schema, pattern_matcher=pattern_matcher)
     except SchemaValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_details(exc)) from exc
+    except TimeoutError as exc:
+        # Exception text names the bounds, never the pattern.
+        logger.warning(
+            "Spec regex timed out during request validation",
+            tool=route.tool_name,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Tool '{route.tool_name}' validation timed out",
+        ) from exc
+    except SpecPatternError as exc:
+        # The message carries the pattern for troubleshooting; the client
+        # only sees the stable reason below.
+        logger.error(
+            "Spec regex in a served schema is invalid",
+            tool=route.tool_name,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Tool '{route.tool_name}' validation failed",
+        ) from exc
 
     # ``additionalProperties`` is a JSON Schema, not a boolean: ``{}`` and
     # other non-``False`` values permit extras.  Only an explicit ``False``
@@ -303,6 +340,7 @@ def _add_route_from_entry(
     router: "APIRouter",
     route: RouteEntry,
     route_table: RouteTable,
+    matcher_factory: "Callable[[], PatternMatcher] | None" = None,
 ) -> None:
     """Create and register a POST route for a single RouteEntry.
 
@@ -321,6 +359,9 @@ def _add_route_from_entry(
         route: The :class:`~toolregistry_server.RouteEntry` to expose.
         route_table: The :class:`~toolregistry_server.RouteTable` used for
             runtime enable/disable checks.
+        matcher_factory: Optional zero-argument callable returning a fresh
+            bounded pattern matcher for one request. ``None`` keeps spec
+            regexes out of validation.
     """
     from fastapi import Body, HTTPException, Request
 
@@ -370,6 +411,7 @@ def _add_route_from_entry(
             h: Any = handler,
             rt: RouteTable = route_table,
             tname: str = tool_name,
+            mf: "Callable[[], PatternMatcher] | None" = matcher_factory,
         ):
             async def _endpoint(data: Annotated[Any, Body()], request: Request) -> Any:
                 # Mark the request so the app's server-error handler can tell
@@ -381,10 +423,14 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
+                matcher = mf() if mf is not None else None
                 # Validation is CPU-bound; keep this loop free while it runs,
                 # the same way the httpserver handler does.
                 arguments = await asyncio.to_thread(
-                    _validate_arguments, current_route, data
+                    _validate_arguments,
+                    current_route,
+                    data,
+                    pattern_matcher=matcher,
                 )
                 try:
                     result = await h(**arguments)
@@ -411,6 +457,7 @@ def _add_route_from_entry(
             h: Any = handler,
             rt: RouteTable = route_table,
             tname: str = tool_name,
+            mf: "Callable[[], PatternMatcher] | None" = matcher_factory,
         ):
             def _endpoint(data: Annotated[Any, Body()], request: Request) -> Any:
                 # Mark the request so the app's server-error handler can tell
@@ -422,7 +469,10 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                arguments = _validate_arguments(current_route, data)
+                matcher = mf() if mf is not None else None
+                arguments = _validate_arguments(
+                    current_route, data, pattern_matcher=matcher
+                )
                 try:
                     result = h(**arguments)
                 except HTTPException:
@@ -447,6 +497,7 @@ def _add_route_from_entry(
 def route_table_to_router(
     route_table: RouteTable,
     prefix: str = "",
+    matcher_factory: "Callable[[], PatternMatcher] | None" = None,
 ) -> "APIRouter":
     """Convert a :class:`~toolregistry_server.RouteTable` into a FastAPI router.
 
@@ -458,6 +509,8 @@ def route_table_to_router(
     Args:
         route_table: The route table to convert.
         prefix: URL prefix for all generated routes.
+        matcher_factory: Optional bounded-matcher factory; see
+            :func:`_add_route_from_entry`.
 
     Returns:
         A :class:`~fastapi.APIRouter` with one POST route per registered tool.
@@ -476,7 +529,7 @@ def route_table_to_router(
     router = APIRouter(prefix=prefix)
 
     for route in route_table.list_routes(enabled_only=False):
-        _add_route_from_entry(router, route, route_table)
+        _add_route_from_entry(router, route, route_table, matcher_factory)
 
     return router
 

@@ -32,6 +32,7 @@ import inspect
 from typing import TYPE_CHECKING, Any
 
 from ._vendor.structlog import get_logger
+from .regex_guard import SpecPatternError, find_invalid_patterns
 
 logger = get_logger()
 
@@ -242,12 +243,30 @@ def register_mcp_source(
 def register_openapi_source(
     registry: "ToolRegistry",
     source: "OpenAPISource",
-) -> None:
+    *,
+    strict: bool = False,
+) -> bool:
     """Register tools from an OpenAPI endpoint source.
+
+    When the optional ``regex`` extra is installed, every ``pattern`` and
+    ``patternProperties`` key in the registered tool schemas is compiled
+    first.  A source with an invalid pattern is skipped as a whole — its
+    tools are removed again — and the failure is logged with the tool name,
+    schema path and pattern text.  ``strict=True`` raises instead, aborting
+    startup.
 
     Args:
         registry: The registry to register tools into.
         source: The OpenAPI source configuration.
+        strict: Raise :class:`SpecPatternError` on an invalid pattern
+            instead of skipping the source.
+
+    Returns:
+        ``True`` if the source was registered, ``False`` if it was skipped
+        because one of its patterns does not compile.
+
+    Raises:
+        SpecPatternError: If *strict* is true and a pattern is invalid.
     """
     from toolregistry.integrations.openapi import HttpClientConfig, load_openapi_spec
 
@@ -271,6 +290,7 @@ def register_openapi_source(
         base_url = servers[0].get("url", "") if servers else ""
 
     client = HttpClientConfig(base_url=base_url, headers=headers)
+    before = set(registry.list_tools(include_disabled=True))
     registry.register_from_openapi(
         client,
         spec,
@@ -278,7 +298,43 @@ def register_openapi_source(
         persistent=True,
         **_source_filter_kwargs(source),
     )
+    new_names = set(registry.list_tools(include_disabled=True)) - before
+
+    failures = _invalid_patterns(registry, new_names)
+    if failures:
+        for name in new_names:
+            # The whole source is skipped: a partially registered source
+            # would serve tools whose validation silently ignores patterns.
+            registry._unregister(name)  # ty: ignore[unresolved-attribute]
+        for tool_name, schema_path, pattern, error_name in failures:
+            logger.error(
+                f"Skipping OpenAPI source {source.url!r}: tool {tool_name!r} "
+                f"has an invalid regex at {schema_path} "
+                f"({error_name}): {pattern!r}"
+            )
+        if strict:
+            raise SpecPatternError(
+                f"OpenAPI source {source.url!r} has {len(failures)} invalid "
+                f"regex(es); first: tool {failures[0][0]!r} at {failures[0][1]}"
+            )
+        return False
+
     logger.info(f"Loaded OpenAPI tools from {source.url}")
+    return True
+
+
+def _invalid_patterns(
+    registry: "ToolRegistry", names: set[str]
+) -> list[tuple[str, str, str, str]]:
+    """Return ``(tool, schema_path, pattern, error)`` for each bad pattern."""
+    failures: list[tuple[str, str, str, str]] = []
+    for name in sorted(names):
+        tool = registry._tools.get(name)  # ty: ignore[unresolved-attribute]
+        if tool is None:
+            continue
+        for schema_path, pattern, error_name in find_invalid_patterns(tool.parameters):
+            failures.append((name, schema_path, pattern, error_name))
+    return failures
 
 
 def _build_ns_tags(config: "ToolConfig") -> dict[str, tuple[str, ...]]:
@@ -354,7 +410,12 @@ def _describe_source(source: "ToolSource") -> str:
 # ---------------------------------------------------------------------------
 
 
-def apply_config(registry: "ToolRegistry", config: "ToolConfig") -> None:
+def apply_config(
+    registry: "ToolRegistry",
+    config: "ToolConfig",
+    *,
+    strict_spec_regex: bool = False,
+) -> None:
     """Apply a ``ToolConfig`` to an existing registry.
 
     Registers tool sources from *config* into *registry*, respecting
@@ -362,11 +423,20 @@ def apply_config(registry: "ToolRegistry", config: "ToolConfig") -> None:
     ``tool_metadata`` overrides afterwards.
 
     Individual source registration failures are caught and logged as
-    warnings; successfully registered tools remain in the registry.
+    warnings; successfully registered tools remain in the registry.  An
+    OpenAPI source with an invalid regex is skipped unless
+    *strict_spec_regex* is set, in which case :class:`SpecPatternError`
+    propagates and aborts startup.
 
     Args:
         registry: The registry to mutate.
         config: Parsed ``ToolConfig`` describing sources to register.
+        strict_spec_regex: Abort on an invalid regex in an OpenAPI source
+            instead of skipping that source.
+
+    Raises:
+        SpecPatternError: If *strict_spec_regex* is true and an OpenAPI
+            source contains an invalid pattern.
     """
     from toolregistry.config import MCPSource, OpenAPISource, PythonSource
 
@@ -400,9 +470,15 @@ def apply_config(registry: "ToolRegistry", config: "ToolConfig") -> None:
                 register_python_source(registry, source)
             elif isinstance(source, MCPSource):
                 register_mcp_source(registry, source)
-            elif isinstance(source, OpenAPISource):
-                register_openapi_source(registry, source)
+            elif isinstance(source, OpenAPISource) and not register_openapi_source(
+                registry, source, strict=strict_spec_regex
+            ):
+                skipped_count += 1
+                continue
             loaded_count += 1
+        except SpecPatternError:
+            # Strict mode: the operator asked for a startup failure.
+            raise
         except Exception as e:
             source_desc = _describe_source(source)
             logger.warning(f"Failed to load tools from {source_desc}: {e}")
@@ -424,6 +500,8 @@ def apply_config(registry: "ToolRegistry", config: "ToolConfig") -> None:
 def registry_from_config(
     config: "ToolConfig",
     post_register_hooks: "list[PostRegisterHook] | None" = None,
+    *,
+    strict_spec_regex: bool = False,
 ) -> "ToolRegistry":
     """Create a new ToolRegistry and populate it from configuration.
 
@@ -437,9 +515,15 @@ def registry_from_config(
         config: Parsed ``ToolConfig`` describing sources to register.
         post_register_hooks: Optional list of hooks invoked after each tool
             is registered.
+        strict_spec_regex: Abort on an invalid regex in an OpenAPI source
+            instead of skipping that source.
 
     Returns:
         A new, fully configured ToolRegistry instance.
+
+    Raises:
+        SpecPatternError: If *strict_spec_regex* is true and an OpenAPI
+            source contains an invalid pattern.
     """
     from toolregistry import ToolRegistry
 
@@ -449,7 +533,7 @@ def registry_from_config(
         for hook in post_register_hooks:
             registry.add_post_register_hook(hook)
 
-    apply_config(registry, config)
+    apply_config(registry, config, strict_spec_regex=strict_spec_regex)
     return registry
 
 

@@ -31,6 +31,7 @@ import asyncio
 import html
 import json
 import traceback
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -44,6 +45,13 @@ from ..._vendor.httpserver import (
 )
 from ..._vendor.structlog import get_logger
 from ...auth import verify_token
+from ...regex_guard import (
+    DEFAULT_REGEX_BUDGET,
+    DEFAULT_REGEX_TIMEOUT,
+    PatternMatcher,
+    build_matcher_factory,
+    log_status,
+)
 from .adapter import DEFAULT_MAX_SSE_SUBSCRIBERS, _validate_arguments
 from .serialisation import encode_tool_result
 
@@ -106,7 +114,11 @@ def _tool_listing(route_table: RouteTable, etag: str) -> dict[str, Any]:
     return {"tools": tools, "etag": etag}
 
 
-def _make_tool_handler(route_table: RouteTable, tool_name: str):
+def _make_tool_handler(
+    route_table: RouteTable,
+    tool_name: str,
+    matcher_factory: Callable[[], PatternMatcher] | None = None,
+):
     """Build the POST handler for one tool route."""
 
     async def _handler(request) -> Any:
@@ -128,12 +140,15 @@ def _make_tool_handler(route_table: RouteTable, tool_name: str):
                 ],
             )
 
+        matcher = matcher_factory() if matcher_factory is not None else None
         try:
             # Validation is synchronous and CPU-bound; a large body or schema
             # would otherwise stall every request, SSE stream and meta route
             # on this loop. The default executor is enough for a short CPU
             # task, so no custom executor is installed.
-            arguments = await asyncio.to_thread(_validate_arguments, current, payload)
+            arguments = await asyncio.to_thread(
+                _validate_arguments, current, payload, pattern_matcher=matcher
+            )
         except Exception as exc:  # HTTPException carries the 422 detail
             status = getattr(exc, "status_code", None)
             if status is not None:
@@ -395,6 +410,8 @@ def create_httpserver_app(
     enable_etag: bool = True,
     max_body_size: int = DEFAULT_MAX_BODY_SIZE,
     max_sse_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
+    regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
+    regex_budget: float = DEFAULT_REGEX_BUDGET,
 ) -> App:
     """Build a :class:`~httpserver.App` exposing the RouteTable.
 
@@ -411,14 +428,20 @@ def create_httpserver_app(
         max_sse_subscribers: Largest number of concurrent ``/events``
             streams. Further connections get ``503``. ``0`` disables the
             endpoint. Defaults to 64.
+        regex_timeout: Per-match ceiling for spec-supplied regexes, in
+            seconds. Requires the optional ``regex`` extra; ``0`` disables
+            execution and keeps spec patterns out of validation.
+        regex_budget: Per-request ceiling for all spec-supplied regex
+            matches, in seconds. ``0`` disables execution.
 
     Returns:
         An :class:`~httpserver.App` with the tool routes, ``/tools``,
         ``/openapi.json``, ``/docs`` and ``/events`` registered.
 
     Raises:
-        ValueError: If *max_body_size* is not positive, or
-            *max_sse_subscribers* is negative.
+        ValueError: If *max_body_size* is not positive, or either regex
+            bound is negative or not finite, or *max_sse_subscribers* is
+            negative.
     """
     if max_body_size <= 0:
         raise ValueError(f"max_body_size must be positive, got {max_body_size}")
@@ -427,11 +450,14 @@ def create_httpserver_app(
             f"max_sse_subscribers must not be negative, got {max_sse_subscribers}"
         )
 
+    matcher_factory = build_matcher_factory(regex_timeout, regex_budget)
+    log_status(logger, regex_timeout, regex_budget, matcher_factory is not None)
+
     app = _DetailEnvelopeApp(max_body_size=max_body_size)
 
     for route in route_table.list_routes(enabled_only=False):
         app.route(route.path, methods=["POST"])(
-            _make_tool_handler(route_table, route.tool_name)
+            _make_tool_handler(route_table, route.tool_name, matcher_factory)
         )
 
     _add_tools_route(app, route_table)

@@ -99,6 +99,8 @@ class App:
             config_path: Path to a JSONC/YAML config file.
             registry: Pre-built registry (returned as-is).
             profile: Deployment profile for tag-based filtering.
+            strict_spec_regex: Abort startup on an invalid regex in an
+                OpenAPI source instead of skipping that source.
 
         Returns:
             A configured ``ToolRegistry`` instance.
@@ -113,7 +115,10 @@ class App:
             pass
         elif config_path is not None:
             config = load_config(config_path)
-            registry = registry_from_config(config)
+            registry = registry_from_config(
+                config,
+                strict_spec_regex=kwargs.get("strict_spec_regex", False),
+            )
         else:
             raise ValueError(
                 "Either 'config_path' or 'registry' must be provided. "

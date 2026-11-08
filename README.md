@@ -44,9 +44,17 @@ pip install toolregistry-server[openapi]
 # With MCP support
 pip install toolregistry-server[mcp]
 
+# With bounded execution of spec-supplied regexes (optional)
+pip install toolregistry-server[regex]
+
 # Full
 pip install toolregistry-server[all]
 ```
+
+The `regex` extra is not part of `all`. Without it, spec-supplied
+`pattern` / `patternProperties` are not executed during request validation;
+with it, every match is bounded (50 ms per match, 250 ms per request by
+default) and a timeout answers `500`. See the OpenAPI guide.
 
 ## Quick Start
 

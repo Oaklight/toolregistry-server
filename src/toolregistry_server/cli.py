@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 from ._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
 from ._vendor.structlog import get_logger
+from .regex_guard import DEFAULT_REGEX_BUDGET, DEFAULT_REGEX_TIMEOUT
 
 logger = get_logger()
 
@@ -221,6 +222,9 @@ class CLI:
                 reload=getattr(parsed, "reload", False),
                 backend=getattr(parsed, "backend", "fastapi"),
                 max_body_size=getattr(parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE),
+                regex_timeout=getattr(parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT),
+                regex_budget=getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
+                strict_spec_regex=getattr(parsed, "strict_spec_regex", False),
             )
         elif parsed.command == "mcp":
             self.app.serve_mcp(
