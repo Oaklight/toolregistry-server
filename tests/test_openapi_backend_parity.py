@@ -20,6 +20,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
+from pydantic import BaseModel
 from toolregistry import ToolRegistry
 
 from toolregistry_server import RouteTable
@@ -34,6 +35,21 @@ TOKENS = ["secret"]
 class Point:
     x: int
     y: int
+
+
+@dataclass
+class Metric:
+    """A dataclass whose float field can be non-finite."""
+
+    label: str
+    value: float
+
+
+class Reading(BaseModel):
+    """A Pydantic model whose Decimal field can be non-finite."""
+
+    label: str
+    value: Decimal
 
 
 def add(a: int, b: int) -> int:
@@ -86,6 +102,21 @@ def decimal_finite() -> Decimal:
     return Decimal("1.5")
 
 
+def decimal_neg_inf() -> Decimal:
+    """Return a negative infinity Decimal."""
+    return Decimal("-Infinity")
+
+
+def dataclass_nan() -> Metric:
+    """Return a dataclass carrying a NaN float."""
+    return Metric("temp", float("nan"))
+
+
+def model_nan() -> Reading:
+    """Return a Pydantic model carrying a non-finite Decimal."""
+    return Reading(label="temp", value=Decimal("-Infinity"))
+
+
 def blob() -> bytes:
     """Return bytes, which core encodes as base64."""
     return b"hello"
@@ -124,6 +155,9 @@ def build_table() -> RouteTable:
         nan_in_list,
         decimal_nan,
         decimal_finite,
+        decimal_neg_inf,
+        dataclass_nan,
+        model_nan,
         blob,
         unordered,
         boom,
@@ -294,6 +328,9 @@ class TestToolRoutes:
             ("nan_in_list", {"a": [1.0, None]}),
             ("decimal_nan", None),
             ("decimal_finite", "1.5"),
+            ("decimal_neg_inf", None),
+            ("dataclass_nan", {"label": "temp", "value": None}),
+            ("model_nan", {"label": "temp", "value": None}),
         ],
     )
     def test_non_finite_results_are_strict_json(self, both, table, tool_name, expected):
@@ -357,6 +394,7 @@ class TestToolResultEncoding:
             ([1.0, float("-inf")], [1.0, None]),
             (Decimal("NaN"), None),
             (Decimal("sNaN"), None),
+            (Decimal("-Infinity"), None),
             (Decimal("1.5"), "1.5"),
             (b"hello", "aGVsbG8="),
             ({"b", "a"}, ["a", "b"]),
@@ -380,6 +418,21 @@ class TestToolResultEncoding:
         assert json.loads(text, parse_constant=_reject_json_constant) == {
             "a": [None, {"b": None}],
             "c": [None],
+        }
+
+    def test_non_finite_inside_dataclass_and_model(self):
+        """Projections are sanitised inside dataclasses and Pydantic models."""
+        text = encode_tool_result(
+            {
+                "metric": Metric("temp", float("nan")),
+                "reading": Reading(label="temp", value=Decimal("-Infinity")),
+            }
+        )
+        assert "NaN" not in text
+        assert "Infinity" not in text
+        assert json.loads(text, parse_constant=_reject_json_constant) == {
+            "metric": {"label": "temp", "value": None},
+            "reading": {"label": "temp", "value": None},
         }
 
     def test_shared_values_that_are_not_cyclic_survive(self):
