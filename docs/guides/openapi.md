@@ -1,6 +1,6 @@
 # OpenAPI Adapter
 
-The OpenAPI adapter exposes `ToolRegistry` tools as RESTful HTTP endpoints using [FastAPI](https://fastapi.tiangolo.com/).
+The OpenAPI adapter exposes `ToolRegistry` tools as RESTful HTTP endpoints, using [FastAPI](https://fastapi.tiangolo.com/) or the vendored zero-dependency `httpserver` backend.
 
 ## Overview
 

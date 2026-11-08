@@ -24,7 +24,7 @@ This section provides detailed API documentation for all modules in `toolregistr
 
 | Module | Description |
 |--------|-------------|
-| [OpenAPI](openapi.md) | FastAPI-based REST API adapter — `OpenAPIAdapter`, `Adapter.create_and_run()` |
+| [OpenAPI](openapi.md) | REST API adapter (FastAPI or vendored `httpserver`) — `OpenAPIAdapter`, `Adapter.create_and_run()` |
 | [MCP](mcp.md) | Model Context Protocol adapter — `MCPAdapter`, `Adapter.create_and_run()` |
 
 ## Authentication

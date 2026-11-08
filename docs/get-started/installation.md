@@ -8,7 +8,7 @@ Install the core package:
 pip install toolregistry-server
 ```
 
-This installs the core routing layer (`RouteTable`, `RouteEntry`) without any protocol adapters.
+This installs the core routing layer (`RouteTable`, `RouteEntry`) and the dependency-free `httpserver` OpenAPI backend. The FastAPI backend and MCP support are extras.
 
 ## With Protocol Support
 
