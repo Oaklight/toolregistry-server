@@ -322,6 +322,19 @@ class TestPrincipalResolver:
         assert resolver.allows_route(principal, routes[0])
         assert not resolver.allows_route(principal, routes[1])
 
+    def test_scoped_principals_cannot_reach_the_proxy_tools(self, store):
+        created = store.create("all", {"namespaces": ["*"]})
+        resolver = PrincipalResolver(store, operator_tokens=["bootstrap"])
+        scoped = resolver.resolve(created.secret)
+        operator = resolver.resolve("bootstrap")
+        assert scoped is not None
+        assert operator is not None
+
+        assert not resolver.allows(scoped, "default", "discover_tools")
+        assert not resolver.allows(scoped, "default", "call_deferred")
+        assert resolver.allows(operator, "default", "discover_tools")
+        assert resolver.allows(operator, "default", "call_deferred")
+
 
 class _Route:
     def __init__(self, tool_name: str, namespace: str) -> None:

@@ -71,6 +71,7 @@ __all__ = [
     "CreatedKey",
     "Principal",
     "PrincipalResolver",
+    "SCOPED_DENIED_TOOLS",
     "ScopeSpec",
     "bearer_credential",
 ]
@@ -84,6 +85,13 @@ DEFAULT_PAGE_SIZE = 50
 
 #: Upper bound on ``limit``.  A larger page would not be a page.
 MAX_PAGE_SIZE = 500
+
+#: Tools that invoke another tool by name.  A scoped key must not reach them:
+#: ``call_deferred`` would run a target the key's scope does not cover, and
+#: ``discover_tools`` would disclose schemas outside it.  Static operator
+#: tokens are unrestricted and keep both.  Scope-aware discovery is a
+#: follow-up; until then the proxy pair is operator-only.
+SCOPED_DENIED_TOOLS = frozenset({"discover_tools", "call_deferred"})
 
 #: scrypt work factors.  ``n`` is the CPU/memory cost, ``r`` the block size
 #: and ``p`` the parallelisation factor.  16 MiB at the default settings.
@@ -910,8 +918,18 @@ class PrincipalResolver:
     def allows(
         self, principal: Principal | None, namespace: str | None, tool_name: str
     ) -> bool:
-        """Whether *principal* may call one tool.  ``None`` denies."""
-        return principal is not None and principal.allows(namespace, tool_name)
+        """Whether *principal* may call one tool.  ``None`` denies.
+
+        A scoped principal is additionally denied the proxy tools in
+        :data:`SCOPED_DENIED_TOOLS`: they invoke or describe another tool and
+        would bypass the scope.  Static operator tokens are unrestricted and
+        keep them.
+        """
+        if principal is None:
+            return False
+        if not principal.unrestricted and tool_name in SCOPED_DENIED_TOOLS:
+            return False
+        return principal.allows(namespace, tool_name)
 
     def allows_route(self, principal: Principal | None, route: Any) -> bool:
         """Whether *principal* may call the route named by *route*."""

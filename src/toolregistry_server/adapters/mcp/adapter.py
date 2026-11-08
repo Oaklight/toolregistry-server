@@ -5,6 +5,7 @@ ensuring tool enable/disable state is always read directly from the route table
 at request time (no drift).
 """
 
+import asyncio
 import dataclasses
 import datetime
 import enum
@@ -117,14 +118,16 @@ def _request_authorization() -> str | None:
     return bearer_credential(getattr(request, "headers", None))
 
 
-def _request_principal(
+async def _request_principal(
     resolver: "PrincipalResolver | None",
 ) -> "Any | None":
     """Resolve the current request's principal.
 
     A resolver is consulted on every request; no principal is cached across
-    requests, so a revoked or expired key fails on the next call.  When no
-    resolver is configured the caller skips enforcement entirely.
+    requests, so a revoked or expired key fails on the next call.  The
+    resolution runs in a worker thread because scrypt and the ``last_used``
+    write must not block the event loop.  When no resolver is configured the
+    caller skips enforcement entirely.
 
     Args:
         resolver: The configured resolver, or ``None``.
@@ -135,7 +138,7 @@ def _request_principal(
     """
     if resolver is None:
         return None
-    return resolver.resolve(_request_authorization())
+    return await asyncio.to_thread(resolver.resolve, _request_authorization())
 
 
 def _json_default(value: Any) -> Any:
@@ -598,29 +601,30 @@ def _discovery_available(route_table: "RouteTable") -> bool:
     return True
 
 
-def _scoped_routes(
+async def _scoped_routes(
     route_table: "RouteTable", principal_resolver: "PrincipalResolver | None"
 ) -> list:
     """Return the enabled, non-deferred routes the caller may see."""
     routes = route_table.list_routes(enabled_only=True, include_deferred=False)
     if principal_resolver is None:
         return routes
-    return principal_resolver.filter_routes(
-        _request_principal(principal_resolver), routes
-    )
+    principal = await _request_principal(principal_resolver)
+    return principal_resolver.filter_routes(principal, routes)
 
 
-def _refuse_out_of_scope(
+async def _refuse_out_of_scope(
     tool_name: str, route: Any, principal_resolver: "PrincipalResolver | None"
 ) -> None:
     """Raise the protocol error for a route outside the caller's key scope.
 
     The principal is re-read from the store, so a key revoked or expired
-    since the transport check still fails here.
+    since the transport check still fails here.  The resolver also denies the
+    proxy tools to scoped keys, so ``call_deferred`` cannot reach a target
+    outside the scope.
     """
     if principal_resolver is None:
         return
-    principal = _request_principal(principal_resolver)
+    principal = await _request_principal(principal_resolver)
     if principal_resolver.allows_route(principal, route):
         return
     from mcp.types import INVALID_PARAMS
@@ -633,7 +637,7 @@ def _refuse_out_of_scope(
     )
 
 
-def _mcp_tool_definitions(
+async def _mcp_tool_definitions(
     route_table: "RouteTable", principal_resolver: "PrincipalResolver | None"
 ) -> list:
     """Build the MCP tool definitions for the caller's scope.
@@ -641,12 +645,13 @@ def _mcp_tool_definitions(
     Deferred tools are excluded from the initial listing so that LLMs
     discover them via ``discover_tools``.  Tools whose metadata declares a
     title or execution hints carry ``title`` and ``annotations``; everything
-    else keeps the minimal definition.
+    else keeps the minimal definition.  A scoped key does not see the
+    ``discover_tools`` / ``call_deferred`` pair.
     """
     from ._compat import make_mcp_tool, make_tool_annotations
 
     tools: list = []
-    for route in _scoped_routes(route_table, principal_resolver):
+    for route in await _scoped_routes(route_table, principal_resolver):
         tools.append(
             make_mcp_tool(
                 name=route.tool_name,
@@ -676,7 +681,7 @@ async def _mcp_call_tool(
     # Reuse the route the v1 pre-dispatch hook already resolved, so a call
     # has one lookup and one outcome on both SDK generations (#97).
     route = _resolve_route_for_call(tool_name, get_enabled_route)
-    _refuse_out_of_scope(tool_name, route, principal_resolver)
+    await _refuse_out_of_scope(tool_name, route, principal_resolver)
 
     session_ctx = _get_session_context(session_mgr)
     token = None
@@ -796,7 +801,7 @@ def route_table_to_mcp_server(
 
     async def handle_list_tools() -> list:
         """Return MCP tool definitions for the caller's scope."""
-        return _mcp_tool_definitions(route_table, principal_resolver)
+        return await _mcp_tool_definitions(route_table, principal_resolver)
 
     async def handle_call_tool(
         tool_name: str, arguments: dict
