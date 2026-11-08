@@ -249,6 +249,14 @@ class TestMain:
     @patch.object(
         __import__("toolregistry_server.app", fromlist=["App"]).App, "serve_openapi"
     )
+    def test_openapi_command_passes_keys_db(self, mock_serve):
+        """--keys-db reaches the adapter (#186)."""
+        main(["openapi", "--config", "tools.yaml", "--keys-db", "/tmp/keys.db"])
+        assert mock_serve.call_args.kwargs["keys_db"] == "/tmp/keys.db"
+
+    @patch.object(
+        __import__("toolregistry_server.app", fromlist=["App"]).App, "serve_openapi"
+    )
     def test_openapi_command_passes_max_body_size(self, mock_serve):
         """--max-body-size reaches the adapter (#134)."""
         main(["openapi", "--config", "tools.yaml", "--max-body-size", "2048"])
@@ -271,6 +279,12 @@ class TestMain:
             config_reload=False,
             write_config=True,
         )
+
+    @patch("toolregistry_server.app.App.serve_mcp")
+    def test_mcp_command_passes_keys_db(self, mock_serve):
+        """--keys-db reaches the adapter (#186)."""
+        main(["mcp", "--config", "tools.yaml", "--keys-db", "/tmp/keys.db"])
+        assert mock_serve.call_args.kwargs["keys_db"] == "/tmp/keys.db"
 
     @patch("toolregistry_server.app.App.serve_mcp")
     def test_mcp_command_passes_tokens_path(self, mock_serve):
