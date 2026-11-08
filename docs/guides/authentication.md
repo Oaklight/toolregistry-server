@@ -8,6 +8,7 @@ The authentication module supports:
 
 - Multiple tokens loaded from a file
 - Bearer token validation on all incoming requests
+- Optional scoped API keys: namespace allow-list, per-tool overrides, expiry and revocation
 - Runtime token management (add/remove tokens without restart)
 - Dynamic enable/disable
 
@@ -73,6 +74,101 @@ token-one
 token-two
 token-three
 ```
+
+## Scoped API Keys
+
+`--tokens` credentials are all-or-nothing: a token can call every tool. To
+issue a client credential that is limited to some tools, use the API key
+store. The store is optional; omit `--keys-db` and the server behaves exactly
+as before.
+
+### Creating and managing keys
+
+```bash
+# Create a key for the calculator namespace. The secret is printed once.
+toolregistry-server keys --db keys.db create \
+  --label build-bot \
+  --namespace calculator \
+  --deny-tool calculator-dangerous
+
+# List keys ordered by last use (paginated).
+toolregistry-server keys --db keys.db list --limit 20
+
+# Show or revoke one key by id.
+toolregistry-server keys --db keys.db get key_...
+toolregistry-server keys --db keys.db revoke key_...
+```
+
+`create` prints the secret once. The store keeps only a scrypt hash with a
+per-key salt, so the secret cannot be recovered. `list`, `get` and `revoke`
+never show it. Add `--json` to any subcommand for machine-readable output,
+and `--expires-at ISO8601` to make a key expire.
+
+### Starting a server with keys
+
+```bash
+toolregistry-server openapi --config config.json --keys-db keys.db
+toolregistry-server mcp --config config.json --transport streamable-http \
+  --keys-db keys.db
+```
+
+The key database may be combined with `--tokens`. Static `--tokens`
+credentials keep full, unscoped access and remain the bootstrap/legacy path;
+scoping applies only to keys created in the database. `--keys-db` is ignored
+on the MCP `stdio` transport, which carries no request credential.
+
+### Scope rules
+
+A scope is a namespace allow-list plus optional per-tool overrides:
+
+```json
+{
+  "namespaces": ["calculator", "web/*"],
+  "tools": {
+    "calculator-dangerous": false,
+    "beta-echo": true
+  }
+}
+```
+
+- A tool is allowed when its namespace matches an entry. `"*"` matches every
+  namespace; `"web/*"` matches `web` and every namespace below it; any other
+  value is an exact match.
+- A tool entry always wins. `false` denies a tool inside an allowed namespace;
+  `true` allows a tool outside the list.
+- An empty scope denies every tool. If you omit `--namespace`, the key can
+  call nothing.
+
+### Enforcement and lifecycle
+
+One principal resolver applies the key's scope to all four surfaces: MCP
+`tools/list`, MCP `tools/call`, the OpenAPI document at `/openapi.json`, and
+the OpenAPI tool routes. A tool outside the scope is absent from listings and
+the document, and a call to it is refused (`403` on OpenAPI; an `INVALID_PARAMS`
+error on MCP).
+
+The key row is read on every request. Revocation and expiry therefore take
+effect on the next request; there is no restart or cache to wait for.
+`last_used_at` records only the latest successful use.
+
+### Python API
+
+The admin extension (#187) imports the same store in-process:
+
+```python
+from toolregistry_server import ApiKeyStore, PrincipalResolver
+
+store = ApiKeyStore("keys.db")
+created = store.create("build-bot", {"namespaces": ["calculator"]})
+print(created.secret)  # shown once
+
+resolver = PrincipalResolver(store, operator_tokens=["bootstrap-token"])
+principal = resolver.resolve(created.secret)
+if principal is not None and principal.allows("calculator", "calculator-add"):
+    ...
+```
+
+`ApiKeyRecord.to_dict()` never contains the secret or its hash.
 
 ## MCP Streamable-HTTP Bearer Auth (new in v0.4.0)
 
