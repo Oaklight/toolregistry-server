@@ -260,13 +260,24 @@ def register_openapi_source(
     # Load spec and determine base URL.  The URL comes from the operator's
     # tool configuration, which is already trusted (the same file can import
     # Python modules and run stdio commands), so a local path is allowed.
-    spec = load_openapi_spec(source.url, allow_local_files=True)
+    # ``allow_private_hosts`` applies to this source only: the loader checks
+    # the spec URL and every ``servers[]`` entry, and the client repeats the
+    # check for the request URLs the tools use.
+    spec = load_openapi_spec(
+        source.url,
+        allow_local_files=True,
+        allow_private_hosts=source.allow_private_hosts,
+    )
     base_url = source.base_url
     if not base_url:
         servers = spec.get("servers", [])
         base_url = servers[0].get("url", "") if servers else ""
 
-    client = HttpClientConfig(base_url=base_url, headers=headers)
+    client = HttpClientConfig(
+        base_url=base_url,
+        headers=headers,
+        allow_private_hosts=source.allow_private_hosts,
+    )
     before = set(registry.list_tools(include_disabled=True))
     registry.register_from_openapi(
         client,

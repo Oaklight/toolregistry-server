@@ -163,3 +163,4 @@ docs_zh/
 # Local tooling artifacts (kept in the working tree)
 uv.lock
 .claude/
+.complexipy_cache/

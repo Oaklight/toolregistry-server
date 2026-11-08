@@ -182,7 +182,9 @@ class TestRegisterOpenAPISource:
         register_openapi_source(registry, source)
 
         mock_load.assert_called_once_with(
-            "http://example.com/openapi.json", allow_local_files=True
+            "http://example.com/openapi.json",
+            allow_local_files=True,
+            allow_private_hosts=False,
         )
         registry.register_from_openapi.assert_called_once()
         call_args = registry.register_from_openapi.call_args
@@ -258,6 +260,75 @@ class TestRegisterOpenAPISource:
 
         call_args = registry.register_from_openapi.call_args
         assert call_args[1]["namespace"] is False
+
+    @patch("toolregistry.integrations.openapi.load_openapi_spec")
+    def test_allow_private_hosts_reaches_the_loader_and_client(self, mock_load):
+        """The flag covers the spec fetch and the tool request URLs."""
+        mock_load.return_value = MINIMAL_SPEC
+        registry = MagicMock()
+        source = OpenAPISource(
+            url="http://127.0.0.1:9000/openapi.json",
+            namespace="api_ns",
+            allow_private_hosts=True,
+        )
+        register_openapi_source(registry, source)
+
+        assert mock_load.call_args.kwargs["allow_private_hosts"] is True
+        client = registry.register_from_openapi.call_args[0][0]
+        assert client.allow_private_hosts is True
+
+    @patch("toolregistry.integrations.openapi.load_openapi_spec")
+    def test_unset_flag_keeps_the_refusal(self, mock_load):
+        """Without the key both calls keep core's private-host refusal."""
+        mock_load.return_value = MINIMAL_SPEC
+        registry = MagicMock()
+        source = OpenAPISource(url="http://example.com/openapi.json")
+        register_openapi_source(registry, source)
+
+        assert mock_load.call_args.kwargs["allow_private_hosts"] is False
+        client = registry.register_from_openapi.call_args[0][0]
+        assert client.allow_private_hosts is False
+
+    def test_private_spec_url_is_refused_without_the_flag(self):
+        """Core refuses before any connection; nothing is registered."""
+        from toolregistry._netpolicy import PrivateAddressError
+
+        registry = MagicMock()
+        source = OpenAPISource(url="http://127.0.0.1:9/openapi.json")
+
+        with pytest.raises(PrivateAddressError):
+            register_openapi_source(registry, source)
+
+        registry.register_from_openapi.assert_not_called()
+
+    @patch("toolregistry.integrations.openapi.load_openapi_spec")
+    def test_config_file_flag_reaches_both_calls(self, mock_load, tmp_path):
+        """The JSONC key survives loading and reaches loader and client."""
+        from toolregistry.config import load_config
+
+        path = tmp_path / "tools.jsonc"
+        path.write_text(
+            json.dumps(
+                {
+                    "tools": [
+                        {
+                            "type": "openapi",
+                            "url": "http://127.0.0.1:9000/openapi.json",
+                            "namespace": "api_ns",
+                            "allow_private_hosts": True,
+                        }
+                    ]
+                }
+            )
+        )
+        mock_load.return_value = MINIMAL_SPEC
+        registry = MagicMock()
+
+        apply_config(registry, load_config(path))
+
+        assert mock_load.call_args.kwargs["allow_private_hosts"] is True
+        client = registry.register_from_openapi.call_args[0][0]
+        assert client.allow_private_hosts is True
 
 
 class TestLocalOpenAPISpecSource:
