@@ -33,10 +33,12 @@ keywords = [
     "agentic-ai",
     "toolregistry",
 ]
-# Core 0.20.0 is the floor: it has the explicit local-file opt-in (#376) and
-# the non-finite float/Decimal projection in ToolResultJSONEncoder (#135), so
-# this server does not carry compatibility probes for older cores.
-dependencies = ["toolregistry>=0.20.0,<1.0.0"]
+# Core 0.20.1 is the floor: it has the explicit local-file opt-in (#376), the
+# non-finite float/Decimal projection in ToolResultJSONEncoder (#135), the
+# netpolicy special-purpose range fix (#425) and the discovery re-entrancy fix
+# (#428), so this server carries no compatibility probes and does not support
+# 0.20.0.
+dependencies = ["toolregistry>=0.20.1,<1.0.0"]
 
 [project.optional-dependencies]
 openapi = ["fastapi>=0.119.0", "uvicorn[standard]>=0.24.0"]
