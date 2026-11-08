@@ -127,6 +127,8 @@ the server, or, in the Hub, change that source's entry in `tools.jsonc` while
 The source's `allow_private_hosts` reaches both checks: the spec URL is
 validated before it is fetched, and the client validates the base URL it
 actually uses (`servers[0]` or the configured `base_url`) before each request.
+Registering the source again re-downloads the document through the same
+outbound address policy; no refresh path fetches a spec without that check.
 
 ### Request Format
 
