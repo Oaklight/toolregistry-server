@@ -38,7 +38,7 @@ class _FakeRegex:
         return pattern if pattern else None
 
     def compile(self, pattern: str):
-        if pattern in {"(", "["}:
+        if pattern in {"(", "[", "{"}:
             raise self.error(
                 f"missing ), unterminated subpattern at offset 0 in {pattern!r}"
             )
@@ -193,6 +193,87 @@ def test_example_data_is_not_a_schema(install_fake):
         "properties": {"a": {"example": {"pattern": "("}}},
     }
     assert find_invalid_patterns(schema) == []
+
+
+def test_property_names_that_look_like_keywords_are_walked(install_fake):
+    """``properties`` keys are names, so ``default`` is not a data keyword."""
+    install_fake()
+    schema = {
+        "type": "object",
+        "properties": {
+            "default": {"type": "string", "pattern": "("},
+            "example": {"type": "string", "pattern": "["},
+            "const": {"type": "string", "pattern": "^ok$"},
+        },
+    }
+
+    failures = find_invalid_patterns(schema)
+
+    assert {path for path, _, _ in failures} == {
+        "properties.default.pattern",
+        "properties.example.pattern",
+    }
+
+
+def test_definition_names_that_look_like_keywords_are_walked(install_fake):
+    install_fake()
+    schema = {
+        "$defs": {"const": {"type": "string", "pattern": "("}},
+        "definitions": {"enum": {"type": "string", "pattern": "["}},
+        "dependentSchemas": {"default": {"type": "object", "pattern": "{"}},
+    }
+
+    failures = find_invalid_patterns(schema)
+
+    assert {path for path, _, _ in failures} == {
+        "$defs.const.pattern",
+        "definitions.enum.pattern",
+        "dependentSchemas.default.pattern",
+    }
+
+
+def test_dependencies_map_is_walked(install_fake):
+    """``dependencies`` is a name map; its array form stays a no-op."""
+    install_fake()
+    schema = {
+        "type": "object",
+        "dependencies": {
+            "default": {"type": "object", "pattern": "{"},
+            "legacy": ["billing_address"],
+        },
+        "properties": {"billing_address": {"type": "string"}},
+    }
+
+    assert [path for path, _, _ in find_invalid_patterns(schema)] == [
+        "dependencies.default.pattern"
+    ]
+
+
+def test_data_keywords_are_still_skipped_inside_a_schema(install_fake):
+    """A data keyword's payload is not walked, wherever it appears."""
+    install_fake()
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {
+                "type": "string",
+                "default": {"pattern": "("},
+                "enum": [{"pattern": "("}],
+            }
+        },
+    }
+    assert find_invalid_patterns(schema) == []
+
+
+def test_additional_properties_schema_is_walked(install_fake):
+    install_fake()
+    schema = {
+        "type": "object",
+        "additionalProperties": {"type": "string", "pattern": "("},
+    }
+    assert [path for path, _, _ in find_invalid_patterns(schema)] == [
+        "additionalProperties.pattern"
+    ]
 
 
 def test_walker_is_a_noop_without_the_extra(monkeypatch):

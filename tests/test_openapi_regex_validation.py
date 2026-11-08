@@ -52,7 +52,7 @@ class _FakeRegex:
         return re.search(pattern, text)
 
     def compile(self, pattern: str):
-        if pattern in {"(", "["}:
+        if pattern in {"(", "[", "{"}:
             raise self.error(f"missing ) at offset 0 in {pattern!r}")
         return pattern
 
@@ -315,32 +315,67 @@ def test_cli_float_type_rejects_negative_and_non_numeric():
 
 
 # ---------------------------------------------------------------------------
-# Load time: an invalid pattern skips the source, or aborts in strict mode
+# Load time: a bad pattern drops the tool, the source, or aborts
 # ---------------------------------------------------------------------------
 
+_BAD = {"type": "object", "pattern": "("}
+_GOOD = {"type": "object", "properties": {"q": {"type": "string"}}}
 
-def _patch_openapi_loading(monkeypatch, parameters: dict) -> None:
+
+def _patch_openapi_loading(monkeypatch, tools: dict[str, dict]) -> None:
     import toolregistry.integrations.openapi as integration
 
     monkeypatch.setattr(integration, "load_openapi_spec", lambda *a, **k: {})
     monkeypatch.setattr(integration, "HttpClientConfig", lambda **k: object())
 
     def register(self, client, spec, **kwargs):
-        self.register(
-            Tool(
-                name="bad_tool",
-                description="from spec",
-                parameters=parameters,
-                callable=lambda **k: k,
+        for name, parameters in tools.items():
+            self.register(
+                Tool(
+                    name=name,
+                    description="from spec",
+                    parameters=parameters,
+                    callable=lambda **k: k,
+                )
             )
-        )
 
     monkeypatch.setattr(ToolRegistry, "register_from_openapi", register, raising=False)
 
 
-def test_invalid_source_is_skipped(fake_regex, monkeypatch):
+def _capture_builder_logs(monkeypatch) -> str:
+    import toolregistry_server.registry_builder as builder
+
+    stream = StringIO()
+    log = BoundLogger(
+        logger=PrintLogger(file=stream),
+        processors=[add_log_level, TimeStamper(), ConsoleRenderer(colors=False)],
+        context={},
+    )
+    monkeypatch.setattr(builder, "logger", log)
+    return stream
+
+
+def test_only_the_tool_with_the_bad_pattern_is_dropped(fake_regex, monkeypatch):
     fake_regex()
-    _patch_openapi_loading(monkeypatch, {"type": "object", "pattern": "("})
+    _patch_openapi_loading(monkeypatch, {"bad": _BAD, "good": _GOOD})
+    stream = _capture_builder_logs(monkeypatch)
+    registry = ToolRegistry()
+
+    registered = register_openapi_source(
+        registry, OpenAPISource(url="https://example.test/openapi.json")
+    )
+
+    assert registered is True
+    assert registry.list_tools(include_disabled=True) == ["good"]
+    output = stream.getvalue()
+    assert "'bad'" in output
+    assert "pattern" in output
+    assert "'('" in output
+
+
+def test_source_is_failed_when_no_tool_survives(fake_regex, monkeypatch):
+    fake_regex()
+    _patch_openapi_loading(monkeypatch, {"bad": _BAD})
     registry = ToolRegistry()
 
     registered = register_openapi_source(
@@ -351,9 +386,9 @@ def test_invalid_source_is_skipped(fake_regex, monkeypatch):
     assert registry.list_tools(include_disabled=True) == []
 
 
-def test_invalid_source_aborts_in_strict_mode(fake_regex, monkeypatch):
+def test_strict_mode_removes_the_whole_source(fake_regex, monkeypatch):
     fake_regex()
-    _patch_openapi_loading(monkeypatch, {"type": "object", "pattern": "("})
+    _patch_openapi_loading(monkeypatch, {"bad": _BAD, "good": _GOOD})
     registry = ToolRegistry()
 
     with pytest.raises(SpecPatternError):
@@ -362,4 +397,5 @@ def test_invalid_source_aborts_in_strict_mode(fake_regex, monkeypatch):
             OpenAPISource(url="https://example.test/openapi.json"),
             strict=True,
         )
+    # Even the healthy tool is gone: strict is all-or-nothing.
     assert registry.list_tools(include_disabled=True) == []

@@ -193,6 +193,23 @@ def build_matcher_factory(
 #: treat it as one.
 _DATA_KEYWORDS = frozenset({"example", "examples", "default", "enum", "const"})
 
+#: Keywords whose value maps arbitrary names to subschemas.  Their keys are
+#: property or definition names, so a name such as ``default`` or ``example``
+#: is not a data keyword and its value must still be walked.  ``dependencies``
+#: also accepts an array of property names per key; the list branch handles
+#: that form without looking at the strings.  Keep this set aligned with the
+#: core admin walker (toolregistry #433).
+_SCHEMA_MAP_KEYWORDS = frozenset(
+    {
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "dependencies",
+        "$defs",
+        "definitions",
+    }
+)
+
 
 def _record_pattern(
     module: Any,
@@ -211,6 +228,11 @@ def _record_pattern(
         failures.append((path, pattern, type(exc).__name__))
 
 
+def _join(path: str, key: str) -> str:
+    """Join a schema path and a keyword or name."""
+    return f"{path}.{key}" if path else key
+
+
 def _walk_patterns(
     module: Any,
     node: Any,
@@ -219,44 +241,44 @@ def _walk_patterns(
     failures: list[tuple[str, str, str]],
 ) -> None:
     """Collect every pattern under *node* that ``regex`` cannot compile."""
-    if isinstance(node, dict):
-        _record_pattern(
-            module,
-            node.get("pattern"),
-            f"{path}.pattern" if path else "pattern",
-            seen,
-            failures,
-        )
-        pattern_properties = node.get("patternProperties")
-        if isinstance(pattern_properties, dict):
-            for key, sub in pattern_properties.items():
-                _record_pattern(
-                    module,
-                    key,
-                    f"{path}.patternProperties[{key!r}]"
-                    if path
-                    else f"patternProperties[{key!r}]",
-                    seen,
-                    failures,
-                )
-                _walk_patterns(
-                    module,
-                    sub,
-                    f"{path}.patternProperties.{key}"
-                    if path
-                    else f"patternProperties.{key}",
-                    seen,
-                    failures,
-                )
-        for key, value in node.items():
-            if key in ("pattern", "patternProperties") or key in _DATA_KEYWORDS:
-                continue
-            _walk_patterns(
-                module, value, f"{path}.{key}" if path else key, seen, failures
+    if not isinstance(node, dict):
+        if isinstance(node, list):
+            for index, value in enumerate(node):
+                _walk_patterns(module, value, f"{path}[{index}]", seen, failures)
+        return
+
+    _record_pattern(module, node.get("pattern"), _join(path, "pattern"), seen, failures)
+
+    pattern_properties = node.get("patternProperties")
+    if isinstance(pattern_properties, dict):
+        for key, sub in pattern_properties.items():
+            _record_pattern(
+                module,
+                key,
+                f"{_join(path, 'patternProperties')}[{key!r}]",
+                seen,
+                failures,
             )
-    elif isinstance(node, list):
-        for index, value in enumerate(node):
-            _walk_patterns(module, value, f"{path}[{index}]", seen, failures)
+            _walk_patterns(
+                module,
+                sub,
+                _join(_join(path, "patternProperties"), str(key)),
+                seen,
+                failures,
+            )
+
+    for key, value in node.items():
+        if key in ("pattern", "patternProperties") or key in _DATA_KEYWORDS:
+            continue
+        if key in _SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            # Keys here are user-defined names, not schema keywords: walk
+            # every value even when its name is ``default`` or ``example``.
+            for name, sub in value.items():
+                _walk_patterns(
+                    module, sub, _join(_join(path, str(key)), str(name)), seen, failures
+                )
+            continue
+        _walk_patterns(module, value, _join(path, str(key)), seen, failures)
 
 
 def find_invalid_patterns(schema: Any) -> list[tuple[str, str, str]]:
