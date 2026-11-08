@@ -194,10 +194,13 @@ non-numeric bound fails at startup. Installing the extra tightens
 validation: a payload that used to pass because its pattern was ignored can
 now be rejected, and `additionalProperties` is no longer relaxed.
 
-At load time every pattern in a newly registered source is compiled. A
-source with an invalid pattern is skipped as a whole, with an error log
-naming the tool, the schema path and the pattern; `--strict-spec-regex`
-aborts startup instead.
+At load time every `pattern` and `patternProperties` key in a newly
+registered source is compiled. By default only the tools whose own schema
+contains an invalid pattern are dropped — each with an error log naming the
+tool, the schema path and the pattern — and the rest of the source stays
+registered; the source counts as failed only when no tool survives.
+`--strict-spec-regex` restores all-or-nothing behaviour: every tool from
+the source is removed and startup aborts.
 
 ## Authentication
 
