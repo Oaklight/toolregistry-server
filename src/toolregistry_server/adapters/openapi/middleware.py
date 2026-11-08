@@ -9,6 +9,7 @@ ASGI middleware for the OpenAPI server.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 from ..._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
@@ -196,15 +197,48 @@ class ETagMiddleware:
     # Paths that should have ETag handling applied
     ETAG_PATHS = frozenset({"/tools", "/openapi.json"})
 
-    def __init__(self, app: ASGIApp, route_table: RouteTable) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        route_table: RouteTable,
+        principal_resolver: Any | None = None,
+    ) -> None:
         """Initialize the ETag middleware.
 
         Args:
             app: The ASGI application to wrap.
             route_table: The RouteTable instance for ETag generation.
+            principal_resolver: Optional API key resolver.  When set, the
+                ETag is derived from the request's ``Authorization`` header
+                as well, so two keys that see different tool sets cannot
+                share a cached document.  Responses also carry
+                ``Cache-Control: private`` and ``Vary: Authorization``.
         """
         self.app = app
         self.route_table = route_table
+        self.principal_resolver = principal_resolver
+
+    def _etag(self, scope: Scope) -> str:
+        """Return the ETag for one request.
+
+        With a resolver configured, the credential is folded into the tag.
+        The value is a digest of the header, never the token itself.
+        """
+        if self.principal_resolver is None:
+            return self.route_table.etag
+        headers = dict(scope.get("headers", []))
+        credential = headers.get(b"authorization", b"")
+        suffix = hashlib.sha256(credential).hexdigest()[:16]
+        return f'"{self.route_table.version}:{suffix}"'
+
+    def _scoped_headers(self) -> list[tuple[bytes, bytes]]:
+        """Return the privacy headers required when the view is per-caller."""
+        if self.principal_resolver is None:
+            return []
+        return [
+            (b"cache-control", b"private"),
+            (b"vary", b"Authorization"),
+        ]
 
     async def __call__(
         self,
@@ -235,7 +269,7 @@ class ETagMiddleware:
         headers = dict(scope.get("headers", []))
         if_none_match = headers.get(b"if-none-match", b"").decode("utf-8")
 
-        current_etag = self.route_table.etag
+        current_etag = self._etag(scope)
 
         # If ETag matches, return 304 Not Modified
         if if_none_match and if_none_match == current_etag:
@@ -245,6 +279,7 @@ class ETagMiddleware:
                     "status": 304,
                     "headers": [
                         (b"etag", current_etag.encode("utf-8")),
+                        *self._scoped_headers(),
                     ],
                 }
             )
@@ -259,13 +294,20 @@ class ETagMiddleware:
                 header_names = {h[0].lower() for h in headers}
                 if b"etag" not in header_names:
                     headers.append((b"etag", current_etag.encode("utf-8")))
+                for name, value in self._scoped_headers():
+                    if name not in header_names:
+                        headers.append((name, value))
                 message = {**message, "headers": headers}
             await send(message)
 
         await self.app(scope, receive, send_with_etag)
 
 
-def add_etag_middleware(app: FastAPI, route_table: RouteTable) -> None:
+def add_etag_middleware(
+    app: FastAPI,
+    route_table: RouteTable,
+    principal_resolver: Any | None = None,
+) -> None:
     """Add ETag middleware to a FastAPI application.
 
     This is a convenience function to add the ETagMiddleware to a FastAPI
@@ -274,6 +316,8 @@ def add_etag_middleware(app: FastAPI, route_table: RouteTable) -> None:
     Args:
         app: The FastAPI application instance.
         route_table: The RouteTable instance for ETag generation.
+        principal_resolver: Optional API key resolver, so the ETag is
+            per-credential and a shared cache cannot mix scoped documents.
 
     Example:
         ```python
@@ -286,4 +330,8 @@ def add_etag_middleware(app: FastAPI, route_table: RouteTable) -> None:
         add_etag_middleware(app, route_table)
         ```
     """
-    app.add_middleware(ETagMiddleware, route_table=route_table)
+    app.add_middleware(
+        ETagMiddleware,
+        route_table=route_table,
+        principal_resolver=principal_resolver,
+    )
