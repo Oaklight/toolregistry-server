@@ -327,7 +327,8 @@ gateway:
 ASGI lifespan 启动时创建一个 `StreamableHTTPSessionManager`，结束时关闭。启用或禁用
 MCP 前端不会重建它。gateway 始终用一个 ASGI 应用提供所有启用的前端，因此多个前端
 必须使用默认的 `fastapi` 后端；启用多个前端时 `--backend httpserver` 会被拒绝，
-该后端只能提供 openapi 前端。
+该后端只能提供 openapi 前端。该后端在监听器根路径提供 OpenAPI，因此 openapi
+路径覆盖会被拒绝，而不是静默忽略。
 
 `--tokens`（以及 `API_BEARER_TOKEN`）用同一组令牌保护所有前端。配置令牌后，MCP 的
 受保护资源元数据位于 `/.well-known/oauth-protected-resource<MCP 路径>`，并跟随当前
@@ -346,13 +347,15 @@ gateway.list_frontends()
 
 result = gateway.update_frontend("mcp", enabled=False)
 # {"name": "mcp", "path": "/mcp", "enabled": False, ...,
-#  "persisted": True, "warning": None}
+#  "persisted": True,
+#  "warning": "the config file was rewritten; JSONC comments are not preserved"}
 
 gateway.update_frontend("sse", path="/events")
 ```
 
 更新会先把原文件复制为 `<path>.bak`，再把新路径与标记写回配置文件，因此重启后仍然生效。
-`result["persisted"]` 表示写入是否成功，`result["warning"]` 说明跳过或失败的原因；
+`result["persisted"]` 表示写入是否成功。`result["warning"]` 说明跳过或失败的原因；
+写入成功时它也会带上与运行期来源管理相同的注释丢失警告，因为 JSONC 注释不会被保留。
 即使写入失败，运行期变更仍然生效。`--no-config-write`（或 `write_config=False`）
 关闭写入，并在 `warning` 中报告。
 
