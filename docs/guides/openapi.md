@@ -98,7 +98,7 @@ POST /calculator/evaluate
 
 ### 私网地址
 
-规范 URL 或文档中的任何 `servers[]` 条目，只要解析到 loopback、link-local 或私网地址，都会在建立连接前被拒绝。检查覆盖每个 `servers[]` 条目，而不只是用作 base URL 的那一个；重定向默认也被拒绝，因为下一跳无法校验（`follow_redirects=False`）。按源放行本地或私网 API：
+解析到 loopback、link-local 或私网地址的规范 URL 会在拉取前被拒绝。工具实际使用的 base URL——`servers[0]` 或配置的 `base_url`——会在每次请求前校验；重定向默认也被拒绝，因为下一跳无法校验（`follow_redirects=False`）。按源放行本地或私网 API：
 
 ```yaml
 tools:
@@ -114,7 +114,7 @@ tools:
 
 OpenAPI 源只在注册时读取一次规范文档。路由刷新——`RouteTable.refresh()`、`refresh_all()`，以及 `/tools` 上的 `last_refreshed_at` 字段——只根据注册表中已有的工具重建路由，不会重新下载规范。因此，远端文档新增的 path 在重新注册该源之前不会出现：重启服务器，或在 Hub 中于启用 `--config-reload` 时修改该源在 `tools.jsonc` 中的条目（声明未变化的源不会被重新注册）。
 
-每次重新下载规范都会按该源的 `allow_private_hosts` 重新执行出站校验：规范 URL 与每个 `servers[]` 条目都会在请求发出前再次校验。
+该源的 `allow_private_hosts` 同时作用于两项检查：规范 URL 在拉取前校验，客户端在每次请求前校验实际使用的 base URL（`servers[0]` 或配置的 `base_url`）。
 
 ### 请求格式
 

@@ -137,7 +137,7 @@ tools:
 | `base_url` | string | 否 | 覆盖规范中的 `servers[0].url` |
 | `include` | list | 否 | 保留的名称或 glob 模式。与 `exclude` 互斥 |
 | `exclude` | list | 否 | 丢弃的名称或 glob 模式。与 `include` 互斥 |
-| `allow_private_hosts` | bool | 否 | 允许规范 URL、每个 `servers[]` 条目以及工具的请求 URL 访问 loopback、link-local 或私网地址（默认：`false`） |
+| `allow_private_hosts` | bool | 否 | 允许规范 URL 与工具实际使用的 base URL 访问 loopback、link-local 或私网地址（默认：`false`） |
 | `enabled` | bool | 否 | 按源启用/禁用（默认：`true`） |
 
 #### 认证配置
@@ -169,7 +169,7 @@ tools:
     allow_private_hosts: true
 ```
 
-该标记只作用于这个源。对 `mcp` 而言，它覆盖 URL 传输（SSE、streamable HTTP、WebSocket）；`stdio` 源没有 URL，不受影响。对 `openapi` 而言，它覆盖规范 URL、每个 `servers[]` 条目以及工具的请求 URL。管理面板有自己的开关：`enable_admin(allow_private_hosts=True)`。
+该标记只作用于这个源。对 `mcp` 而言，它覆盖 URL 传输（SSE、streamable HTTP、WebSocket）；`stdio` 源没有 URL，不受影响。对 `openapi` 而言，它覆盖规范 URL 与工具实际使用的 base URL（`servers[0]` 或配置的 `base_url`）。管理面板有自己的开关：`enable_admin(allow_private_hosts=True)`。
 
 ## 过滤模式
 
