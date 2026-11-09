@@ -30,7 +30,6 @@ from toolregistry_server.gateway.endpoint import (
     HubEndpoint,
     endpoint_path,
     lock_path,
-    pid_path,
     read_endpoint,
     read_live_endpoint,
     read_owner_pid,
@@ -106,20 +105,23 @@ class TestStatusAndStopAuthority:
     """The lock decides liveness; a live pid in the document does not."""
 
     def test_status_reports_not_running_for_a_live_pid_without_a_lock(self, capsys):
-        write_endpoint(_tcp())
+        written = _tcp()
+        write_endpoint(written)
 
         assert local_hub.status_hub() == local_hub.EXIT_NOT_RUNNING
         assert "not running" in capsys.readouterr().out
-        assert not endpoint_path().exists()
+        # A lock-free name is a pure read: the document stays for its owner.
+        assert read_endpoint() == written
 
     def test_stop_does_not_signal_without_a_lock(self, monkeypatch):
-        write_endpoint(_tcp())
+        written = _tcp()
+        write_endpoint(written)
         signals = []
         monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
 
         assert local_hub.stop_hub() == local_hub.EXIT_NOT_RUNNING
         assert signals == []
-        assert not endpoint_path().exists()
+        assert read_endpoint() == written
 
     def test_status_reports_a_running_hub(self, capsys):
         lock = HubLock("default")
@@ -176,21 +178,30 @@ class TestStatusAndStopAuthority:
             holder.wait(timeout=10)
         assert signals == []
 
-    def test_stop_removes_both_documents_when_no_hub_owns_the_name(self):
+    def test_a_lock_free_stop_leaves_the_documents_for_their_owner(self):
+        stale = _tcp()
         write_owner_pid("default", 4242)
-        write_endpoint(_tcp())
+        write_endpoint(stale)
 
         assert local_hub.stop_hub() == local_hub.EXIT_NOT_RUNNING
-        assert not endpoint_path().exists()
-        assert not pid_path().exists()
+        assert read_endpoint() == stale
+        assert read_owner_pid("default") == 4242
 
-    def test_status_removes_both_documents_when_no_hub_owns_the_name(self):
+        # The next successful start overwrites both documents atomically.
+        fresh = _tcp(port=5555)
+        write_owner_pid("default", 999)
+        write_endpoint(fresh)
+        assert read_endpoint() == fresh
+        assert read_owner_pid("default") == 999
+
+    def test_a_lock_free_status_is_a_pure_read(self):
+        stale = _tcp()
         write_owner_pid("default", 4242)
-        write_endpoint(_tcp())
+        write_endpoint(stale)
 
         assert local_hub.status_hub() == local_hub.EXIT_NOT_RUNNING
-        assert not endpoint_path().exists()
-        assert not pid_path().exists()
+        assert read_endpoint() == stale
+        assert read_owner_pid("default") == 4242
 
 
 def _hold_lock_in_child(name: str, *, write_pid: bool = True) -> subprocess.Popen:

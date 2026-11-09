@@ -324,9 +324,8 @@ def stop_hub(name: str = DEFAULT_NAME, *, timeout: float = DEFAULT_STOP_TIMEOUT)
         print(str(exc), file=sys.stderr)
         return 1
     if not lock_is_held(name):
-        if endpoint is not None:
-            remove_endpoint(name)
-        remove_owner_pid(name)
+        # Leave the documents in place: a starting hub may have just written
+        # them, and every reader gates on the lock before trusting them.
         print(f"hub {name!r} is not running")
         return EXIT_NOT_RUNNING
     if endpoint is None:
@@ -414,9 +413,8 @@ def status_hub(name: str = DEFAULT_NAME, *, as_json: bool = False) -> int:
             print(str(exc), file=sys.stderr)
             return 1
     if not held:
-        if endpoint is not None:
-            remove_endpoint(name)
-        remove_owner_pid(name)
+        # A lock-free name is a pure read: a starting hub may be about to
+        # publish, so nothing here may delete a document.
         state = "not-running"
         live = None
     elif endpoint is not None and endpoint.is_live() and owner == endpoint.pid:
