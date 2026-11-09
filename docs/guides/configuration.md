@@ -304,16 +304,16 @@ cross-process coordination.
 
 ## Gateway Frontends
 
-The `gateway` subcommand serves the OpenAPI adapter and both MCP HTTP
-transports from one process and one listener:
+The `gateway` subcommand serves the OpenAPI adapter, both MCP HTTP transports
+and the operator admin panel from one process and one listener:
 
 ```bash
 toolregistry-server gateway --config tools.yaml --port 8000
 ```
 
-The default mounts are `/openapi` (OpenAPI), `/mcp` (MCP streamable-HTTP) and
-`/sse` (MCP SSE). A config file can change the paths and enable flags under
-`gateway.frontends`:
+The default mounts are `/openapi` (OpenAPI), `/mcp` (MCP streamable-HTTP),
+`/sse` (MCP SSE) and `/admin` (admin panel). A config file can change the
+paths and enable flags under `gateway.frontends`:
 
 ```yaml
 gateway:
@@ -327,6 +327,9 @@ gateway:
     sse:
       path: /events
       enabled: false
+    admin:
+      path: /admin
+      enabled: false
 ```
 
 | Frontend | Default path | Transport | Default |
@@ -334,12 +337,13 @@ gateway:
 | `openapi` | `/openapi` | HTTP | enabled |
 | `mcp` | `/mcp` | `streamable-http` | enabled |
 | `sse` | `/sse` | SSE | enabled |
+| `admin` | `/admin` | HTTP | disabled |
 
-CLI options `--openapi-path`, `--mcp-path`, `--sse-path`, `--openapi`,
-`--mcp` and `--sse` override the file for one process. The enable flag is read
-on every request: disabling a frontend makes its path answer `404` immediately,
-without a restart and without affecting the other frontends. Changing a path
-also applies to the next request.
+CLI options `--openapi-path`, `--mcp-path`, `--sse-path`, `--admin-path`,
+`--openapi`, `--mcp`, `--sse` and `--admin` override the file for one
+process. The enable flag is read on every request: disabling a frontend makes
+its path answer `404` immediately, without a restart and without affecting the
+other frontends. Changing a path also applies to the next request.
 
 One `StreamableHTTPSessionManager` is created when the ASGI lifespan starts and
 closed when it stops. Enabling or disabling the MCP frontend does not rebuild
@@ -350,10 +354,68 @@ can serve only the openapi frontend. That backend serves OpenAPI at the
 listener root, so an openapi path override is rejected rather than silently
 ignored.
 
-`--tokens` (and `API_BEARER_TOKEN`) protect every frontend with the same token
-set. When tokens are configured, the MCP protected-resource metadata is served
-at `/.well-known/oauth-protected-resource<mcp path>` and follows the current
-MCP path.
+`--tokens` (and `API_BEARER_TOKEN`) protect the OpenAPI and MCP frontends
+with the same token set. The admin panel is deliberately outside that set:
+see [Admin panel](#admin-panel). When tokens or `--keys-db` are configured,
+the MCP protected-resource metadata is served at
+`/.well-known/oauth-protected-resource<mcp path>` and follows the current MCP
+path.
+
+### Admin panel
+
+`--admin` enables the panel and `--admin-path` changes its mount. The panel is
+the core ToolRegistry admin UI, so it uses the core panel's own token and
+session authentication, not the gateway bearer tokens. Configure its operator
+token with `--admin-token TOKEN` or, preferably, `--admin-token-file PATH`:
+
+```bash
+toolregistry-server gateway \
+  --config tools.yaml \
+  --tokens serving-tokens.txt \
+  --admin \
+  --admin-token-file operator-token.txt
+```
+
+The panel is disabled by default. Enabling it without an operator token is a
+startup error, and a gateway serving token does not open the panel: a request
+to `/admin/api/info` that carries only a serving token gets `401`.
+
+The gateway listens on one external port. Internally it starts the core
+`AdminServer` on a loopback ephemeral port and forwards the admin frontend to
+it, preserving the public `Host` header so the panel's same-origin checks
+keep working. The internal listener never accepts a non-loopback connection.
+The panel starts on the first request after the frontend is enabled; while the
+frontend is disabled, its path answers `404` and no admin request reaches the
+panel.
+
+The panel loads the gateway admin extension with the process's live objects:
+
+- **Keys** uses the store from `--keys-db PATH`. Without it, the page answers
+  `503`. The store is the scoped inbound key store; creating and revoking a
+  key takes effect on the next request to the tool frontends as well.
+- **Frontends** lists and changes the same frontend registry as
+  `gateway.list_frontends()` / `gateway.update_frontend()`; a change applies
+  to the next request and is persisted under the normal write policy.
+- **Sources** uses the runtime source manager. The panel's own source
+  registration also persists through that manager.
+
+The extension routes live under the panel mount, for example
+`/admin/ext/gateway/keys`. The shell loads the extension assets through the
+panel's asset handler; no asset contains a secret. Disabling the admin
+frontend makes the panel root and every extension route under it answer
+`404`.
+
+Hosting the panel requires core `toolregistry` with the admin extension
+contract (`ADMIN_EXTENSION_API == 1`, core 0.21.0 or newer). On an older core
+the frontend refuses to start with a clear error; the default configuration
+does not load it.
+
+`--keys-db` also enables scoped inbound keys on the gateway, with the same
+rules as the `openapi` and `mcp` subcommands: the OpenAPI and MCP frontends
+accept an active key as well as the static `--tokens` credentials, and each
+frontend enforces the key's namespace and per-tool scope. Static tokens keep
+full, unscoped access. A key created or revoked in the panel applies on the
+next request, because the store row is read on every request.
 
 ### Runtime frontend API
 
@@ -364,7 +426,8 @@ The gateway object is available in-process as `App.gateway` after
 gateway = app.create_gateway(config_path="tools.yaml")
 
 gateway.list_frontends()
-# [{"name": "openapi", "path": "/openapi", "enabled": True, "transport": "http"}, ...]
+# [{"name": "openapi", "path": "/openapi", "enabled": True, "transport": "http"},
+#  ..., {"name": "admin", "path": "/admin", "enabled": False, "transport": "http"}]
 
 result = gateway.update_frontend("mcp", enabled=False)
 # {"name": "mcp", "path": "/mcp", "enabled": False, ...,

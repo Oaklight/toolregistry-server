@@ -105,15 +105,16 @@ toolregistry-server mcp \
   --tokens tokens.txt
 ```
 
-### `gateway` - Serve OpenAPI and MCP from one process
+### `gateway` - Serve OpenAPI, MCP and the admin panel from one process
 
 ```bash
 toolregistry-server gateway [options]
 ```
 
 One ASGI application mounts the OpenAPI adapter at `/openapi`, MCP
-streamable-HTTP at `/mcp` and MCP SSE at `/sse`. Each frontend has a
-configurable path and an enable flag that is checked on every request.
+streamable-HTTP at `/mcp`, MCP SSE at `/sse` and the admin panel at `/admin`.
+Each frontend has a configurable path and an enable flag that is checked on
+every request. The admin panel is disabled by default.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -126,9 +127,15 @@ configurable path and an enable flag that is checked on every request.
 | `--openapi-path PATH` | `/openapi` | OpenAPI mount path (rejected with `--backend httpserver`, which serves at the listener root) |
 | `--mcp-path PATH` | `/mcp` | MCP streamable-HTTP mount path |
 | `--sse-path PATH` | `/sse` | MCP SSE mount path |
+| `--admin-path PATH` | `/admin` | Admin panel mount path |
 | `--openapi` / `--no-openapi` | enabled | Enable or disable the OpenAPI frontend |
 | `--mcp` / `--no-mcp` | enabled | Enable or disable MCP streamable-HTTP |
 | `--sse` / `--no-sse` | enabled | Enable or disable MCP SSE |
+| `--admin` / `--no-admin` | disabled | Enable or disable the admin panel. Enabling requires an operator token |
+| `--admin-token TOKEN` | - | Operator token accepted by the admin panel. Prefer `--admin-token-file` |
+| `--admin-token-file PATH` | - | Read the admin operator token from a file |
+| `--keys-db PATH` | - | SQLite store backing the panel's Keys page |
+| `--admin-allow-private-hosts` | `false` | Let the panel fetch a source URL that resolves to a private address |
 | `--no-config-write` | `false` | Do not persist runtime frontend changes to the config file |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest request body accepted by the OpenAPI frontend |
 | `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes |
@@ -146,12 +153,16 @@ toolregistry-server gateway \
   --port 8000 \
   --openapi-path /api \
   --no-sse \
-  --tokens tokens.txt
+  --tokens tokens.txt \
+  --admin \
+  --admin-token-file operator-token.txt
 ```
 
 A disabled frontend answers `404` without touching the registry. Frontend
 paths and flags can also be stored under `gateway.frontends` in the config
 file; see the [Configuration Guide](../../guides/configuration.md#gateway-frontends).
+The admin panel uses its own operator token, not the `--tokens` set; extension
+pages live under the panel mount (for example `/admin/ext/gateway/keys`).
 
 ## Configuration File
 
