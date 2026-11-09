@@ -1270,3 +1270,88 @@ class TestLocalHubCommand:
             main(["local-hub", "run", "--config", "tools.yaml"])
 
         assert exc.value.code == 1
+
+
+class TestHubShimCommand:
+    """The hub-shim subcommand proxies one stdio client to a hub (#145)."""
+
+    def test_defaults(self):
+        args = CLI().create_parser().parse_args(["hub-shim"])
+
+        assert args.command == "hub-shim"
+        assert args.name == "default"
+        assert args.config is None
+        assert args.socket_path is None
+        assert args.connect_timeout == 5.0
+        assert args.spawn is True
+
+    def test_options(self):
+        args = (
+            CLI()
+            .create_parser()
+            .parse_args(
+                [
+                    "hub-shim",
+                    "--name",
+                    "work",
+                    "--config",
+                    "tools.yaml",
+                    "--socket",
+                    "/tmp/hub.sock",
+                    "--connect-timeout",
+                    "2",
+                    "--no-spawn",
+                ]
+            )
+        )
+
+        assert args.name == "work"
+        assert args.config == "tools.yaml"
+        assert args.socket_path == "/tmp/hub.sock"
+        assert args.connect_timeout == 2.0
+        assert args.spawn is False
+
+    @patch("toolregistry_server.gateway.shim.run_stdio", return_value=0)
+    def test_dispatch_builds_the_shim_config(self, mock_run):
+        main(
+            [
+                "hub-shim",
+                "--name",
+                "work",
+                "--config",
+                "tools.yaml",
+                "--socket",
+                "/tmp/hub.sock",
+                "--connect-timeout",
+                "2",
+                "--no-spawn",
+            ]
+        )
+
+        config = mock_run.call_args.args[0]
+        assert config.name == "work"
+        assert config.config_path == "tools.yaml"
+        assert config.socket_path == "/tmp/hub.sock"
+        assert config.connect_timeout == 2.0
+        assert config.spawn is False
+
+    def test_dispatch_does_not_need_a_config(self):
+        """An operator-started hub is found through the endpoint document."""
+        with patch("toolregistry_server.gateway.shim.run_stdio", return_value=0) as run:
+            main(["hub-shim", "--name", "work"])
+
+        assert run.call_args.args[0].config_path is None
+
+    def test_a_shim_error_exits_one(self):
+        from toolregistry_server.gateway.shim import ShimError
+
+        with (
+            patch(
+                "toolregistry_server.gateway.shim.run_stdio",
+                side_effect=ShimError("hub speaks another protocol"),
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main(["hub-shim"])
+
+        assert exc.value.code == 1
