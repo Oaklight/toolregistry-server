@@ -287,11 +287,11 @@ lock.
 
 An add, remove or replace writes the configuration back to the file the server
 was started with, so a restart reproduces the state. The previous file is
-copied to `<path>.bak` first, and JSONC comments are lost because the parsed
-model does not keep them. `MutationResult.persisted` and `persist_error`
-report the outcome: a read-only path is reported, never silently ignored, and
-the runtime change still applies. `--no-config-write` (or
-`write_config=False`) keeps every change in memory only.
+copied to `<path>.bak` first, and comments are lost because the parsed model
+does not keep them — this holds for JSONC and YAML alike.
+`MutationResult.persisted` and `persist_error` report the outcome: a read-only
+path is reported, never silently ignored, and the runtime change still applies.
+`--no-config-write` (or `write_config=False`) keeps every change in memory only.
 
 ### Watching the file
 
@@ -433,19 +433,26 @@ gateway.list_frontends()
 result = gateway.update_frontend("mcp", enabled=False)
 # {"name": "mcp", "path": "/mcp", "enabled": False, ...,
 #  "persisted": True,
-#  "warning": "the config file was rewritten; JSONC comments are not preserved"}
+#  "warning": "the config file was rewritten; comments are not preserved"}
 
 gateway.update_frontend("sse", path="/events")
 ```
 
 An update writes the new path and flag back to the config file after copying
 the previous file to `<path>.bak`, so a restart keeps the change.
+
 `result["persisted"]` says whether the write succeeded. `result["warning"]`
 explains a skipped or failed write; a successful write carries the same
-comment-loss warning as runtime source management, because JSONC comments are
-not preserved. The runtime change still applies when the write fails.
+comment-loss warning as runtime source management, because comments are not
+preserved. The runtime change still applies when the write fails.
 `--no-config-write` (or `write_config=False`) disables the write and reports it
 in `warning`.
+
+On `--backend httpserver` the OpenAPI frontend has no mount prefix: it is
+served at the listener root (`/tools`, `/openapi.json`, `/docs`, `/events`).
+`list_frontends()` therefore reports its `path` as `"/"` together with a
+`note` that says so, and passing `"/"` back to `update_frontend` is accepted
+as a no-op instead of an error, so saving the unchanged record succeeds.
 
 ## Environment Variables
 
