@@ -10,8 +10,10 @@ from __future__ import annotations
 import dataclasses
 import json
 from io import StringIO
+from typing import Annotated
 
 import pytest
+from pydantic import Field
 from toolregistry import ToolRegistry
 from toolregistry.config import ToolConfig
 from toolregistry.tool import Tool
@@ -72,18 +74,17 @@ def _proxy_table() -> RouteTable:
     return RouteTable(registry)
 
 
+#: Defined at module scope: core resolves a postponed annotation through the
+#: function's module globals, so a locally scoped ``Annotated``/``Field``
+#: pair would fall back to an unconstrained schema.
+def _bounded(x: Annotated[int, Field(ge=0, le=100)]) -> int:
+    """Bounded."""
+    return x
+
+
 def _bounded_table() -> RouteTable:
-    from typing import Annotated
-
-    from pydantic import Field
-
     registry = ToolRegistry()
-
-    @registry.register
-    def bounded(x: Annotated[int, Field(ge=0, le=100)]) -> int:
-        """Bounded."""
-        return x
-
+    registry.register(_bounded, name="bounded")
     return RouteTable(registry)
 
 
