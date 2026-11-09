@@ -436,9 +436,9 @@ class SourceManager:
         write_config: Rewrite the config file after an API-originated
             mutation.  ``False`` keeps changes in memory (``--no-config-write``).
         on_registered: Optional callback invoked with the registry and the
-            names a diff registered, after registration and before the
-            profile filter.  Downstream packages use it for metadata
-            defaults.
+            names a registration pass added: startup, a diff or a retry.
+            It runs after registration and before the profile filter.
+            Downstream packages use it for metadata defaults.
     """
 
     def __init__(
@@ -485,13 +485,23 @@ class SourceManager:
         aborting startup, unless ``strict_spec_regex`` is set and the failure
         is a :class:`SpecPatternError`.
 
+        The ``on_registered`` hook runs once after the loop with every name
+        the startup sources registered, in the same place a diff runs it:
+        after registration and before the profile filter and ``tool_metadata``.
+        It is skipped when nothing was registered, and a failure is logged
+        without unregistering the tools.
+
         Returns:
             One entry per source, in declaration order.
         """
         with self._lock:
             entries: dict[SourceKey, SourceEntry] = {}
+            registered: set[str] = set()
             for key, source in index_sources(self.config.tools).items():
-                entries[key] = self._apply_source(key, source, self.config)
+                entry = self._apply_source(key, source, self.config)
+                entries[key] = entry
+                registered.update(entry.names)
+            self._notify_registered(registered)
             if self.config.tool_metadata:
                 self.registry.apply_metadata_config(self.config.tool_metadata)
             self._entries = entries
@@ -780,14 +790,7 @@ class SourceManager:
         performed, so the failure is logged.  The profile filter and the
         file's ``tool_metadata`` then run in the startup order.
         """
-        if self.on_registered is not None and new_names:
-            try:
-                self.on_registered(self.registry, new_names)
-            except Exception as exc:  # noqa: BLE001 - metadata hook is optional
-                logger.error(
-                    "on_registered callback failed; the tools stay registered: "
-                    f"{_safe_error(exc)}"
-                )
+        self._notify_registered(new_names)
 
         # Tools registered by this diff must obey the deployment profile
         # applied to the startup registry.
@@ -796,6 +799,28 @@ class SourceManager:
 
         if new_config.tool_metadata:
             self.registry.apply_metadata_config(new_config.tool_metadata)
+
+    def _notify_registered(self, names: set[str]) -> None:
+        """Call the optional ``on_registered`` hook, logging a failure.
+
+        A downstream metadata hook failing must not undo a registration the
+        registry already performed, so the error is logged and the tools stay
+        registered.  Startup and diffs both report their names here, so they
+        share the same semantics.
+
+        Args:
+            names: Names registered by the pass.  An empty set skips the
+                callback.
+        """
+        if self.on_registered is None or not names:
+            return
+        try:
+            self.on_registered(self.registry, names)
+        except Exception as exc:  # noqa: BLE001 - metadata hook is optional
+            logger.error(
+                "on_registered callback failed; the tools stay registered: "
+                f"{_safe_error(exc)}"
+            )
 
     def _apply_one(
         self,

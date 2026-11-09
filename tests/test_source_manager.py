@@ -224,6 +224,63 @@ class TestRegistrationCallback:
 
         assert seen == [{"gamma-one"}]
 
+    def test_callback_receives_the_startup_names(self, tools_dir, tmp_path):
+        seen: list[set[str]] = []
+        path = tmp_path / "tools.jsonc"
+        _write_config(path, ALPHA, BETA)
+
+        manager = _build(
+            path,
+            on_registered=lambda _registry, names: seen.append(set(names)),
+        )
+
+        assert seen == [{"alpha-one", "alpha-two", "beta-one"}]
+        assert set(_names(manager)) == {"alpha-one", "alpha-two", "beta-one"}
+
+    def test_no_callback_without_sources(self, tools_dir, tmp_path):
+        seen: list[set[str]] = []
+        path = tmp_path / "tools.jsonc"
+        _write_config(path)
+
+        _build(
+            path,
+            on_registered=lambda _registry, names: seen.append(set(names)),
+        )
+
+        assert seen == []
+
+    def test_no_callback_when_every_source_is_excluded(self, tools_dir, tmp_path):
+        seen: list[set[str]] = []
+        path = tmp_path / "tools.jsonc"
+        _write_config(
+            path,
+            ALPHA,
+            extra='"mode": "allowlist", "enabled": ["nothing"], ',
+        )
+
+        manager = _build(
+            path,
+            on_registered=lambda _registry, names: seen.append(set(names)),
+        )
+
+        assert seen == []
+        assert [entry.status for entry in manager.list()] == [SourceStatus.EXCLUDED]
+
+    def test_a_raising_startup_callback_keeps_the_tools(self, tools_dir, tmp_path):
+        def boom(_registry, _names):
+            raise RuntimeError("hook failure")
+
+        path = tmp_path / "tools.jsonc"
+        _write_config(path, ALPHA, BETA)
+
+        manager = _build(path, on_registered=boom)
+
+        assert set(_names(manager)) == {"alpha-one", "alpha-two", "beta-one"}
+        assert [entry.status for entry in manager.list()] == [
+            SourceStatus.APPLIED,
+            SourceStatus.APPLIED,
+        ]
+
     def test_file_metadata_wins_over_the_callback(self, tools_dir, tmp_path):
         path = tmp_path / "tools.jsonc"
         metadata = '"tool_metadata": {"gamma-one": {"defer": false}}, '
