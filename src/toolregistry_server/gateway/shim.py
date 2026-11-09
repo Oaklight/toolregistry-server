@@ -105,7 +105,7 @@ def _uds_client(transport_module: Any, socket_path: str) -> Any:
     # tear the transport down while the hub is simply quiet.
     timeout = http.Timeout(30.0, read=300.0)
     return http.AsyncClient(
-        transport=http.HTTPTransport(uds=socket_path), timeout=timeout
+        transport=http.AsyncHTTPTransport(uds=socket_path), timeout=timeout
     )
 
 
@@ -141,7 +141,7 @@ def open_hub_transport(url: str, socket_path: str | None = None) -> Any:
         }
         http = _sdk_http_module(module)
         return http.AsyncClient(
-            transport=http.HTTPTransport(uds=socket_path), **allowed
+            transport=http.AsyncHTTPTransport(uds=socket_path), **allowed
         )
 
     return old_style(url, httpx_client_factory=factory)
@@ -181,20 +181,6 @@ def _unavailable(config: ShimConfig, detail: str | None = None) -> Exception:
     if detail:
         message = f"{message}: {detail}"
     return make_mcp_error(HUB_ERROR_CODE, message)
-
-
-def _task_cancelling() -> bool:
-    """Whether this task was asked to stop, rather than an inner scope.
-
-    A hub that dies mid-request cancels the SDK's transport task group, and
-    the cancellation surfaces as ``CancelledError``.  That is a lost
-    connection, not a cancellation of the shim's own task; only the latter
-    may propagate.  ``Task.cancelling`` exists from 3.11, so on 3.10 the
-    transport case wins by default.
-    """
-    task = asyncio.current_task()
-    probe = getattr(task, "cancelling", None)
-    return bool(probe()) if probe is not None else False
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -304,7 +290,7 @@ class HubConnection:
                 session.list_tools(), self._config.connect_timeout
             )
         except asyncio.CancelledError:
-            if _task_cancelling():
+            if self._closed:
                 raise
             logger.warning("hub tools/list was cancelled by a closed connection")
             await self._drop()
@@ -341,10 +327,11 @@ class HubConnection:
         try:
             return await session.call_tool(name, dict(arguments or {}))
         except asyncio.CancelledError:
-            if _task_cancelling():
+            if self._closed:
                 raise
-            # The hub's transport cancelled the call because the connection
-            # closed.  Report it like any other lost connection.
+            # The streamable-HTTP transport binds its task group to the
+            # caller's task, so a dead connection surfaces here as a
+            # cancellation.  Report it like any other lost connection.
             logger.warning(f"hub call {name!r} was cancelled by a closed connection")
             await self._drop()
             self._schedule_reconnect()
@@ -421,7 +408,7 @@ class HubConnection:
                 self._open(endpoint), self._config.connect_timeout
             )
         except asyncio.CancelledError:
-            if _task_cancelling():
+            if self._closed:
                 raise
             logger.warning("hub connect was cancelled by the transport")
             return False
@@ -473,10 +460,9 @@ class HubConnection:
         try:
             await stack.aclose()
         except asyncio.CancelledError:
-            # The transport's task group was cancelled by the closed
-            # connection; only a cancellation of this task may propagate.
-            if _task_cancelling():
-                raise
+            # The transport also raises on the cancel scope it shared with
+            # us; the stack is discarded either way.
+            pass
         except Exception:
             pass
 
