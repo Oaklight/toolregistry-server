@@ -173,23 +173,31 @@ curl -N http://localhost:8000/events
 
 ## HTTP 后端
 
-适配器可以在两种后端上提供服务，两者的线上契约完全一致：
+独立 `openapi` 命令运行在内联的 `httpserver` 上，不需要任何第三方包。`gateway`
+命令有两种后端，OpenAPI 线上契约完全一致：
 
-| 后端 | 服务器 | 第三方依赖 |
-|---|---|---|
-| `fastapi`（默认） | uvicorn | FastAPI、uvicorn 及其依赖 |
-| `httpserver` | 内联的 `httpserver` | 无 |
+| 命令 | 后端 | 服务器 | 第三方依赖 |
+|---|---|---|---|
+| `openapi` | `httpserver`（唯一） | 内联的 `httpserver` | 无 |
+| `gateway` | `fastapi`（默认） | uvicorn | FastAPI 与 uvicorn（`[gateway]`） |
+| `gateway` | `httpserver` | 内联的 `httpserver` | 无；只能提供 openapi 前端 |
 
 ```bash
-toolregistry-server openapi --config tools.yaml --backend httpserver
+toolregistry-server openapi --config tools.yaml
+toolregistry-server gateway --config tools.yaml --backend httpserver
 ```
 
 ```python
-OpenAPIAdapter(route_table, backend="httpserver")
-App().serve_openapi(config_path="tools.yaml", backend="httpserver")
+OpenAPIAdapter(route_table)                    # 独立服务，始终 httpserver
+App().serve_openapi(config_path="tools.yaml")  # 同一路径的 app 封装
 ```
 
-`httpserver` 是 epic #101 的零依赖路径：路由、422 `{"detail": [...]}` 结构、`/tools` 与 `/openapi.json` 上的 ETag/`304` 行为、以及 `/events` 的 Server-Sent Events 流都一致。有一组差分测试同时启动两个实现并通过真实 socket 断言状态码、`ETag` 与响应体字节完全相同。`--reload` 是 uvicorn 的特性，在 `httpserver` 后端上只会记录一条告警并被忽略。
+`httpserver` 是 epic #101 的零依赖路径，也是独立服务的唯一后端：路由、422
+`{"detail": [...]}` 结构、`/tools` 与 `/openapi.json` 上的 ETag/`304` 行为、以及
+`/events` 的 Server-Sent Events 流都一致。有一组差分测试同时启动 gateway 的两种后端
+并通过真实 socket 断言状态码、`ETag` 与响应体字节完全相同。`--backend` 只属于
+gateway；独立 `openapi` 命令既没有 `--backend` 也没有 `--reload`，而向 gateway 的
+run 传入 `reload=True` 只会记录告警并被忽略。
 
 两个后端都用同一个辅助函数编码工具结果，该函数使用 core 的 `ToolResultJSONEncoder`：`bytes` 结果在两个后端上都是 base64，非有限浮点数与 `Decimal`（`NaN`、`Infinity`）都输出 `null`，而不是裸 `NaN` 或字符串 `"NaN"`。
 

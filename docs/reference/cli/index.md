@@ -38,15 +38,16 @@ toolregistry-server [选项] <子命令> [子命令选项]
 toolregistry-server openapi [选项]
 ```
 
+独立服务器始终运行在内联的 `httpserver` 上：不需要 extra，也没有 `--backend` 与
+`--reload`（两者都只属于 uvicorn）。`gateway` 命令保留 `--backend` 选择。
+
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--config PATH` | - | JSONC 或 YAML 配置文件路径（必需） |
 | `--host HOST` | `0.0.0.0` | 绑定主机 |
 | `--port PORT` | `8000` | 绑定端口 |
 | `--tokens PATH` | - | Bearer 令牌文件，每行一个（`#` 开始注释）。令牌以恒定时间比较；同时读取 `API_BEARER_TOKEN`（逗号分隔） |
-| `--backend {fastapi,httpserver}` | `fastapi` | HTTP 后端：`fastapi`（uvicorn）或内联的零依赖 `httpserver` |
 | `--max-body-size BYTES` | `1048576`（1 MiB） | 接受的最大请求体。必须为正数；超限返回带 JSON 错误的 `413` |
-| `--reload` | `false` | 启用热重载（仅 FastAPI/uvicorn；`httpserver` 上记录警告并忽略） |
 | `--profile PROFILE` | - | 部署配置：`remote`、`local`，或配置文件 `profiles:` 中声明的名称 |
 | `--regex-timeout SECONDS` | `0.05` | 来自 spec 的正则单次匹配上限（需要 `regex` extra）。`0` 禁用执行 |
 | `--regex-budget SECONDS` | `0.25` | 单次请求内所有 spec 正则匹配共享的上限。`0` 禁用执行 |

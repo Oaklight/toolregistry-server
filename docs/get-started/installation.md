@@ -8,25 +8,31 @@
 pip install toolregistry-server
 ```
 
-这会安装核心路由层（`RouteTable`、`RouteEntry`）以及零依赖的 `httpserver` OpenAPI 后端。FastAPI 后端与 MCP 支持属于 extra。
+这会安装核心路由层（`RouteTable`、`RouteEntry`）以及零依赖的 `httpserver`
+OpenAPI 服务器，独立 `openapi` 命令即运行在它之上。MCP 支持与 ASGI gateway 后端属于
+extra。
 
 ## 协议支持
 
 !!! tip
-    **zsh 用户**（macOS 默认 shell）：需要用引号包裹包名，例如 `pip install 'toolregistry-server[openapi]'` — zsh 会将 `[]` 解释为通配符。
+    **zsh 用户**（macOS 默认 shell）：需要用引号包裹包名，例如 `pip install 'toolregistry-server[gateway]'` — zsh 会将 `[]` 解释为通配符。
 
-### OpenAPI 支持
+### ASGI Gateway 后端
 
-将工具暴露为使用 FastAPI 的 RESTful HTTP 端点：
+gateway 在同一个 ASGI 应用中提供 OpenAPI、MCP 与管理面板，其 ASGI 后端需要
+FastAPI 与 uvicorn：
 
 ```bash
-pip install toolregistry-server[openapi]
+pip install toolregistry-server[gateway]
 ```
 
 这将额外安装：
 
 - `FastAPI` (>=0.119.0)
 - `Uvicorn` 及标准扩展 (>=0.24.0)
+
+独立 `openapi` 命令不需要该 extra。`[openapi]` 作为空别名保留，使既有依赖声明仍能
+解析；它不安装任何包。
 
 ### MCP 支持
 
