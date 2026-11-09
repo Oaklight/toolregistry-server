@@ -402,7 +402,7 @@ def _filtered_result(
 def _require_proxy_target(
     tool_name: str,
     arguments: Any,
-    route_table: RouteTable,
+    registry: Any,
     principal_resolver: Any,
     principal: Any,
 ) -> None:
@@ -414,7 +414,7 @@ def _require_proxy_target(
     Args:
         tool_name: The tool the client called.
         arguments: The validated call arguments.
-        route_table: The route table being served.
+        registry: The live registry behind the served routes.
         principal_resolver: The configured resolver, or ``None``.
         principal: The caller's principal, or ``None``.
 
@@ -422,7 +422,7 @@ def _require_proxy_target(
         fastapi.HTTPException: ``403`` when the target is outside the scope.
     """
     target = refusing_target(
-        tool_name, arguments, route_table, principal_resolver, principal
+        tool_name, arguments, registry, principal_resolver, principal
     )
     if target is None:
         return
@@ -538,7 +538,7 @@ def _add_route_from_entry(
                 )
                 principal = getattr(request.state, "principal", None)
                 _require_proxy_target(
-                    tname, arguments, rt, principal_resolver, principal
+                    tname, arguments, rt.registry, principal_resolver, principal
                 )
                 try:
                     result = await h(**arguments)
@@ -585,7 +585,7 @@ def _add_route_from_entry(
                 )
                 principal = getattr(request.state, "principal", None)
                 _require_proxy_target(
-                    tname, arguments, rt, principal_resolver, principal
+                    tname, arguments, rt.registry, principal_resolver, principal
                 )
                 try:
                     result = h(**arguments)

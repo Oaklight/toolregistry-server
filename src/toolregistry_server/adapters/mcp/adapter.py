@@ -645,17 +645,20 @@ def _refuse_out_of_scope(
 def _refuse_proxy_target(
     tool_name: str,
     arguments: Any,
-    route_table: "RouteTable",
+    registry: Any,
     principal_resolver: "PrincipalResolver | None",
     principal: Any | None,
 ) -> None:
     """Refuse ``call_deferred`` when its target is outside the scope.
 
-    The message names the target, exactly as a direct out-of-scope call to
-    that tool does, so a client cannot tell which path refused it.
+    The target is resolved against the registry, the object core invokes
+    against, so a tool registered while the route table defers a rebuild is
+    still judged.  The message names the target, exactly as a direct
+    out-of-scope call to that tool does, so a client cannot tell which path
+    refused it.
     """
     target = refusing_target(
-        tool_name, arguments, route_table, principal_resolver, principal
+        tool_name, arguments, registry, principal_resolver, principal
     )
     if target is None:
         return
@@ -722,7 +725,7 @@ async def _mcp_call_tool(
     )
     _refuse_out_of_scope(tool_name, route, principal_resolver, principal)
     _refuse_proxy_target(
-        tool_name, arguments, route_table, principal_resolver, principal
+        tool_name, arguments, route_table.registry, principal_resolver, principal
     )
 
     session_ctx = _get_session_context(session_mgr)
