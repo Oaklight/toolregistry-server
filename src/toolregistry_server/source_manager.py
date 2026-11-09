@@ -735,7 +735,7 @@ class SourceManager:
                     result = self._refresh_integration(source, integration)
                     if not result.skipped:
                         result, dropped = self._drop_invalid_patterns(
-                            source, integration, result
+                            source, integration, result, entry.names
                         )
                         self._record_refresh(key, entry, result, dropped)
                         if dropped and self.strict_spec_regex:
@@ -800,6 +800,7 @@ class SourceManager:
         source: OpenAPISource,
         integration: Any,
         result: RefreshResult,
+        names: Iterable[str],
     ) -> tuple[RefreshResult, Sequence[str]]:
         """Drop refreshed tools whose spec regex the guard cannot compile.
 
@@ -824,6 +825,10 @@ class SourceManager:
             source: The OpenAPI source declaration.
             integration: The core integration that owns the tracked set.
             result: The integration's refresh result.
+            names: The source's current tool names.  They are checked as
+                well when ``base_url_changed`` is set, because core rebuilt
+                every wrapper from the new document even though it reports
+                no added or updated names.
 
         Returns:
             ``(result, dropped)``, with the dropped names removed from
@@ -831,6 +836,8 @@ class SourceManager:
             appended to ``removed``.
         """
         affected = set(result.added) | set(result.updated)
+        if getattr(result, "base_url_changed", False):
+            affected |= set(names)
         failures = _invalid_patterns(self.registry, affected)
         if not failures:
             return result, []

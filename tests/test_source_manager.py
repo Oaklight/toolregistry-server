@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from toolregistry import ToolRegistry
 from toolregistry._netpolicy import UnsafeAddressError
-from toolregistry.config import MCPSource, PythonSource, load_config
+from toolregistry.config import MCPSource, OpenAPISource, PythonSource, load_config
 
 from toolregistry_server import PROFILE_DISABLE_REASON, RouteTable, apply_profile
 from toolregistry_server.source_manager import (
@@ -1327,6 +1327,50 @@ class TestOpenAPIRefresh:
         assert result.removed == ("pet-list_pets",)
         assert "pet-list_pets" not in manager.registry._tools
         assert "pet-list_pets" not in manager.get(source_id).names
+
+    def test_a_moved_base_url_rechecks_every_source_tool(self, manager, monkeypatch):
+        import dataclasses as dc
+
+        from toolregistry.events import RefreshResult
+        from toolregistry.tool import Tool
+
+        from toolregistry_server import regex_guard
+
+        @dc.dataclass(frozen=True)
+        class MovedResult(RefreshResult):
+            """A refresh result from a core that reports a base-URL move."""
+
+            base_url_changed: bool = True
+
+        manager.registry.register(
+            Tool(
+                name="bad",
+                description="bad pattern",
+                parameters={
+                    "type": "object",
+                    "properties": {"q": {"type": "string", "pattern": "("}},
+                },
+                callable=lambda: None,
+            )
+        )
+        monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
+        monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
+        integration = type("I", (), {"_registered_tool_names": {"bad"}})()
+
+        # Core reports no added or updated names on a base-URL move, so only
+        # the source's current names can bring the rebuilt tool into the
+        # guard.
+        adjusted, dropped = manager._drop_invalid_patterns(
+            OpenAPISource(url="https://example.test/openapi.json"),
+            integration,
+            MovedResult(source="openapi"),
+            frozenset({"bad"}),
+        )
+
+        assert dropped == ["bad"]
+        assert "bad" not in manager.registry._tools
+        assert adjusted.removed == ("bad",)
+        assert adjusted.base_url_changed is True
 
     def test_refresh_of_a_non_openapi_source_is_refused(self, manager):
         entry = next(e for e in manager.list() if e.source.namespace == "alpha")
