@@ -9,7 +9,9 @@ while the hub is down:
 * a tool call made while the hub is unavailable fails once with a clear MCP
   error, and a background reconnect (0.25 s to 5 s backoff) restores service;
 * after a reconnect, a changed tool fingerprint notifies the client with
-  ``notifications/tools/list_changed``.
+  ``notifications/tools/list_changed``.  The first list after a start with
+  the hub down is announced too: there is no previous fingerprint then, but
+  the client has already been served an empty list.
 
 The endpoint document is discovery, not proof of life: the shim cannot hold
 the hub's lock, so "a document exists but nothing answers on its address" is
@@ -22,7 +24,6 @@ import asyncio
 import contextlib
 import hashlib
 import importlib
-import io
 import json
 import time
 import weakref
@@ -209,6 +210,10 @@ class HubConnection:
         self._stop: asyncio.Event | None = None
         self._tools: list[Any] = []
         self._fingerprint: str | None = None
+        # Whether the client has been served a list, empty included.  After a
+        # down start there is no fingerprint to compare against, so this is
+        # what makes the first successful list announce itself.
+        self._listed = False
         self._closed = False
         self._lock = asyncio.Lock()
         self._reconnect_task: asyncio.Task | None = None
@@ -289,6 +294,7 @@ class HubConnection:
     async def list_tools(self) -> list[Any]:
         """Return the hub's tools, or an empty list while it is down."""
         if not await self.ensure():
+            self._listed = True
             return []
         session = self._session
         try:
@@ -299,8 +305,10 @@ class HubConnection:
             logger.warning(f"hub tools/list failed: {_describe_exception(exc)}")
             await self._drop()
             self._schedule_reconnect()
+            self._listed = True
             return []
         self._update_tools(list(result.tools))
+        self._listed = True
         return self._tools
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any] | None) -> Any:
@@ -398,15 +406,15 @@ class HubConnection:
             "config_path": self._config.config_path,
             "socket_path": self._config.socket_path,
         }
-        # ensure_hub prints the endpoint to stdout; stdout is the MCP channel.
-        with contextlib.redirect_stdout(io.StringIO()):
-            local_hub.ensure_hub(
-                None,
-                options,
-                name=self._config.name,
-                timeout=local_hub.DEFAULT_ENSURE_TIMEOUT,
-                argv=argv,
-            )
+        # stdout is the MCP channel; quiet keeps the endpoint JSON off it.
+        local_hub.ensure_hub(
+            None,
+            options,
+            name=self._config.name,
+            timeout=local_hub.DEFAULT_ENSURE_TIMEOUT,
+            argv=argv,
+            quiet=True,
+        )
 
     async def _connect(self, endpoint: HubEndpoint) -> bool:
         """Open and initialize one hub session, bounded by the timeout.
@@ -441,7 +449,7 @@ class HubConnection:
         previous = self._fingerprint
         self._update_tools(tools)
         if (
-            previous is not None
+            (previous is not None or self._listed)
             and previous != self._fingerprint
             and self._notifier is not None
         ):
