@@ -275,3 +275,59 @@ class TestUpdateFrontendPersistence:
         assert result["enabled"] is False
         assert result["persisted"] is False
         assert "--no-config-write" in result["warning"]
+
+    def test_unchanged_httpserver_save_leaves_the_file_alone(self, tmp_path):
+        """A no-op save must not rewrite the file or report COMMENTS_WARNING.
+
+        ``list_frontends`` reports ``path: "/"`` on the httpserver backend,
+        and the admin submits the record it displayed.  Treating that as a
+        path change would drop the file's comments to store the values it
+        already holds (#209).
+        """
+        destination = tmp_path / "tools.jsonc"
+        original = '{\n  // keep this comment\n  "tools": []\n}\n'
+        _write(destination, original)
+        gateway = GatewayAdapter.create(
+            _make_route_table(),
+            config_path=str(destination),
+            backend="httpserver",
+            openapi_enabled=True,
+            mcp_enabled=False,
+            sse_enabled=False,
+            tokens=[],
+        )
+
+        result = gateway.update_frontend("openapi", path="/", enabled=True)
+
+        assert result["path"] == "/"
+        assert result["persisted"] is False
+        assert result["warning"] is None
+        assert destination.read_text(encoding="utf-8") == original
+        assert not (tmp_path / "tools.jsonc.bak").exists()
+
+    def test_unchanged_asgi_save_leaves_the_file_alone(self, tmp_path, monkeypatch):
+        destination = tmp_path / "tools.jsonc"
+        original = '{\n  // keep this comment\n  "tools": []\n}\n'
+        _write(destination, original)
+        gateway = self._gateway(monkeypatch, destination)
+
+        result = gateway.update_frontend("mcp", enabled=True)
+
+        assert result["persisted"] is False
+        assert result["warning"] is None
+        assert destination.read_text(encoding="utf-8") == original
+
+    def test_a_real_change_still_persists(self, tmp_path, monkeypatch):
+        destination = tmp_path / "tools.jsonc"
+        original = '{\n  // keep this comment\n  "tools": []\n}\n'
+        _write(destination, original)
+        gateway = self._gateway(monkeypatch, destination)
+
+        result = gateway.update_frontend("mcp", path="/rpc")
+
+        assert result["path"] == "/rpc"
+        assert result["persisted"] is True
+        assert result["warning"] == COMMENTS_WARNING
+        data = read_config_mapping(destination)
+        assert data["gateway"]["frontends"]["mcp"]["path"] == "/rpc"
+        assert destination.read_text(encoding="utf-8") != original

@@ -773,18 +773,24 @@ class GatewayAdapter(Adapter):
 
         The change applies to the next request.  The MCP session manager is
         never rebuilt.  When the configuration file cannot be written, the
-        in-memory change still applies and the result carries a warning.
+        in-memory change still applies and the result carries a warning.  A
+        request that changes nothing leaves the file untouched and reports
+        no warning.
 
         Args:
             name: Frontend name.
             enabled: New enable flag, or ``None`` to keep the current value.
             path: New mount path, or ``None`` to keep the current value.
+                On the httpserver backend, ``"/"`` is also accepted as
+                "no path change": that backend serves the openapi listener
+                at the root and ``list_frontends`` reports that root, so an
+                unchanged save would otherwise look like a move to ``"/"``.
 
         Returns:
             The updated record plus ``persisted`` and ``warning``.  The
             record describes what the listener serves: on the httpserver
             backend the openapi ``path`` is ``"/"`` and a ``note`` explains
-            it.
+            it.  ``persisted`` is true only when the file was rewritten.
 
         Raises:
             ValueError: If *name* is unknown, no change is requested, a value
@@ -815,14 +821,21 @@ class GatewayAdapter(Adapter):
             )
 
         with self._update_lock:
+            current = self._registry.get(name)
             record = self._registry.update(name, enabled=enabled, path=path)
-            persisted, warning = persist_frontend_settings(
-                self._config_path,
-                name=record.name,
-                path=record.path,
-                enabled=record.enabled,
-                write_config=self._write_config,
-            )
+            if record == current:
+                # Nothing changed.  Rewriting the file would drop its
+                # comments to record the values it already holds, so leave
+                # it alone and report no warning.
+                persisted, warning = False, None
+            else:
+                persisted, warning = persist_frontend_settings(
+                    self._config_path,
+                    name=record.name,
+                    path=record.path,
+                    enabled=record.enabled,
+                    write_config=self._write_config,
+                )
 
         result = self._public_frontend(record)
         result["persisted"] = persisted
