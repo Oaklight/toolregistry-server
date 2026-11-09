@@ -850,13 +850,20 @@ class TestSourceKeys:
 
 
 def _openapi_doc(base_url: str, paths: dict) -> dict:
-    """Return a minimal OpenAPI document for the refresh tests."""
-    return {
+    """Return a minimal OpenAPI document for the refresh tests.
+
+    ``servers`` is omitted when *base_url* is empty: core master validates
+    every entry against the outbound policy on load, and an unresolvable
+    placeholder would fail the local-file test for no reason.
+    """
+    document = {
         "openapi": "3.0.0",
         "info": {"title": "Pet API", "version": "1"},
-        "servers": [{"url": base_url}],
         "paths": paths,
     }
+    if base_url:
+        document["servers"] = [{"url": base_url}]
+    return document
 
 
 def _operation(operation_id: str) -> dict:
@@ -1083,7 +1090,7 @@ class TestOpenAPIRefresh:
         spec_path.write_text(
             json.dumps(
                 _openapi_doc(
-                    "https://api.example.com",
+                    "",
                     {"/pets": _operation("list_pets")},
                 )
             ),
@@ -1116,7 +1123,7 @@ class TestOpenAPIRefresh:
         spec_path.write_text(
             json.dumps(
                 _openapi_doc(
-                    "https://api.example.com",
+                    "",
                     {
                         "/pets": _operation("list_pets"),
                         "/owners": _operation("list_owners"),
