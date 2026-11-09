@@ -28,7 +28,7 @@ from starlette.types import Receive, Scope, Send
 
 from toolregistry_server import RouteTable
 from toolregistry_server.adapters.mcp import MCPAdapter
-from toolregistry_server.adapters.openapi import OpenAPIAdapter
+from toolregistry_server.gateway.openapi_asgi import create_openapi_app
 
 from . import __version__
 from .frontends import FrontendState
@@ -174,7 +174,7 @@ def create_app() -> FastAPI:
     """
     registry, tool_source = build_registry()
     route_table = RouteTable(registry)
-    openapi_app = OpenAPIAdapter(route_table, backend="fastapi").app
+    openapi_app = create_openapi_app(route_table)
     mcp_adapter = MCPAdapter(route_table, name="gateway-demo")
     session_manager = StreamableHTTPSessionManager(
         app=mcp_adapter.server, json_response=True

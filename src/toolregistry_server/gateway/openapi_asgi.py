@@ -1131,14 +1131,17 @@ def create_openapi_app(
     app.add_exception_handler(Exception, _server_error)
 
     async def _request_validation_error(
-        request: Request, exc: RequestValidationError
+        request: Request, exc: Exception
     ) -> JSONResponse:
         """Render a shared validation failure in the same 422 envelope.
 
         ``_validate_arguments`` is backend-neutral and raises
         :class:`RequestValidationError`; FastAPI's own ``HTTPException``
-        handler would drop the status code it carries.
+        handler would drop the status code it carries.  The handler
+        signature takes ``Exception`` because that is the contract Starlette
+        types; the registered class narrows it at runtime.
         """
+        assert isinstance(exc, RequestValidationError)
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
     app.add_exception_handler(RequestValidationError, _request_validation_error)
