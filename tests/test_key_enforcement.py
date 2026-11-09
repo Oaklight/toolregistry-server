@@ -1206,3 +1206,96 @@ def test_httpserver_applies_the_process_permission_policy(httpserver, table, sto
 
     assert status == 403
     assert "denied by the process permission policy" in json.loads(body)["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Durable attribution (#224)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_is_recorded_with_attribution(
+    table, store, resolver, monkeypatch
+):
+    from toolregistry.admin import ExecutionStatus
+
+    from toolregistry_server.adapters.mcp import MCPAdapter
+
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    adapter = MCPAdapter(table, principal_resolver=resolver)
+
+    async with create_test_client(adapter.server) as client:
+        await client.call_tool("alpha-add", {"a": 1, "b": 2})
+
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.tool_name == "alpha-add"
+    assert entry.status is ExecutionStatus.SUCCESS
+    assert entry.arguments == {"a": 1, "b": 2}
+    assert entry.result == "3"
+    assert entry.metadata == {"key_id": created.record.id, "client_id": "alpha-bot"}
+
+
+def test_openapi_call_is_recorded_with_attribution(table, store, resolver):
+    from toolregistry.admin import ExecutionStatus
+
+    created = store.create("bot", {"namespaces": ["alpha"]})
+    table.registry.enable_logging()
+    client = _fastapi_client(table, resolver)
+
+    response = client.post(
+        "/tools/alpha/add", json={"a": 1, "b": 2}, headers=_bearer(created.secret)
+    )
+
+    assert response.status_code == 200
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.status is ExecutionStatus.SUCCESS
+    assert entry.result == "3"
+    assert entry.metadata == {"key_id": created.record.id, "client_id": "bot"}
+
+
+def test_httpserver_call_is_recorded_with_attribution(httpserver, table, store):
+    from toolregistry.admin import ExecutionStatus
+
+    url, _ = httpserver
+    created = store.create("bot", {"namespaces": ["alpha"]})
+    table.registry.enable_logging()
+
+    status, _, _ = _request(
+        url, "/tools/alpha/add", {"a": 1, "b": 2}, headers=_bearer(created.secret)
+    )
+
+    assert status == 200
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.status is ExecutionStatus.SUCCESS
+    assert entry.metadata == {"key_id": created.record.id, "client_id": "bot"}
+
+
+def test_a_call_on_a_disabled_log_leaves_no_entry(table, resolver):
+    client = _fastapi_client(table, resolver)
+
+    response = client.post(
+        "/tools/alpha/add", json={"a": 1, "b": 2}, headers=_bearer("operator-token")
+    )
+
+    assert response.status_code == 200
+    assert table.registry.get_execution_log() is None
+
+
+def test_the_standalone_openapi_adapter_enables_the_log(table, resolver):
+    from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+    OpenAPIAdapter(table, principal_resolver=resolver)
+
+    assert table.registry.get_execution_log() is not None
+
+
+def test_the_standalone_openapi_adapter_leaves_it_off_without_keys(table):
+    from toolregistry_server.adapters.openapi import OpenAPIAdapter
+
+    OpenAPIAdapter(table)
+
+    assert table.registry.get_execution_log() is None

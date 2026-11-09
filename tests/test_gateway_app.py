@@ -533,3 +533,31 @@ class TestClientIsolation:
     def test_an_invalid_quota_knob_fails_at_construction(self, kwargs):
         with pytest.raises(ValueError):
             _gateway(**kwargs)
+
+
+class TestExecutionLogWiring:
+    """The gateway turns the registry log on for a key-scoped deployment."""
+
+    def test_a_key_scoped_gateway_enables_the_log(self, tmp_path):
+        gateway = _gateway(keys_db=str(tmp_path / "keys.db"), tokens=["operator"])
+
+        assert gateway._route_table.registry.get_execution_log() is not None  # noqa: SLF001
+
+    def test_a_gateway_without_keys_leaves_it_off(self):
+        gateway = _gateway()
+
+        assert gateway._route_table.registry.get_execution_log() is None  # noqa: SLF001
+
+    def test_the_flag_forces_it_on(self):
+        gateway = _gateway(execution_log=True)
+
+        assert gateway._route_table.registry.get_execution_log() is not None  # noqa: SLF001
+
+    def test_the_flag_forces_it_off(self, tmp_path):
+        gateway = _gateway(
+            keys_db=str(tmp_path / "keys.db"),
+            tokens=["operator"],
+            execution_log=False,
+        )
+
+        assert gateway._route_table.registry.get_execution_log() is None  # noqa: SLF001

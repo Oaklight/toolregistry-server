@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
 from ..._vendor.structlog import get_logger
+from ...isolation import configure_execution_log
 from ...regex_guard import DEFAULT_REGEX_BUDGET, DEFAULT_REGEX_TIMEOUT
 from .. import Adapter
 
@@ -119,6 +120,10 @@ class OpenAPIAdapter(Adapter):
             caller's key scope filters tool routes, ``/tools`` and
             ``/openapi.json``.  Static *tokens* keep full, unscoped access
             when both are supplied.
+        execution_log: Record tool calls in the registry execution log.
+            ``None`` enables it when a key store is configured, ``True``
+            forces it on and ``False`` leaves it off.  The app calls route
+            handlers directly, so core writes nothing without this switch.
     """
 
     def __init__(
@@ -133,11 +138,19 @@ class OpenAPIAdapter(Adapter):
         regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
         regex_budget: float = DEFAULT_REGEX_BUDGET,
         principal_resolver: Any | None = None,
+        execution_log: bool | None = None,
     ) -> None:
         super().__init__(route_table)
 
         from .server_app import create_httpserver_app
 
+        has_keys = bool(
+            principal_resolver is not None
+            and getattr(principal_resolver, "has_keys", False)
+        )
+        configure_execution_log(
+            route_table.registry, enabled=execution_log, has_keys=has_keys
+        )
         self._app = create_httpserver_app(
             route_table,
             title=title,
@@ -257,6 +270,16 @@ class OpenAPIAdapter(Adapter):
                 "regex; by default that source is skipped and logged"
             ),
         )
+        parser.add_argument(
+            "--execution-log",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=(
+                "Record every tool call in the registry execution log "
+                "(default: on when --keys-db is set; the admin Logs page "
+                "shows the entries)"
+            ),
+        )
 
     @classmethod
     def create_and_run(cls, route_table: RouteTable, **kwargs) -> None:
@@ -282,6 +305,7 @@ class OpenAPIAdapter(Adapter):
             regex_timeout=kwargs.pop("regex_timeout", DEFAULT_REGEX_TIMEOUT),
             regex_budget=kwargs.pop("regex_budget", DEFAULT_REGEX_BUDGET),
             principal_resolver=principal_resolver,
+            execution_log=kwargs.pop("execution_log", None),
         )
         adapter.run(**kwargs)
 
