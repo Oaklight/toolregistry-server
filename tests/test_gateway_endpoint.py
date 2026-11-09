@@ -122,6 +122,16 @@ def test_a_symlinked_endpoint_is_refused():
         read_endpoint()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX FIFOs")
+def test_a_fifo_endpoint_is_refused_not_blocking():
+    """A planted FIFO must not block the open; it is refused instead."""
+    hub_dir().mkdir(parents=True, exist_ok=True)
+    os.mkfifo(endpoint_path())
+
+    with pytest.raises(EndpointError, match="not a regular file"):
+        read_endpoint()
+
+
 @pytest.mark.parametrize("name", ["", "../escape", "a/b", ".hidden", "x" * 65, "ok\n"])
 def test_invalid_names_are_refused(name):
     with pytest.raises(EndpointError, match="must match"):
