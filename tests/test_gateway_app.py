@@ -1,5 +1,6 @@
 """Integration tests for the gateway ASGI application."""
 
+import asyncio
 import contextlib
 
 import httpx
@@ -253,6 +254,31 @@ class TestSharedAuth:
             response = await client.get("/.well-known/oauth-protected-resource/mcp")
         assert response.status_code == 200
         assert response.json()["resource"] == "http://127.0.0.1:9000/mcp"
+
+
+class TestActivityCounts:
+    """In-flight work keeps a hub with an idle timeout alive."""
+
+    async def test_an_in_flight_request_counts_as_activity(self):
+        registry = ToolRegistry()
+
+        async def slow() -> str:
+            await asyncio.sleep(0.3)
+            return "done"
+
+        registry.register(slow)
+        gateway = GatewayAdapter.create(RouteTable(registry), tokens=[])
+        async with _client(gateway) as client:
+            request = asyncio.create_task(
+                client.post("/openapi/tools/default/slow", json={})
+            )
+            await asyncio.sleep(0.1)
+            assert gateway.open_session_count() == 1
+
+            response = await request
+
+        assert response.status_code == 200
+        assert gateway.open_session_count() == 0
 
 
 class TestBackendSelection:
