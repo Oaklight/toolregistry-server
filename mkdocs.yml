@@ -124,6 +124,7 @@ nav:
       - MCP 适配器: guides/mcp.md
       - 扩展: guides/extending.md
       - 网关管理面板: guides/gateway-admin.md
+      - 本地 Hub: guides/local-hub.md
   - 示例:
       - examples/index.md
   - 参考:

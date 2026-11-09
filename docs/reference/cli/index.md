@@ -165,6 +165,53 @@ toolregistry-server gateway \
 （例如 `/admin/ext/gateway/keys`）。Keys、Frontends 与 Sources 三个页面的说明见
 [网关管理面板指南](../../guides/gateway-admin.md)。
 
+### `local-hub` — 为本地 MCP 客户端运行一个共享网关
+
+```bash
+toolregistry-server local-hub [run|ensure|stop|status] --config config.yaml --name default
+```
+
+把网关作为每机一个常驻进程提供服务，让多个 MCP 客户端共享一份注册表、一套工具
+schema 与一组缓存。仅支持 POSIX；Windows 上动作会被拒绝并提示改用 `gateway`。见
+[本地 Hub 指南](../../guides/local-hub.md)。
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `action` | `run` | `run` 前台运行；`ensure` 复用已运行的 hub 或拉起 detached 进程并打印 endpoint；`stop` 通知属主；`status` 报告状态 |
+| `--name NAME` | `default` | hub 名称；不同名字的 hub 可共存 |
+| `--config PATH` | - | 工具来源。提供服务时必需；`stop` 与 `status` 不需要 |
+| `--host HOST` | `127.0.0.1` | 绑定主机 |
+| `--port PORT` | `0` | 绑定端口；`0` 由系统分配，便于多个 hub 共存 |
+| `--socket PATH` | - | 改为绑定 Unix 套接字而不是 TCP |
+| `--idle-timeout SECONDS` | `0` | 在该秒数内既无请求也无打开的 MCP/SSE 会话后退出；`0` 表示常驻 |
+| `--timeout SECONDS` | - | `ensure` 与 `stop` 的等待上限 |
+| `--json` | 关闭 | `status` 输出 endpoint 文档 |
+
+hub 会发布 endpoint 文档并持有独占锁，使所有权无歧义。hub 运行时 `status` 退出 `0`，
+否则退出 `3`；没有属主时 `stop` 退出 `3`，且当公布地址无人接受连接时拒绝发信号，
+因此陈旧文档不会误伤被复用的无关 pid。
+
+### `hub-shim` — 把一个本地 hub 暴露给单个 stdio MCP 客户端
+
+```bash
+toolregistry-server hub-shim --name default --config config.yaml
+```
+
+对客户端使用 stdio 的 MCP，并通过 streamable HTTP 转发到指定 hub。hub 不在线时
+`initialize` 由本地应答、`tools/list` 为空；调用会先失败一次并返回 `-32000`，随后
+shim 在后台重连（0.25 秒起步倍增到 5 秒）。当 hub 的工具列表与客户端最近一次拿到的
+不同时，shim 发送 `notifications/tools/list_changed`。
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--name NAME` | `default` | 要连接的 hub |
+| `--config PATH` | - | shim 需要自行拉起 hub 时使用的配置；不提供则只等待已有 hub |
+| `--socket PATH` | - | shim 拉起的 hub 使用的 Unix 套接字 |
+| `--connect-timeout SECONDS` | `5` | 单次连接加初始化的上限 |
+| `--no-spawn` | 关闭 | 从不拉起 hub，只报告不可用 |
+
+与 `local-hub` 一样仅支持 POSIX。每个客户端一个 shim，共享同一个 hub。
+
 ## 配置文件
 
 有关 JSON、JSONC 或 YAML 配置格式的详细说明，请参阅 [配置指南](../../guides/configuration.md)。
