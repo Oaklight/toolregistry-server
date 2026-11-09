@@ -160,7 +160,8 @@ toolregistry-server gateway \
 被禁用的前端返回 `404`，不会触达注册表。前端路径与启用标记也可以保存在配置文件的
 `gateway.frontends` 下；参见[配置指南](../../guides/configuration.md)。
 管理面板使用自己的运维令牌，而不是 `--tokens` 集合；扩展页面位于面板挂载路径之下
-（例如 `/admin/ext/gateway/keys`）。
+（例如 `/admin/ext/gateway/keys`）。Keys、Frontends 与 Sources 三个页面的说明见
+[网关管理面板指南](../../guides/gateway-admin.md)。
 
 ## 配置文件
 

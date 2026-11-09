@@ -383,6 +383,8 @@ core 0.21.0 或更新的版本）。旧版 core 上该前端会以明确错误�
 `--keys-db` 是 gateway 的限定作用域密钥选项，执行规则见[认证](authentication.md#限定作用域的-api-密钥)。
 面板共享该存储，因此在面板中创建或吊销的密钥会在下一个工具请求生效。
 
+三个页面及其操作见[网关管理面板指南](gateway-admin.md)。
+
 ### 运行期前端 API
 
 调用 `App.create_gateway()` 或 `App.serve_gateway()` 后，可通过 `App.gateway`
