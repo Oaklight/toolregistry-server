@@ -270,7 +270,10 @@ class App:
         registry = self.prepare_registry(**kwargs)
         route_table = self._make_route_table(registry)
         self._attach_source_manager(route_table, **kwargs)
-        gateway = GatewayAdapter.create(route_table, **kwargs)
+        options = dict(kwargs)
+        options["registry"] = registry
+        options["source_manager"] = self.source_manager
+        gateway = GatewayAdapter.create(route_table, **options)
         self._gateway = gateway
         return gateway
 

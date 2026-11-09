@@ -1,11 +1,16 @@
-"""One ASGI process serving OpenAPI, MCP streamable-HTTP and MCP SSE.
+"""One ASGI process serving OpenAPI, MCP streamable-HTTP, MCP SSE and admin.
 
-The gateway mounts three frontends on distinct, configurable paths.  Each
+The gateway mounts four frontends on distinct, configurable paths.  Each
 request is matched against the current frontend paths, and the frontend's
 enable flag is read at that moment.  A disabled frontend returns ``404``
 before its ASGI application runs, so it cannot reach the registry or execute
 a tool.  Updating a flag takes effect on the next request; the MCP session
 manager is not rebuilt.
+
+The ``admin`` frontend is the core admin panel, hosted on a loopback
+ephemeral port and reverse-proxied under the frontend path.  It is disabled
+by default and requires an operator token (``--admin-token`` or
+``--admin-token-file``); the gateway bearer tokens do not open it.
 
 The MCP streamable-HTTP transport owns one session manager.  It is created
 when the ASGI lifespan starts and closed when the lifespan exits (or when
@@ -37,7 +42,9 @@ from ..adapters.openapi.adapter import DEFAULT_MAX_SSE_SUBSCRIBERS
 from ..auth import load_tokens, verify_token
 from ..identity import ServerIdentity
 from ..regex_guard import DEFAULT_REGEX_BUDGET, DEFAULT_REGEX_TIMEOUT
+from .admin import GatewayAdminHost, GatewayAdminProxyASGI
 from .frontends import (
+    DEFAULT_ENABLED,
     DEFAULT_PATHS,
     FRONTEND_NAMES,
     TRANSPORTS,
@@ -129,7 +136,7 @@ def resolve_frontends(
             else entry.get("path", DEFAULT_PATHS[name])
         )
         if enabled_override is None:
-            enabled = entry.get("enabled", True)
+            enabled = entry.get("enabled", DEFAULT_ENABLED[name])
         else:
             if not isinstance(enabled_override, bool):
                 raise ValueError(
@@ -147,6 +154,38 @@ def resolve_frontends(
             )
         )
     return records
+
+
+def _resolve_admin_token(
+    admin_token: str | None, admin_token_file: str | None
+) -> str | None:
+    """Resolve the operator token from an inline value or a file.
+
+    Args:
+        admin_token: Inline token, or ``None``.
+        admin_token_file: Path to a token file, or ``None``.
+
+    Returns:
+        The token with surrounding whitespace removed, or ``None``.
+
+    Raises:
+        ValueError: If both sources are given or the file is empty.
+    """
+    if admin_token is not None and admin_token_file is not None:
+        raise ValueError("pass either admin_token or admin_token_file, not both")
+    if admin_token_file is not None:
+        from pathlib import Path
+
+        try:
+            text = Path(admin_token_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"could not read the admin token file: {exc}") from exc
+        admin_token = text.strip()
+        if not admin_token:
+            raise ValueError(f"the admin token file is empty: {admin_token_file!r}")
+    if admin_token is not None and not admin_token.strip():
+        raise ValueError("the admin token must not be empty")
+    return admin_token.strip() if admin_token is not None else None
 
 
 def _sub_scope(scope: Scope, prefix: str) -> Scope:
@@ -168,7 +207,14 @@ def _sub_scope(scope: Scope, prefix: str) -> Scope:
     rewritten["path"] = path[len(prefix) :] or "/"
     raw_path = scope.get("raw_path")
     if raw_path is not None:
-        rewritten["raw_path"] = raw_path[len(prefix.encode("utf-8")) :] or b"/"
+        prefix_bytes = prefix.encode("utf-8")
+        if raw_path.startswith(prefix_bytes):
+            rewritten["raw_path"] = raw_path[len(prefix_bytes) :] or b"/"
+        else:
+            # A decoded path and its raw form can differ in length (for
+            # example a non-ASCII mount path); fall back to the decoded
+            # remainder rather than slicing the wrong number of bytes.
+            rewritten["raw_path"] = rewritten["path"].encode("utf-8")
     root_path = scope.get("root_path", "")
     rewritten["root_path"] = root_path + prefix
     return rewritten
@@ -196,6 +242,30 @@ async def _send_json(
 
     response = JSONResponse(payload, status_code=status, headers=headers)
     await response(scope, receive, send)
+
+
+async def _redirect(scope: Scope, send: Send, location: str) -> None:
+    """Send a permanent redirect that keeps the query string.
+
+    Args:
+        scope: ASGI scope.
+        send: ASGI send callable.
+        location: Absolute path to redirect to.
+    """
+    query = scope.get("query_string", b"")
+    if query:
+        location = location + "?" + query.decode("latin-1")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 308,
+            "headers": [
+                (b"location", location.encode("latin-1")),
+                (b"content-length", b"0"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": b""})
 
 
 class _BearerAuthASGI:
@@ -364,12 +434,18 @@ class _GatewayASGI:
             )
             return
 
+        if frontend.name == "admin" and path == frontend.path:
+            # The panel shell uses document-relative asset URLs, so the
+            # browser must see the trailing slash.
+            await _redirect(scope, send, frontend.path + "/")
+            return
+
         app = gateway._frontend_app(frontend.name)
         await app(_sub_scope(scope, frontend.path), receive, send)
 
 
 class GatewayAdapter(Adapter):
-    """Serve the OpenAPI and MCP frontends from one ASGI application.
+    """Serve the OpenAPI, MCP and admin frontends from one ASGI application.
 
     Args:
         route_table: The RouteTable shared by every frontend.
@@ -380,7 +456,8 @@ class GatewayAdapter(Adapter):
             operator credentials when a key store is configured.
         keys_db: Path to the SQLite API key store.  When set, every frontend
             authenticates scoped client keys from it as well.  Static
-            ``tokens`` keep full, unscoped access.
+            ``tokens`` keep full, unscoped access.  The same store feeds the
+            admin panel's Keys page.
         principal_resolver: Pre-built API key resolver.  Takes precedence
             over ``keys_db``; used by embedders and tests.
         backend: ``"fastapi"`` (ASGI) or ``"httpserver"``.  The httpserver
@@ -401,6 +478,16 @@ class GatewayAdapter(Adapter):
         tools_list_ttl_ms: ``ttlMs`` hint for MCP ``tools/list``.
         tools_list_cache_scope: ``cacheScope`` hint for MCP ``tools/list``.
         instructions: MCP ``initialize`` instructions.
+        admin_token: Operator token accepted by the admin panel.  Required
+            when the admin frontend is enabled.
+        admin_token_file: Read the operator token from this file instead.
+            Mutually exclusive with *admin_token*.
+        source_manager: Runtime source manager the panel's Sources page and
+            source hook mutate.
+        registry: The live registry the panel manages.  Defaults to the
+            registry behind *route_table*.
+        admin_allow_private_hosts: Permit the panel to fetch a source URL
+            that resolves to a private address.
 
     Raises:
         ValueError: If a frontend path is invalid, two frontends share a
@@ -429,6 +516,11 @@ class GatewayAdapter(Adapter):
         tools_list_ttl_ms: int | None = None,
         tools_list_cache_scope: Literal["public", "private"] | None = None,
         instructions: str | None = None,
+        admin_token: str | None = None,
+        admin_token_file: str | None = None,
+        source_manager: Any = None,
+        registry: Any = None,
+        admin_allow_private_hosts: bool = False,
     ) -> None:
         super().__init__(route_table)
         if backend not in ("fastapi", "httpserver"):
@@ -460,11 +552,16 @@ class GatewayAdapter(Adapter):
         self._tools_list_ttl_ms = tools_list_ttl_ms
         self._tools_list_cache_scope = tools_list_cache_scope
         self._instructions = instructions
+        self._admin_token = _resolve_admin_token(admin_token, admin_token_file)
+        self._admin_allow_private_hosts = admin_allow_private_hosts
+        self._source_manager = source_manager
+        self._registry_obj = registry
 
         locked = frozenset({"openapi"}) if backend == "httpserver" else frozenset()
         self._registry = FrontendRegistry(frontends, locked_names=locked)
         self._update_lock = threading.RLock()
         self._validate_backend()
+        self._validate_admin()
 
         self._openapi_app = self._build_openapi_app()
         self._mcp_server: Any = (
@@ -479,6 +576,23 @@ class GatewayAdapter(Adapter):
         self._sse_app: Any = None
         self._sse_path: str | None = None
         self._sse_wrapped: Any = None
+        panel_registry = (
+            self._registry_obj
+            if self._registry_obj is not None
+            else route_table.registry
+        )
+        panel_key_store = self._key_store
+        if panel_key_store is None and self._principal_resolver is not None:
+            panel_key_store = getattr(self._principal_resolver, "store", None)
+        self._admin_host = GatewayAdminHost(
+            registry=panel_registry,
+            frontends=self,
+            source_manager=self._source_manager,
+            admin_token=self._admin_token or "",
+            key_store=panel_key_store,
+            allow_private_hosts=self._admin_allow_private_hosts,
+        )
+        self._admin_proxy = GatewayAdminProxyASGI(self._admin_host)
         self._asgi = _GatewayASGI(self)
 
         logger.info(
@@ -517,6 +631,23 @@ class GatewayAdapter(Adapter):
                 "the httpserver backend serves the openapi frontend at the "
                 "listener root, not at a mount path; remove the openapi path "
                 f"override (got {openapi.path!r})"
+            )
+
+    def _validate_admin(self) -> None:
+        """Require an operator token when the admin frontend is enabled.
+
+        Raises:
+            ValueError: If the admin frontend is enabled without a token.
+                Serving tokens and the operator token are different
+                credentials; the panel must never be reachable with a token
+                that merely grants tool access.
+        """
+        if not self._registry.get("admin").enabled:
+            return
+        if not self._admin_token:
+            raise ValueError(
+                "the admin frontend requires an operator token; pass "
+                "--admin-token or --admin-token-file"
             )
 
     def _build_openapi_app(self) -> Any:
@@ -639,6 +770,12 @@ class GatewayAdapter(Adapter):
                     "frontend at runtime"
                 )
 
+        if name == "admin" and enabled is True and not self._admin_token:
+            raise ValueError(
+                "the admin frontend requires an operator token; pass "
+                "--admin-token or --admin-token-file"
+            )
+
         with self._update_lock:
             record = self._registry.update(name, enabled=enabled, path=path)
             persisted, warning = persist_frontend_settings(
@@ -670,6 +807,8 @@ class GatewayAdapter(Adapter):
             return self._http_mcp_app
         if name == "sse":
             return self._sse_frontend_app()
+        if name == "admin":
+            return self._admin_proxy
         raise ValueError(f"unknown frontend {name!r}")
 
     def _sse_frontend_app(self) -> Any:
@@ -747,13 +886,28 @@ class GatewayAdapter(Adapter):
         return True
 
     async def startup(self) -> None:
-        """Create and start the MCP streamable-HTTP session manager.
+        """Start the MCP session manager and, when enabled, the admin panel.
 
         The manager is created once per lifespan.  It is not rebuilt when a
         frontend's enable flag or path changes.
+
+        Raises:
+            Exception: If the admin panel fails to start, including a core
+                admin extension contract violation.  The MCP manager opened
+                earlier in this call is closed before the error propagates.
         """
-        if self._backend == "httpserver" or self._exit_stack is not None:
+        if self._backend == "httpserver":
             return
+        try:
+            if self._exit_stack is None:
+                await self._start_session_manager()
+            self._start_admin_if_enabled()
+        except BaseException:
+            await self.shutdown()
+            raise
+
+    async def _start_session_manager(self) -> None:
+        """Create and start the MCP streamable-HTTP session manager."""
         from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
         stack = AsyncExitStack()
@@ -771,8 +925,20 @@ class GatewayAdapter(Adapter):
         self._exit_stack = stack
         logger.info("Gateway MCP streamable-HTTP session manager started")
 
+    def _start_admin_if_enabled(self) -> None:
+        """Start the admin panel listener when the frontend is enabled.
+
+        A disabled admin frontend never loads the extension.  An enabled one
+        fails startup here, before the listener or any frontend accepts a
+        request, if the extension violates the core contract.
+        """
+        if not self._registry.get("admin").enabled:
+            return
+        self._admin_host.ensure_started()
+
     async def shutdown(self) -> None:
-        """Close the MCP session manager and the API key store."""
+        """Close the admin panel, the session manager and the key store."""
+        self._admin_host.stop()
         stack = self._exit_stack
         self._exit_stack = None
         try:
@@ -978,6 +1144,12 @@ class GatewayAdapter(Adapter):
             metavar="PATH",
             help="Mount path for MCP SSE (default: /sse)",
         )
+        paths.add_argument(
+            "--admin-path",
+            default=None,
+            metavar="PATH",
+            help="Mount path for the admin panel (default: /admin)",
+        )
 
         switches = parser.add_argument_group("frontend switches")
         switches.add_argument(
@@ -997,6 +1169,40 @@ class GatewayAdapter(Adapter):
             action=argparse.BooleanOptionalAction,
             default=None,
             help="Enable or disable MCP SSE (default: enabled)",
+        )
+        switches.add_argument(
+            "--admin",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Enable or disable the admin panel (default: disabled)",
+        )
+
+        admin = parser.add_argument_group("admin panel")
+        admin.add_argument(
+            "--admin-token",
+            type=str,
+            default=None,
+            metavar="TOKEN",
+            help=(
+                "Operator token accepted by the admin panel. Required when "
+                "the admin frontend is enabled. Prefer --admin-token-file "
+                "so the secret does not appear in the process list"
+            ),
+        )
+        admin.add_argument(
+            "--admin-token-file",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help="Read the admin operator token from PATH",
+        )
+        admin.add_argument(
+            "--admin-allow-private-hosts",
+            action="store_true",
+            help=(
+                "Allow the admin panel to fetch a source URL that resolves "
+                "to a loopback, link-local or private address"
+            ),
         )
 
     @classmethod
@@ -1038,6 +1244,11 @@ class GatewayAdapter(Adapter):
             tools_list_ttl_ms=kwargs.get("tools_list_ttl_ms"),
             tools_list_cache_scope=kwargs.get("tools_list_cache_scope"),
             instructions=kwargs.get("instructions"),
+            admin_token=kwargs.get("admin_token"),
+            admin_token_file=kwargs.get("admin_token_file"),
+            source_manager=kwargs.get("source_manager"),
+            registry=kwargs.get("registry"),
+            admin_allow_private_hosts=kwargs.get("admin_allow_private_hosts", False),
         )
 
     @classmethod

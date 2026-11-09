@@ -631,6 +631,15 @@ class RouteTable:
         self._rebuild()
         self._registry.on_change(self._on_registry_change)
 
+    @property
+    def registry(self) -> ToolRegistry:
+        """The registry this table mirrors.
+
+        An in-process consumer (the admin panel) mutates the same registry
+        the protocol frontends read, so there is one live tool set.
+        """
+        return self._registry
+
     def _on_registry_change(self, event: ChangeEvent) -> None:
         """Handle change events from the underlying ToolRegistry.
 

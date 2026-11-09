@@ -57,6 +57,12 @@ class TestListFrontends:
                 "enabled": True,
                 "transport": "sse",
             },
+            {
+                "name": "admin",
+                "path": "/admin",
+                "enabled": False,
+                "transport": "http",
+            },
         ]
 
     def test_update_reflects_in_list(self):
@@ -139,6 +145,22 @@ class TestPerRequestEnableFlag:
         assert enabled.status_code == 503
         assert "not running" in enabled.json()["detail"]
         assert gateway._session_manager is None
+
+    async def test_admin_is_disabled_by_default(self):
+        gateway = _gateway()
+        async with _client(gateway) as client:
+            response = await client.get("/admin/")
+        assert response.status_code == 404
+        assert "disabled" in response.json()["detail"]
+
+    def test_enabling_admin_without_a_token_fails(self):
+        gateway = _gateway()
+        with pytest.raises(ValueError, match="operator token"):
+            gateway.update_frontend("admin", enabled=True)
+
+    def test_enabled_admin_without_a_token_fails_at_construction(self):
+        with pytest.raises(ValueError, match="operator token"):
+            _gateway(admin_enabled=True)
 
     async def test_path_change_applies_without_restart(self):
         gateway = _gateway()

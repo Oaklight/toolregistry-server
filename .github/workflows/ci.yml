@@ -103,8 +103,12 @@ jobs:
       # The gateway admin extension targets the extension contract that is on
       # core master ahead of the released floor; on the released core its
       # tests skip, so this job is where they actually execute.
-      - name: Run gateway admin extension tests
-        run: python -m pytest tests/test_gateway_admin.py -q
+      - name: Run gateway admin tests
+        run: >
+          python -m pytest
+          tests/test_gateway_admin.py
+          tests/test_gateway_admin_host.py
+          -q
 
   # The `regex` extra is optional and deliberately not part of `all`, so the
   # default matrix covers the "spec patterns are not executed" fallback. This

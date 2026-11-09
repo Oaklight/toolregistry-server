@@ -1,11 +1,11 @@
 """Frontend records and per-request routing state for the gateway.
 
-The gateway serves three frontends from one process: the OpenAPI adapter at
-``/openapi``, the MCP streamable-HTTP transport at ``/mcp`` and the MCP SSE
-transport at ``/sse``.  Each frontend has a configurable path and an enable
-flag.  The flag is read on every request, so disabling a frontend at runtime
-takes effect without a restart and without rebuilding the MCP session
-manager.
+The gateway serves four frontends from one process: the OpenAPI adapter at
+``/openapi``, the MCP streamable-HTTP transport at ``/mcp``, the MCP SSE
+transport at ``/sse`` and the operator admin panel at ``/admin``.  Each
+frontend has a configurable path and an enable flag.  The flag is read on
+every request, so disabling a frontend at runtime takes effect without a
+restart and without rebuilding the MCP session manager.
 
 A disabled frontend never reaches its ASGI application, so a request to a
 disabled path cannot touch the registry or run a tool.
@@ -18,13 +18,14 @@ from dataclasses import dataclass
 from typing import Any
 
 #: Frontends the gateway can serve, in their stable display order.
-FRONTEND_NAMES: tuple[str, ...] = ("openapi", "mcp", "sse")
+FRONTEND_NAMES: tuple[str, ...] = ("openapi", "mcp", "sse", "admin")
 
 #: Default path for each frontend.
 DEFAULT_PATHS: dict[str, str] = {
     "openapi": "/openapi",
     "mcp": "/mcp",
     "sse": "/sse",
+    "admin": "/admin",
 }
 
 #: Protocol served by each frontend.
@@ -32,6 +33,17 @@ TRANSPORTS: dict[str, str] = {
     "openapi": "http",
     "mcp": "streamable-http",
     "sse": "sse",
+    "admin": "http",
+}
+
+#: Whether a frontend is enabled when the configuration says nothing.
+#: The admin panel is opt-in: it exposes an operator surface and needs a
+#: token the tool frontends do not use.
+DEFAULT_ENABLED: dict[str, bool] = {
+    "openapi": True,
+    "mcp": True,
+    "sse": True,
+    "admin": False,
 }
 
 
@@ -105,13 +117,13 @@ class Frontend:
 def default_frontends() -> list[Frontend]:
     """Return the default frontend records.
 
-    All three frontends are enabled on their default paths.
+    The tool frontends are enabled; the admin frontend is not.
 
     Returns:
-        One enabled :class:`Frontend` per entry in :data:`FRONTEND_NAMES`.
+        One :class:`Frontend` per entry in :data:`FRONTEND_NAMES`.
     """
     return [
-        Frontend(name, DEFAULT_PATHS[name], True, TRANSPORTS[name])
+        Frontend(name, DEFAULT_PATHS[name], DEFAULT_ENABLED[name], TRANSPORTS[name])
         for name in FRONTEND_NAMES
     ]
 
@@ -290,6 +302,7 @@ class FrontendRegistry:
 
 
 __all__ = [
+    "DEFAULT_ENABLED",
     "DEFAULT_PATHS",
     "FRONTEND_NAMES",
     "TRANSPORTS",
