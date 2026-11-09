@@ -82,6 +82,26 @@ def _unused_port() -> int:
         probe.close()
 
 
+class TestErrorText:
+    """A diagnostic names the cause, not only the wrapper."""
+
+    class _Group(Exception):
+        def __init__(self, children: list[BaseException]) -> None:
+            super().__init__("unhandled errors in a TaskGroup")
+            self.exceptions = children
+
+    def test_a_nested_exception_text_names_the_cause(self):
+        text = shim._describe_exception(
+            self._Group([ConnectionResetError("peer closed")])
+        )
+
+        assert "TaskGroup" in text
+        assert "peer closed" in text
+
+    def test_a_plain_exception_text_is_unchanged(self):
+        assert shim._describe_exception(ValueError("boom")) == "boom"
+
+
 class TestToolFingerprint:
     """The fingerprint tracks exactly what changes the client's list."""
 
@@ -137,6 +157,10 @@ class _FakeHttp:
         self.transports: list[SimpleNamespace] = []
         self.clients: list[SimpleNamespace] = []
 
+    @staticmethod
+    def Timeout(connect: float, *, read: float) -> SimpleNamespace:
+        return SimpleNamespace(connect=connect, read=read)
+
     def HTTPTransport(self, *, uds: str) -> SimpleNamespace:
         transport = SimpleNamespace(uds=uds)
         self.transports.append(transport)
@@ -169,6 +193,7 @@ class TestTransportSelection:
         url, client = calls[0]
         assert url == "http://x/mcp"
         assert client.transport.uds == "/tmp/h.sock"
+        assert client.timeout.read == 300.0
 
     def test_new_style_client_over_tcp_leaves_the_transport_to_the_sdk(
         self, monkeypatch
