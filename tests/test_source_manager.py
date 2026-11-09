@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -868,6 +869,36 @@ def _operation(operation_id: str) -> dict:
     }
 
 
+class _BadRegex:
+    """Stand-in for the optional ``regex`` package: ``(`` does not compile."""
+
+    class error(Exception):
+        """Matches the shape of ``regex.error``."""
+
+    def compile(self, pattern: str) -> str:
+        if pattern == "(":
+            raise self.error(f"missing ) at offset 0 in {pattern!r}")
+        return pattern
+
+    def search(self, pattern: str, text: str, timeout: float | None = None):
+        return re.search(pattern, text)
+
+
+_BAD_PARAM_PATH = {
+    "get": {
+        "operationId": "bad_get",
+        "parameters": [
+            {
+                "name": "q",
+                "in": "query",
+                "schema": {"type": "string", "pattern": "("},
+            }
+        ],
+        "responses": {"200": {"description": "ok"}},
+    }
+}
+
+
 class _SpecHandler(BaseHTTPRequestHandler):
     """Serve the mutable spec the fixture holds, with ETag support."""
 
@@ -915,30 +946,26 @@ def _spec_url(server) -> str:
     return f"http://127.0.0.1:{server.server_port}/openapi.json"
 
 
-def _openapi_manager(tmp_path, url: str) -> SourceManager:
+def _openapi_manager(
+    tmp_path, url: str, *, strict: bool = False, **source_extra
+) -> SourceManager:
     """Build a manager with one OpenAPI source pointing at *url*."""
+    entry = {
+        "type": "openapi",
+        "url": url,
+        "namespace": "pet",
+        "allow_private_hosts": True,
+        **source_extra,
+    }
     path = tmp_path / "openapi.jsonc"
-    path.write_text(
-        json.dumps(
-            {
-                "tools": [
-                    {
-                        "type": "openapi",
-                        "url": url,
-                        "namespace": "pet",
-                        "allow_private_hosts": True,
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps({"tools": [entry]}), encoding="utf-8")
     registry = ToolRegistry()
     manager = SourceManager(
         registry,
         load_config(str(path)),
         config_path=str(path),
         write_config=False,
+        strict_spec_regex=strict,
     )
     manager.apply_initial()
     return manager
@@ -1096,6 +1123,113 @@ class TestOpenAPIRefresh:
 
         assert result.added == ("local-list_owners",)
         assert "local-list_owners" in manager.registry._tools
+
+    def test_refresh_applies_namespace_tags_to_an_added_tool(
+        self, spec_server, tmp_path
+    ):
+        manager = _openapi_manager(
+            tmp_path, _spec_url(spec_server), tags=["file_system"]
+        )
+        source_id = manager.list()[0].to_dict()["id"]
+        assert "file_system" in (
+            manager.registry._tools["pet-list_pets"].metadata.all_tags
+        )
+
+        spec_server.spec["paths"]["/files"] = _operation("list_files")
+        spec_server.etag = '"v2"'
+        result = manager.refresh(source_id)
+
+        assert result.added == ("pet-list_files",)
+        assert "file_system" in (
+            manager.registry._tools["pet-list_files"].metadata.all_tags
+        )
+
+    def test_refresh_restores_namespace_tags_on_an_updated_tool(
+        self, spec_server, tmp_path
+    ):
+        manager = _openapi_manager(
+            tmp_path, _spec_url(spec_server), tags=["file_system"]
+        )
+        source_id = manager.list()[0].to_dict()["id"]
+        name = "pet-list_pets"
+        assert "file_system" in manager.registry._tools[name].metadata.all_tags
+        table = RouteTable(manager.registry)
+        manager.attach_route_table(table)
+
+        spec_server.spec["paths"]["/pets"]["get"]["description"] = "Changed"
+        spec_server.etag = '"v2"'
+        result = manager.refresh(source_id)
+
+        assert result.updated == (name,)
+        assert "file_system" in manager.registry._tools[name].metadata.all_tags
+        route = table.get_route(name)
+        assert route is not None
+        assert "file_system" in route.tool.metadata.all_tags
+
+    def test_refresh_drops_a_tool_with_an_uncompilable_pattern(
+        self, spec_server, tmp_path, monkeypatch
+    ):
+        from toolregistry_server import regex_guard
+
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+        monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
+        monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
+
+        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.etag = '"v2"'
+        result = manager.refresh(source_id)
+
+        # The result must not name a tool that is not registered.
+        assert result.added == ()
+        assert "pet-bad_get" not in manager.registry._tools
+        assert "pet-bad_get" not in manager.get(source_id).names
+        assert "pet-list_pets" in manager.registry._tools
+
+    def test_strict_refresh_drops_the_tool_then_raises(
+        self, spec_server, tmp_path, monkeypatch
+    ):
+        from toolregistry_server import regex_guard
+        from toolregistry_server.regex_guard import SpecPatternError
+
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server), strict=True)
+        source_id = manager.list()[0].to_dict()["id"]
+        monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
+        monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
+
+        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.etag = '"v2"'
+        with pytest.raises(SpecPatternError, match="pet-bad_get"):
+            manager.refresh(source_id)
+
+        assert "pet-bad_get" not in manager.registry._tools
+        assert "pet-bad_get" not in manager.get(source_id).names
+        assert "pet-list_pets" in manager.registry._tools
+
+    def test_a_dropped_updated_tool_leaves_the_source_entry(
+        self, spec_server, tmp_path, monkeypatch
+    ):
+        from toolregistry_server import regex_guard
+
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+        monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
+        monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
+
+        # The existing tool's schema becomes uncompilable.
+        spec_server.spec["paths"]["/pets"]["get"]["parameters"] = [
+            {
+                "name": "q",
+                "in": "query",
+                "schema": {"type": "string", "pattern": "("},
+            }
+        ]
+        spec_server.etag = '"v2"'
+        result = manager.refresh(source_id)
+
+        assert result.updated == ()
+        assert "pet-list_pets" not in manager.registry._tools
+        assert "pet-list_pets" not in manager.get(source_id).names
 
     def test_refresh_of_a_non_openapi_source_is_refused(self, manager):
         entry = next(e for e in manager.list() if e.source.namespace == "alpha")
