@@ -71,6 +71,30 @@ def discovery_table() -> RouteTable:
 
 
 @pytest.fixture
+def scoped_discovery_table() -> RouteTable:
+    """Discovery enabled, a deferred tool in ``alpha`` and one in ``beta``."""
+
+    from toolregistry.tool import Tool, ToolMetadata
+
+    registry = ToolRegistry()
+    registry.register(add, namespace="alpha")
+    registry.register(echo, namespace="beta")
+
+    def search(query: str, limit: int = 10) -> str:
+        """Search the alpha corpus."""
+        return f"alpha results for '{query}' (limit={limit})"
+
+    tool = Tool.from_function(
+        search,
+        namespace="alpha",
+        metadata=ToolMetadata(defer=True),
+    )
+    registry.register(tool)
+    registry.enable_tool_discovery()
+    return RouteTable(registry)
+
+
+@pytest.fixture
 def store(tmp_path):
     database = ApiKeyStore(tmp_path / "keys.db")
     yield database
@@ -266,29 +290,147 @@ async def test_mcp_static_token_keeps_full_access(table, store, resolver, monkey
 
 
 @pytest.mark.asyncio
-async def test_mcp_scoped_key_cannot_reach_the_proxy_tools(
-    discovery_table, store, resolver, monkeypatch
+async def test_mcp_scoped_key_keeps_the_proxy_tools(
+    scoped_discovery_table, store, resolver, monkeypatch
 ):
-    """``call_deferred`` would bypass the scope, so scoped keys lose it."""
-    created = store.create("all", {"namespaces": ["*"]})
+    """The proxies judge the tool they act on, so a scoped key keeps them."""
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
     monkeypatch.setattr(
         "toolregistry_server.adapters.mcp.adapter._request_authorization",
         lambda: created.secret,
     )
-    server = route_table_to_mcp_server(discovery_table, principal_resolver=resolver)
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
 
     async with create_test_client(server) as client:
         result = await client.list_tools()
         names = {tool.name for tool in result.tools}
-        message = await _mcp_error_message(
+
+    assert {"discover_tools", "call_deferred"} <= names
+    assert "alpha-add" in names
+    assert "beta-echo" not in names
+
+
+@pytest.mark.asyncio
+async def test_mcp_discovery_returns_only_tools_in_scope(
+    scoped_discovery_table, store, resolver, monkeypatch
+):
+    """A discovered tool outside the key's scope is not returned."""
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
+
+    async with create_test_client(server) as client:
+        own = await client.call_tool("discover_tools", {"query": "add"})
+        other = await client.call_tool("discover_tools", {"query": "echo"})
+
+    own_hits = json.loads(own.content[0].text)
+    other_hits = json.loads(other.content[0].text)
+    assert [hit["name"] for hit in own_hits] == ["alpha-add"]
+    assert other_hits == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_deferred_loads_a_tool_in_scope(
+    scoped_discovery_table, store, resolver, monkeypatch
+):
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
+
+    async with create_test_client(server) as client:
+        result = await client.call_tool(
+            "call_deferred",
+            {"_target_tool": "alpha-search", "query": "hello"},
+        )
+
+    assert get_field(result, "is_error", "isError") is False
+    assert "alpha results for 'hello'" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_deferred_refuses_a_target_outside_the_scope(
+    scoped_discovery_table, store, resolver, monkeypatch
+):
+    """The refusal is indistinguishable from a direct out-of-scope call."""
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
+
+    async with create_test_client(server) as client:
+        proxied = await _mcp_error_message(
             client,
             "call_deferred",
             {"_target_tool": "beta-echo", "text": "hello"},
         )
+        direct = await _mcp_error_message(client, "beta-echo", {"text": "hello"})
 
-    assert "discover_tools" not in names
-    assert "call_deferred" not in names
+    assert "not permitted" in proxied
+    assert proxied == direct
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_deferred_refuses_a_rewritten_target_name(
+    scoped_discovery_table, store, resolver, monkeypatch
+):
+    """A name core would normalise must not slip past the scope check."""
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
+
+    async with create_test_client(server) as client:
+        message = await _mcp_error_message(
+            client,
+            "call_deferred",
+            {"_target_tool": "beta_echo", "text": "hello"},
+        )
+
     assert "not permitted" in message
+    assert "beta-echo" in message
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_deferred_keeps_the_not_found_shape(
+    scoped_discovery_table, store, resolver, monkeypatch
+):
+    """An unknown target is not refused by the scope check."""
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
+
+    async with create_test_client(server) as client:
+        message = await _mcp_error_message(
+            client, "call_deferred", {"_target_tool": "missing-tool"}
+        )
+
+    assert "not permitted" not in message
+    assert "execution failed" in message
 
 
 @pytest.mark.asyncio
@@ -421,26 +563,81 @@ def _operation_ids(document: dict) -> set[str]:
     }
 
 
-def test_openapi_scoped_key_cannot_reach_the_proxy_tools(
-    discovery_table, store, resolver
+def _proxy_paths(table: RouteTable) -> tuple[str, str]:
+    discover = table.get_route("discover_tools")
+    deferred = table.get_route("call_deferred")
+    assert discover is not None and deferred is not None
+    return discover.path, deferred.path
+
+
+def test_openapi_scoped_key_keeps_the_proxy_tools(
+    scoped_discovery_table, store, resolver
 ):
-    created = store.create("all", {"namespaces": ["*"]})
-    client = _fastapi_client(discovery_table, resolver)
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    client = _fastapi_client(scoped_discovery_table, resolver)
     headers = _bearer(created.secret)
 
     document = client.get("/openapi.json", headers=headers).json()
-    route = discovery_table.get_route("call_deferred")
-    assert route is not None
-    denied = client.post(
-        route.path,
-        json={"_target_tool": "beta-echo", "text": "hello"},
+    operations = _operation_ids(document)
+
+    assert {"discover_tools", "call_deferred"} <= operations
+    assert "alpha-add" in operations
+    assert "beta-echo" not in operations
+
+
+def test_openapi_discovery_returns_only_tools_in_scope(
+    scoped_discovery_table, store, resolver
+):
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    client = _fastapi_client(scoped_discovery_table, resolver)
+    headers = _bearer(created.secret)
+    discover_path, _ = _proxy_paths(scoped_discovery_table)
+
+    own = client.post(discover_path, json={"query": "add"}, headers=headers)
+    other = client.post(discover_path, json={"query": "echo"}, headers=headers)
+
+    assert [hit["name"] for hit in own.json()] == ["alpha-add"]
+    assert other.json() == []
+
+
+def test_openapi_call_deferred_loads_a_tool_in_scope(
+    scoped_discovery_table, store, resolver
+):
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    client = _fastapi_client(scoped_discovery_table, resolver)
+    headers = _bearer(created.secret)
+    _, deferred_path = _proxy_paths(scoped_discovery_table)
+
+    result = client.post(
+        deferred_path,
+        json={"_target_tool": "alpha-search", "query": "hello"},
         headers=headers,
     )
 
-    assert "discover_tools" not in _operation_ids(document)
-    assert "call_deferred" not in _operation_ids(document)
-    assert denied.status_code == 403
-    assert "not permitted" in denied.json()["detail"]
+    assert result.status_code == 200
+    assert "alpha results for 'hello'" in result.text
+
+
+def test_openapi_call_deferred_refuses_a_target_outside_the_scope(
+    scoped_discovery_table, store, resolver
+):
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    client = _fastapi_client(scoped_discovery_table, resolver)
+    headers = _bearer(created.secret)
+    _, deferred_path = _proxy_paths(scoped_discovery_table)
+    target = scoped_discovery_table.get_route("beta-echo")
+    assert target is not None
+
+    proxied = client.post(
+        deferred_path,
+        json={"_target_tool": "beta-echo", "text": "hello"},
+        headers=headers,
+    )
+    direct = client.post(target.path, json={"text": "hello"}, headers=headers)
+
+    assert proxied.status_code == 403
+    assert direct.status_code == 403
+    assert proxied.json()["detail"] == direct.json()["detail"]
 
 
 def test_openapi_operator_keeps_the_proxy_tools(discovery_table, resolver):
@@ -558,6 +755,77 @@ def test_httpserver_rejects_a_revoked_key(httpserver, store):
     store.revoke(created.record.id)
 
     assert _request(url, "/openapi.json", headers=headers)[0] == 401
+
+
+@pytest.fixture
+def scoped_httpserver(scoped_discovery_table, resolver):
+    app = create_httpserver_app(scoped_discovery_table, principal_resolver=resolver)
+    url = _serve(app)
+    yield url, app
+    app.shutdown()
+
+
+def test_httpserver_discovery_returns_only_tools_in_scope(
+    scoped_httpserver, scoped_discovery_table, store
+):
+    url, _ = scoped_httpserver
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    headers = _bearer(created.secret)
+    discover_path, _ = _proxy_paths(scoped_discovery_table)
+
+    own_status, _, own_body = _request(url, discover_path, {"query": "add"}, headers)
+    other_status, _, other_body = _request(
+        url, discover_path, {"query": "echo"}, headers
+    )
+
+    assert own_status == 200
+    assert [hit["name"] for hit in json.loads(own_body)] == ["alpha-add"]
+    assert other_status == 200
+    assert json.loads(other_body) == []
+
+
+def test_httpserver_call_deferred_refuses_a_target_outside_the_scope(
+    scoped_httpserver, scoped_discovery_table, store
+):
+    url, _ = scoped_httpserver
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    headers = _bearer(created.secret)
+    _, deferred_path = _proxy_paths(scoped_discovery_table)
+    target = scoped_discovery_table.get_route("beta-echo")
+    assert target is not None
+
+    proxied_status, _, proxied_body = _request(
+        url,
+        deferred_path,
+        {"_target_tool": "beta-echo", "text": "hello"},
+        headers,
+    )
+    direct_status, _, direct_body = _request(
+        url, target.path, {"text": "hello"}, headers
+    )
+
+    assert proxied_status == 403
+    assert direct_status == 403
+    assert json.loads(proxied_body)["detail"] == json.loads(direct_body)["detail"]
+
+
+def test_httpserver_call_deferred_loads_a_tool_in_scope(
+    scoped_httpserver, scoped_discovery_table, store
+):
+    url, _ = scoped_httpserver
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    headers = _bearer(created.secret)
+    _, deferred_path = _proxy_paths(scoped_discovery_table)
+
+    status, _, body = _request(
+        url,
+        deferred_path,
+        {"_target_tool": "alpha-search", "query": "hello"},
+        headers,
+    )
+
+    assert status == 200
+    assert "alpha results for 'hello'" in body.decode("utf-8")
 
 
 def test_httpserver_static_token_keeps_full_access(httpserver):
