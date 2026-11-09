@@ -1304,6 +1304,7 @@ async def test_mcp_policy_refusal_is_logged_as_denied(
     )
     stream = _capture_mcp_adapter_log(monkeypatch)
     table.registry.set_permission_policy(_deny_echo_policy())
+    table.registry.enable_logging()
     server = route_table_to_mcp_server(table, principal_resolver=resolver)
 
     async with create_test_client(server) as client:
