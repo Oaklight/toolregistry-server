@@ -308,29 +308,38 @@ class CLI:
                 options["keys_db"] = keys_db
             self.app.serve_mcp(**options)
         elif parsed.command == "gateway":
-            self.app.serve_gateway(
-                config_path=config_path,
-                profile=getattr(parsed, "profile", None),
-                host=parsed.host,
-                port=parsed.port,
-                tokens_path=getattr(parsed, "tokens", None),
-                server_url=getattr(parsed, "server_url", None),
-                backend=getattr(parsed, "backend", "fastapi"),
-                max_body_size=getattr(parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE),
-                regex_timeout=getattr(parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT),
-                regex_budget=getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
-                strict_spec_regex=getattr(parsed, "strict_spec_regex", False),
-                tools_list_ttl_ms=getattr(parsed, "tools_list_ttl_ms", None),
-                tools_list_cache_scope=getattr(parsed, "tools_list_cache_scope", None),
-                openapi_path=getattr(parsed, "openapi_path", None),
-                mcp_path=getattr(parsed, "mcp_path", None),
-                sse_path=getattr(parsed, "sse_path", None),
-                openapi_enabled=getattr(parsed, "openapi", None),
-                mcp_enabled=getattr(parsed, "mcp", None),
-                sse_enabled=getattr(parsed, "sse", None),
-                config_reload=getattr(parsed, "config_reload", False),
-                write_config=getattr(parsed, "config_write", True),
-            )
+            options = {
+                "config_path": config_path,
+                "profile": getattr(parsed, "profile", None),
+                "host": parsed.host,
+                "port": parsed.port,
+                "tokens_path": getattr(parsed, "tokens", None),
+                "server_url": getattr(parsed, "server_url", None),
+                "backend": getattr(parsed, "backend", "fastapi"),
+                "max_body_size": getattr(
+                    parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE
+                ),
+                "regex_timeout": getattr(
+                    parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT
+                ),
+                "regex_budget": getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
+                "strict_spec_regex": getattr(parsed, "strict_spec_regex", False),
+                "tools_list_ttl_ms": getattr(parsed, "tools_list_ttl_ms", None),
+                "tools_list_cache_scope": getattr(
+                    parsed, "tools_list_cache_scope", None
+                ),
+                "openapi_path": getattr(parsed, "openapi_path", None),
+                "mcp_path": getattr(parsed, "mcp_path", None),
+                "sse_path": getattr(parsed, "sse_path", None),
+                "openapi_enabled": getattr(parsed, "openapi", None),
+                "mcp_enabled": getattr(parsed, "mcp", None),
+                "sse_enabled": getattr(parsed, "sse", None),
+                "config_reload": getattr(parsed, "config_reload", False),
+                "write_config": getattr(parsed, "config_write", True),
+            }
+            if keys_db is not None:
+                options["keys_db"] = keys_db
+            self.app.serve_gateway(**options)
 
     def main(self, args: list[str] | None = None) -> NoReturn | None:
         """Run the CLI."""
