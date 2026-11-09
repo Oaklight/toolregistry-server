@@ -670,12 +670,18 @@ class GatewayAdapter(Adapter):
                 principal_resolver=resolver,
             )
 
-        from ..adapters.openapi import create_openapi_app
+        try:
+            from fastapi import Depends
+
+            from .openapi_asgi import create_openapi_app
+        except ImportError as exc:
+            raise ImportError(
+                "The ASGI gateway backend requires FastAPI and uvicorn. "
+                "Install with: pip install toolregistry-server[gateway]"
+            ) from exc
 
         dependencies = None
         if resolver is not None:
-            from fastapi import Depends
-
             from ..auth import create_scoped_bearer_dependency
 
             dependencies = [Depends(create_scoped_bearer_dependency(resolver))]

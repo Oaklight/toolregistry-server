@@ -48,7 +48,6 @@ class TestCreateParser:
         assert args.port == 8000
         assert args.config is None
         assert args.tokens is None
-        assert args.reload is False
 
     def test_openapi_with_options(self):
         """Test openapi subcommand with all options."""
@@ -64,7 +63,6 @@ class TestCreateParser:
                 "tools.yaml",
                 "--tokens",
                 "tokens.txt",
-                "--reload",
             ]
         )
         assert args.command == "openapi"
@@ -72,7 +70,6 @@ class TestCreateParser:
         assert args.port == 9000
         assert args.config == "tools.yaml"
         assert args.tokens == "tokens.txt"
-        assert args.reload is True
 
     def test_openapi_max_body_size_defaults_to_one_mib(self):
         """The httpserver body cap defaults to 1 MiB (#134)."""
@@ -204,8 +201,6 @@ class TestMain:
             host="0.0.0.0",
             port=9000,
             tokens_path=None,
-            reload=False,
-            backend="fastapi",
             max_body_size=1_048_576,
             regex_timeout=0.05,
             regex_budget=0.25,
@@ -236,8 +231,6 @@ class TestMain:
             host="0.0.0.0",
             port=9000,
             tokens_path=None,
-            reload=False,
-            backend="fastapi",
             max_body_size=1_048_576,
             regex_timeout=0.05,
             regex_budget=0.25,

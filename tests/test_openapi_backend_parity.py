@@ -2,8 +2,8 @@
 
 Both apps are served on ephemeral ports over real sockets and the same
 request matrix is sent to each, so a contract drift shows up as a diff and
-not as a rewritten expectation. The FastAPI app is the reference until the
-switchover lands (epic #101); both sides encode tool results through
+not as a rewritten expectation. The FastAPI side needs the gateway extra;
+without it those tests skip. Both sides encode tool results through
 ``adapters.openapi.serialisation``, which uses core's
 ``ToolResultJSONEncoder``, so non-finite floats and Decimals, ``bytes`` and
 sets reach the wire identically.
@@ -24,9 +24,9 @@ from pydantic import BaseModel
 from toolregistry import ToolRegistry
 
 from toolregistry_server import RouteTable
-from toolregistry_server.adapters.openapi import create_openapi_app
 from toolregistry_server.adapters.openapi.serialisation import encode_tool_result
 from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
+from toolregistry_server.gateway.openapi_asgi import create_openapi_app
 
 TOKENS = ["secret"]
 
@@ -212,7 +212,8 @@ def table() -> RouteTable:
 def fastapi_base(table):
     import socket
 
-    import uvicorn
+    pytest.importorskip("fastapi")
+    uvicorn = pytest.importorskip("uvicorn")
 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -504,7 +505,8 @@ class TestAuth:
     def secured(self, table):
         import socket
 
-        import uvicorn
+        pytest.importorskip("fastapi")
+        uvicorn = pytest.importorskip("uvicorn")
         from fastapi import Depends
 
         from toolregistry_server.auth import BearerTokenAuth, create_bearer_dependency

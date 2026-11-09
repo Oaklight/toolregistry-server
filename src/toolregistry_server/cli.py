@@ -272,8 +272,6 @@ class CLI:
                 "host": parsed.host,
                 "port": parsed.port,
                 "tokens_path": getattr(parsed, "tokens", None),
-                "reload": getattr(parsed, "reload", False),
-                "backend": getattr(parsed, "backend", "fastapi"),
                 "max_body_size": getattr(
                     parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE
                 ),
