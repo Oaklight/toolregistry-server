@@ -291,14 +291,16 @@ add、remove、replace 会把配置写回服务器启动时使用的文件，因
 
 ## Gateway 前端
 
-`gateway` 子命令在一个进程、一个监听器上同时提供 OpenAPI 适配器与两种 MCP HTTP 传输：
+`gateway` 子命令在一个进程、一个监听器上同时提供 OpenAPI 适配器、两种 MCP HTTP 传输
+与管理面板：
 
 ```bash
 toolregistry-server gateway --config tools.yaml --port 8000
 ```
 
-默认挂载点为 `/openapi`（OpenAPI）、`/mcp`（MCP streamable-HTTP）与 `/sse`（MCP SSE）。
-配置文件可在 `gateway.frontends` 下修改路径与启用标记：
+默认挂载点为 `/openapi`（OpenAPI）、`/mcp`（MCP streamable-HTTP）、`/sse`
+（MCP SSE）与 `/admin`（管理面板）。配置文件可在 `gateway.frontends` 下修改路径与
+启用标记：
 
 ```yaml
 gateway:
@@ -312,6 +314,9 @@ gateway:
     sse:
       path: /events
       enabled: false
+    admin:
+      path: /admin
+      enabled: false
 ```
 
 | 前端 | 默认路径 | 传输 | 默认 |
@@ -319,9 +324,10 @@ gateway:
 | `openapi` | `/openapi` | HTTP | 启用 |
 | `mcp` | `/mcp` | `streamable-http` | 启用 |
 | `sse` | `/sse` | SSE | 启用 |
+| `admin` | `/admin` | HTTP | 禁用 |
 
-命令行选项 `--openapi-path`、`--mcp-path`、`--sse-path`、`--openapi`、`--mcp`
-与 `--sse` 可对本次进程覆盖文件设置。启用标记在每个请求上读取：禁用某个前端后，
+命令行选项 `--openapi-path`、`--mcp-path`、`--sse-path`、`--admin-path`、
+`--openapi`、`--mcp`、`--sse` 与 `--admin` 可对本次进程覆盖文件设置。启用标记在每个请求上读取：禁用某个前端后，
 其路径立即返回 `404`，无需重启，也不影响其他前端。修改路径同样在下一个请求生效。
 
 ASGI lifespan 启动时创建一个 `StreamableHTTPSessionManager`，结束时关闭。启用或禁用
@@ -330,9 +336,54 @@ MCP 前端不会重建它。gateway 始终用一个 ASGI 应用提供所有启�
 该后端只能提供 openapi 前端。该后端在监听器根路径提供 OpenAPI，因此 openapi
 路径覆盖会被拒绝，而不是静默忽略。
 
-`--tokens`（以及 `API_BEARER_TOKEN`）用同一组令牌保护所有前端。配置令牌后，MCP 的
-受保护资源元数据位于 `/.well-known/oauth-protected-resource<MCP 路径>`，并跟随当前
-MCP 路径。
+`--tokens`（以及 `API_BEARER_TOKEN`）用同一组令牌保护 OpenAPI 与 MCP 前端。管理
+面板刻意不在该令牌集合内，详见[管理面板](#管理面板)。配置令牌或 `--keys-db` 后，
+MCP 的受保护资源元数据位于 `/.well-known/oauth-protected-resource<MCP 路径>`，并
+跟随当前 MCP 路径。
+
+### 管理面板
+
+`--admin` 启用面板，`--admin-path` 修改挂载路径。面板就是 core 的 ToolRegistry 管理
+界面，因此使用 core 面板自己的令牌与会话鉴权，而不是 gateway 的 Bearer 令牌。用
+`--admin-token TOKEN` 或更推荐的 `--admin-token-file PATH` 配置运维令牌：
+
+```bash
+toolregistry-server gateway \
+  --config tools.yaml \
+  --tokens serving-tokens.txt \
+  --admin \
+  --admin-token-file operator-token.txt
+```
+
+面板默认禁用。启用但未配置运维令牌会导致启动失败；gateway 的对外令牌无法打开面板：
+只用对外令牌请求 `/admin/api/info` 会得到 `401`。
+
+gateway 只监听一个对外端口。进程内部在回环地址的临时端口启动 core 的 `AdminServer`，
+并把管理前端反向代理过去，同时保留公开的 `Host` 头，使面板的同源检查继续有效。内部
+监听器从不接受非回环连接。面板在前端启用后的第一个请求到来时启动；前端禁用期间，其
+路径返回 `404`，没有任何管理请求到达面板。
+
+面板会用进程中的实时对象加载 gateway 管理扩展：
+
+- **Keys** 使用 `--keys-db PATH` 指定的存储；未配置时该页返回 `503`。创建与吊销会
+  在下一个发往工具前端的请求上生效。
+- **Frontends** 列出并修改与 `gateway.list_frontends()` /
+  `gateway.update_frontend()` 相同的注册表；变更在下一个请求生效，并按常规写入策略
+  持久化。
+- **Sources** 使用运行期来源管理器；面板自身的来源注册也会通过该管理器持久化。
+
+扩展路由位于面板挂载路径之下，例如 `/admin/ext/gateway/keys`。外壳通过面板的资源
+处理器加载扩展资源，任何资源都不包含密钥。禁用管理前端后，面板根路径及其下所有扩展
+路由都返回 `404`。
+
+托管面板要求 core `toolregistry` 提供管理扩展契约（`ADMIN_EXTENSION_API == 1`，即
+core 0.21.0 或更新的版本）。旧版 core 上该前端会以明确错误拒绝启动；默认配置不会加载
+它。
+
+`--keys-db` 同时为 gateway 启用限定作用域的入站密钥，规则与 `openapi`、`mcp`
+子命令相同：OpenAPI 与 MCP 前端接受有效密钥以及静态 `--tokens` 凭据，并各自执行密钥
+的命名空间与单工具作用域。静态令牌保持完整、不受限的访问。由于每次请求都会读取存储
+中的密钥行，在面板中创建或吊销的密钥会在下一个请求生效。
 
 ### 运行期前端 API
 
@@ -343,7 +394,8 @@ MCP 路径。
 gateway = app.create_gateway(config_path="tools.yaml")
 
 gateway.list_frontends()
-# [{"name": "openapi", "path": "/openapi", "enabled": True, "transport": "http"}, ...]
+# [{"name": "openapi", "path": "/openapi", "enabled": True, "transport": "http"},
+#  ..., {"name": "admin", "path": "/admin", "enabled": False, "transport": "http"}]
 
 result = gateway.update_frontend("mcp", enabled=False)
 # {"name": "mcp", "path": "/mcp", "enabled": False, ...,

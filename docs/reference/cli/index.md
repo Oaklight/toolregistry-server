@@ -105,14 +105,15 @@ toolregistry-server mcp \
   --tokens tokens.txt
 ```
 
-### `gateway` — 单进程提供 OpenAPI 与 MCP
+### `gateway` — 单进程提供 OpenAPI、MCP 与管理面板
 
 ```bash
 toolregistry-server gateway [选项]
 ```
 
 一个 ASGI 应用把 OpenAPI 适配器挂载在 `/openapi`、MCP streamable-HTTP 挂载在
-`/mcp`、MCP SSE 挂载在 `/sse`。每个前端的路径可配置，启用标记按请求检查。
+`/mcp`、MCP SSE 挂载在 `/sse`、管理面板挂载在 `/admin`。每个前端的路径可配置，
+启用标记按请求检查。管理面板默认禁用。
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
@@ -125,9 +126,15 @@ toolregistry-server gateway [选项]
 | `--openapi-path PATH` | `/openapi` | OpenAPI 挂载路径（`--backend httpserver` 下会被拒绝，因为该后端在监听器根路径提供服务） |
 | `--mcp-path PATH` | `/mcp` | MCP streamable-HTTP 挂载路径 |
 | `--sse-path PATH` | `/sse` | MCP SSE 挂载路径 |
+| `--admin-path PATH` | `/admin` | 管理面板挂载路径 |
 | `--openapi` / `--no-openapi` | 启用 | 启用或禁用 OpenAPI 前端 |
 | `--mcp` / `--no-mcp` | 启用 | 启用或禁用 MCP streamable-HTTP |
 | `--sse` / `--no-sse` | 启用 | 启用或禁用 MCP SSE |
+| `--admin` / `--no-admin` | 禁用 | 启用或禁用管理面板；启用时必须配置运维令牌 |
+| `--admin-token TOKEN` | - | 管理面板接受的运维令牌；推荐改用 `--admin-token-file` |
+| `--admin-token-file PATH` | - | 从文件读取运维令牌 |
+| `--keys-db PATH` | - | 支撑面板 Keys 页的 SQLite 存储 |
+| `--admin-allow-private-hosts` | `false` | 允许面板拉取解析到私有地址的来源 URL |
 | `--no-config-write` | `false` | 运行期前端变更不写回配置文件 |
 | `--max-body-size BYTES` | `1048576`（1 MiB） | OpenAPI 前端接受的最大请求体 |
 | `--regex-timeout SECONDS` | `0.05` | 来自 spec 的正则单次匹配上限 |
@@ -145,11 +152,15 @@ toolregistry-server gateway \
   --port 8000 \
   --openapi-path /api \
   --no-sse \
-  --tokens tokens.txt
+  --tokens tokens.txt \
+  --admin \
+  --admin-token-file operator-token.txt
 ```
 
 被禁用的前端返回 `404`，不会触达注册表。前端路径与启用标记也可以保存在配置文件的
 `gateway.frontends` 下；参见[配置指南](../../guides/configuration.md)。
+管理面板使用自己的运维令牌，而不是 `--tokens` 集合；扩展页面位于面板挂载路径之下
+（例如 `/admin/ext/gateway/keys`）。
 
 ## 配置文件
 
