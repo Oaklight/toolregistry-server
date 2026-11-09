@@ -13,6 +13,12 @@ Routes:
   :func:`~toolregistry_server.adapters.openapi.spec.build_openapi_schema`
 * ``GET /events`` — tool change events over Server-Sent Events
 * ``GET /docs`` — Swagger UI, loaded from the CDN
+* ``GET /redoc`` — ReDoc, loaded from the CDN
+
+A tool registered after the app is built is reachable without a restart:
+the route table's change listener appends one POST route to the vendored
+app's plain route list.  A removed tool keeps its route and answers 503,
+the same as the FastAPI backend's stale route.
 
 Example:
     ```python
@@ -28,9 +34,11 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import html
 import json
+import threading
 import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -83,6 +91,16 @@ SWAGGER_UI_BUNDLE_URL = (
 )
 SWAGGER_UI_BUNDLE_INTEGRITY = (
     "sha384-XFYN47VzPiDY6qPtxYKg0nqUeW/upo20xf1j2SUE7gT/i35FJB4cuS/71Iegzk8Z"
+)
+
+#: ReDoc release served to ``/redoc``.  Pinned and integrity-checked for the
+#: same reason as the Swagger UI assets above.
+REDOC_VERSION = "2.5.0"
+REDOC_BUNDLE_URL = (
+    f"https://cdn.jsdelivr.net/npm/redoc@{REDOC_VERSION}/bundles/redoc.standalone.js"
+)
+REDOC_BUNDLE_INTEGRITY = (
+    "sha384-4vOjrBu7SuDWXcAw1qFznVLA/sKL+0l4nn+J1HY8w7cpa6twQEYuh4b0Cwuo7CyX"
 )
 
 
@@ -384,6 +402,36 @@ def _add_docs_route(app: App, title: str) -> None:
         return Response(html_page, content_type="text/html; charset=utf-8")
 
 
+def _add_redoc_route(app: App, title: str) -> None:
+    """Register ``GET /redoc`` serving ReDoc from the CDN.
+
+    Mirrors FastAPI's default ``redoc_url``: the page points at
+    ``/openapi.json``.  The release is pinned and the bundle carries an
+    integrity hash, so a changed CDN response is refused by the browser
+    instead of executed.  The title is operator configuration and is
+    HTML-escaped.
+    """
+    safe_title = html.escape(title)
+    html_page = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} - ReDoc</title>
+</head>
+<body>
+  <redoc spec-url="/openapi.json"></redoc>
+  <script src="{REDOC_BUNDLE_URL}"
+          integrity="{REDOC_BUNDLE_INTEGRITY}"
+          crossorigin="anonymous"></script>
+</body>
+</html>"""
+
+    @app.get("/redoc")
+    async def _redoc(request) -> Response:
+        return Response(html_page, content_type="text/html; charset=utf-8")
+
+
 def _httpserver_sse_listener(
     subscribers: set[tuple[asyncio.Queue[str], asyncio.AbstractEventLoop, Any]],
     route_table: RouteTable,
@@ -587,6 +635,61 @@ class _DetailEnvelopeApp(App):
         await super()._send_error_and_close(writer, response, reader, exc, state)
 
 
+def _add_tool_routes(
+    app: App,
+    route_table: RouteTable,
+    matcher_factory: Callable[[], PatternMatcher] | None,
+    principal_resolver: Any | None,
+) -> None:
+    """Register one POST route per tool, including tools registered later.
+
+    The vendored app keeps its routes in a plain list, so a tool the
+    registry gains after startup is one append rather than a rebuild.  The
+    change listener may fire on any thread; a lock keeps two concurrent
+    registrations from adding the same path twice.  A removed tool keeps its
+    route and answers ``503``, the same as FastAPI's stale route.
+    """
+    lock = threading.Lock()
+    registered: set[str] = set()
+
+    def _register(tool_name: str) -> None:
+        with lock:
+            if tool_name in registered:
+                return
+            route = route_table.get_route(tool_name)
+            if route is None:
+                return
+            app.route(route.path, methods=["POST"])(
+                _make_tool_handler(
+                    route_table,
+                    tool_name,
+                    matcher_factory,
+                    principal_resolver,
+                )
+            )
+            registered.add(tool_name)
+
+    def _on_change(tool_name: str, event: str) -> None:
+        if tool_name == "*":
+            for route in route_table.list_routes(enabled_only=False):
+                _register(route.tool_name)
+            return
+        _register(tool_name)
+
+    # Subscribe before the seed loop: a change that lands between the loop
+    # and the subscription would otherwise miss its route.  ``_register`` is
+    # idempotent, so the overlap is harmless.
+    route_table.add_listener(_on_change)
+    for route in route_table.list_routes(enabled_only=False):
+        _register(route.tool_name)
+
+    def _remove_listener() -> None:
+        with contextlib.suppress(ValueError):  # removed by a second shutdown
+            route_table.remove_listener(_on_change)
+
+    app.on_shutdown(_remove_listener)
+
+
 def create_httpserver_app(
     route_table: RouteTable,
     *,
@@ -628,7 +731,9 @@ def create_httpserver_app(
 
     Returns:
         An :class:`~httpserver.App` with the tool routes, ``/tools``,
-        ``/openapi.json``, ``/docs`` and ``/events`` registered.
+        ``/openapi.json``, ``/docs``, ``/redoc`` and ``/events``
+        registered.  A tool registered after this call is reachable through
+        a route the change listener appends.
 
     Raises:
         ValueError: If *max_body_size* is not positive, or either regex
@@ -647,21 +752,14 @@ def create_httpserver_app(
 
     app = _DetailEnvelopeApp(max_body_size=max_body_size)
 
-    for route in route_table.list_routes(enabled_only=False):
-        app.route(route.path, methods=["POST"])(
-            _make_tool_handler(
-                route_table,
-                route.tool_name,
-                matcher_factory,
-                principal_resolver,
-            )
-        )
+    _add_tool_routes(app, route_table, matcher_factory, principal_resolver)
 
     _add_tools_route(app, route_table, principal_resolver)
     _add_openapi_route(
         app, route_table, title, version, description, principal_resolver
     )
     _add_docs_route(app, title)
+    _add_redoc_route(app, title)
     _add_events_route(app, route_table, max_sse_subscribers, principal_resolver)
     _add_framework_errors(app)
 

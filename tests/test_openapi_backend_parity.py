@@ -479,6 +479,13 @@ class TestMetaRoutes:
         _, headers, _ = request(both[1], "/docs")
         assert "text/html" in headers["content-type"]
 
+    def test_redoc_page(self, both):
+        status, _ = compare(both, "/redoc", compare_body=False)
+        assert status == 200
+        _, headers, body = request(both[1], "/redoc")
+        assert "text/html" in headers["content-type"]
+        assert b'spec-url="/openapi.json"' in body
+
 
 class TestDisabledTool:
     def test_disabled_tool_is_a_503(self, both, table):
