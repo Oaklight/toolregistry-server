@@ -419,6 +419,12 @@ class CLI:
                     parsed, "tools_list_cache_scope", None
                 ),
                 "allow_operator_token": getattr(parsed, "allow_operator_token", False),
+                "client_concurrency": getattr(
+                    parsed, "client_concurrency", DEFAULT_CLIENT_CONCURRENCY
+                ),
+                "concurrency_timeout": getattr(
+                    parsed, "concurrency_timeout", DEFAULT_CONCURRENCY_TIMEOUT
+                ),
                 "config_reload": getattr(parsed, "config_reload", False),
                 "write_config": getattr(parsed, "config_write", True),
             }
@@ -524,7 +530,7 @@ class CLI:
             key_file=key_file,
             # An explicit file wins; the environment variable is a fallback
             # for client configs that cannot write a key file.
-            key=None if key_file else os.environ.get("TOOLREGISTRY_HUB_KEY"),
+            key=None if key_file else os.environ.get(local_hub.HUB_KEY_ENV),
         )
         try:
             code = shim.run_stdio(config)

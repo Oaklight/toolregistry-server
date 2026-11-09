@@ -39,6 +39,7 @@ class FakeKeyRecord:
     expires_at: str | None = None
     revoked_at: str | None = None
     last_used_at: str | None = None
+    max_concurrency: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +50,7 @@ class FakeKeyRecord:
             "expires_at": self.expires_at,
             "revoked_at": self.revoked_at,
             "last_used_at": self.last_used_at,
+            "max_concurrency": self.max_concurrency,
             # Deliberately present: the extension must strip them.
             "secret_hash": "deadbeef",
             "secret_digest": "cafebabe",
@@ -76,6 +78,7 @@ class FakeKeyStore:
         scopes: Sequence[str] | Mapping[str, Any] | None = None,
         *,
         expires_at: str | None = None,
+        max_concurrency: int | None = None,
     ) -> FakeCreatedKey:
         self._created += 1
         key_id = f"key_{self._created}"
@@ -92,6 +95,7 @@ class FakeKeyStore:
             label=label,
             scopes=normalized,
             expires_at=expires_at,
+            max_concurrency=max_concurrency,
         )
         self._records[key_id] = record
         return FakeCreatedKey(record=record, secret=secret)
@@ -369,6 +373,29 @@ class TestKeys:
         )
         assert status == 201
         assert json.loads(body)["scopes"]["namespaces"] == ["default", "files"]
+
+    def test_create_accepts_a_concurrency_limit(self, host) -> None:
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "slow-bot", "scopes": ["default"], "max_concurrency": 3},
+        )
+
+        assert status == 201
+        payload = json.loads(body)
+        assert payload["max_concurrency"] == 3
+        assert payload["secret"].startswith("gw_secret_")
+
+    @pytest.mark.parametrize("value", [0, -1, True, "3", 2.5])
+    def test_create_rejects_a_bad_concurrency_limit(self, host, value) -> None:
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "bad", "scopes": ["default"], "max_concurrency": value},
+        )
+
+        assert status == 400
+        assert "max_concurrency" in json.loads(body)["message"]
 
     def test_null_scopes_create_a_key_that_can_call_nothing(self, host) -> None:
         status, body, _ = _request(

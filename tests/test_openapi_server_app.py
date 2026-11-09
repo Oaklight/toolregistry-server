@@ -719,3 +719,70 @@ class TestShutdown:
             time.sleep(0.05)
         else:
             pytest.fail("the listener stayed open after shutdown")
+
+
+@pytest.fixture
+def auth_server(route_table):
+    """A token-protected app, so the shared auth hook is installed."""
+    app = create_httpserver_app(route_table, tokens=["s3cret"])
+    url = _serve(app)
+    yield url, app
+    app.shutdown()
+
+
+class TestReservedClientHeaders:
+    """Identity comes from the credential on this backend too (#145)."""
+
+    def test_a_reserved_header_is_refused_with_a_400(self, auth_server):
+        url, _ = auth_server
+        status, headers, body = _call(
+            url,
+            "/tools",
+            headers={
+                "Authorization": "Bearer s3cret",
+                "X-Client-Environment": "prod",
+            },
+        )
+
+        assert status == 400
+        assert "x-client-environment" in json.loads(body)["detail"]
+        assert "WWW-Authenticate" not in headers
+
+    def test_the_refusal_is_logged(self, auth_server, monkeypatch):
+        from toolregistry_server.adapters.openapi import server_app
+
+        url, _ = auth_server
+        stream = _capture_logs(monkeypatch, server_app)
+
+        _call(
+            url,
+            "/tools",
+            headers={"Authorization": "Bearer s3cret", "x-forwarded-user": "mallory"},
+        )
+
+        output = stream.getvalue()
+        assert "refused a reserved client header" in output
+        assert "x-forwarded-user" in output
+        assert "static-token" in output
+
+    def test_authentication_runs_before_the_header_check(self, auth_server):
+        url, _ = auth_server
+        status, headers, body = _call(
+            url,
+            "/tools",
+            headers={"Authorization": "Bearer wrong", "x-client-cwd": "/tmp"},
+        )
+
+        assert status == 401
+        assert headers["WWW-Authenticate"] == "Bearer"
+        assert json.loads(body)["detail"] == "Invalid authentication token"
+
+    def test_an_unrelated_client_header_is_served(self, auth_server):
+        url, _ = auth_server
+        status, _, _ = _call(
+            url,
+            "/tools",
+            headers={"Authorization": "Bearer s3cret", "x-client-version": "1.2.3"},
+        )
+
+        assert status == 200

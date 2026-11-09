@@ -31,6 +31,9 @@ const STRINGS = {
         'gw.keys.tools': 'Tool overrides',
         'gw.keys.toolsHint': 'One tool=allow or tool=deny per line. An override wins over the namespaces.',
         'gw.keys.toolsInvalid': 'Fix or remove these tool overrides before creating the key: {lines}',
+        'gw.keys.concurrency': 'Concurrency',
+        'gw.keys.concurrencyHint': 'Most calls this key may run at once. Empty uses the server default.',
+        'gw.keys.concurrencyInvalid': 'Concurrency must be a positive whole number.',
         'gw.keys.expires': 'Expires',
         'gw.keys.expiresHint': 'Optional, local time.',
         'gw.keys.created': 'Created',
@@ -114,6 +117,9 @@ const STRINGS = {
         'gw.keys.tools': '按工具覆盖',
         'gw.keys.toolsHint': '每行一个 tool=allow 或 tool=deny。覆盖优先于命名空间。',
         'gw.keys.toolsInvalid': '创建密钥前请修正或移除这些按工具覆盖项：{lines}',
+        'gw.keys.concurrency': '并发上限',
+        'gw.keys.concurrencyHint': '此密钥同时允许的最大调用数；留空使用服务器默认值。',
+        'gw.keys.concurrencyInvalid': '并发上限必须是正整数。',
         'gw.keys.expires': '过期时间',
         'gw.keys.expiresHint': '可选，本地时间。',
         'gw.keys.created': '创建时间',
@@ -406,6 +412,12 @@ function renderKeys() {
                 el('small', { class: 'gw-hint', text: T('gw.keys.toolsHint') }),
             ]),
             el('label', { class: 'gw-field' }, [
+                el('span', { text: T('gw.keys.concurrency') }),
+                el('input', { name: 'max_concurrency', type: 'number', min: '1',
+                              step: '1', autocomplete: 'off' }),
+                el('small', { class: 'gw-hint', text: T('gw.keys.concurrencyHint') }),
+            ]),
+            el('label', { class: 'gw-field' }, [
                 el('span', { text: T('gw.keys.expires') }),
                 el('input', { name: 'expires_at', type: 'datetime-local' }),
                 el('small', { class: 'gw-hint', text: T('gw.keys.expiresHint') }),
@@ -482,11 +494,23 @@ async function createKey(form) {
         return;
     }
     const tools = overrides.tools;
-    const expiresRaw = String(data.get('expires_at') || '');
+    const concurrencyRaw = String(data.get('max_concurrency') || '').trim();
     const payload = {
         label: String(data.get('label') || '').trim(),
         scopes: { namespaces, tools },
     };
+    if (concurrencyRaw) {
+        const limit = Number(concurrencyRaw);
+        if (!Number.isInteger(limit) || limit < 1) {
+            root.querySelector('#gw-keys')?.appendChild(message(
+                T('gw.keys.concurrencyInvalid'),
+                'error',
+            ));
+            return;
+        }
+        payload.max_concurrency = limit;
+    }
+    const expiresRaw = String(data.get('expires_at') || '');
     if (expiresRaw) payload.expires_at = new Date(expiresRaw).toISOString();
     try {
         const created = await call('post', '/keys', payload);

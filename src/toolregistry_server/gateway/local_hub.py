@@ -649,6 +649,23 @@ def _published(endpoint: HubEndpoint, quiet: bool) -> int:
     return 0
 
 
+#: Environment variable holding the shim's hub key.  It is a client
+#: credential, so the hub a shim starts must not inherit it.
+HUB_KEY_ENV = "TOOLREGISTRY_HUB_KEY"
+
+
+def _child_environment() -> dict[str, str]:
+    """Return the environment for a hub this process starts.
+
+    A shim starts a hub as its child, so an inherited ``TOOLREGISTRY_HUB_KEY``
+    would give the hub a credential it has no use for and every process it
+    starts would carry.  Everything else is inherited unchanged.
+    """
+    environment = dict(os.environ)
+    environment.pop(HUB_KEY_ENV, None)
+    return environment
+
+
 def _spawn_hub(
     options: Mapping[str, Any],
     *,
@@ -660,6 +677,7 @@ def _spawn_hub(
     command = _hub_command() + _run_arguments(argv, name, options, idle_timeout)
     log_path = hub_dir() / f"{name}.log"
     ensure_hub_dir()
+    environment = _child_environment()
     descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(descriptor, "ab") as log:
         if os.name == "nt":
@@ -672,6 +690,7 @@ def _spawn_hub(
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 close_fds=True,
+                env=environment,
                 creationflags=creationflags,
             )
         return subprocess.Popen(
@@ -680,6 +699,7 @@ def _spawn_hub(
             stdout=log,
             stderr=subprocess.STDOUT,
             close_fds=True,
+            env=environment,
             start_new_session=True,
         )
 

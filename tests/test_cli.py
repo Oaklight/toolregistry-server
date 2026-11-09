@@ -270,6 +270,8 @@ class TestMain:
             tools_list_ttl_ms=None,
             tools_list_cache_scope=None,
             allow_operator_token=False,
+            client_concurrency=8,
+            concurrency_timeout=30.0,
             config_reload=False,
             write_config=True,
         )
@@ -353,6 +355,8 @@ class TestMain:
             tools_list_ttl_ms=None,
             tools_list_cache_scope=None,
             allow_operator_token=False,
+            client_concurrency=8,
+            concurrency_timeout=30.0,
             config_reload=False,
             write_config=True,
         )
@@ -1455,3 +1459,46 @@ class TestClientIsolationFlags:
         config = mock_run.call_args.args[0]
         assert config.key_file == "/tmp/hub.key"
         assert config.key is None
+
+
+class TestMCPQuotaFlags:
+    """The standalone mcp server throttles a network transport (#145)."""
+
+    def test_defaults(self):
+        args = CLI().create_parser().parse_args(["mcp"])
+
+        assert args.client_concurrency == 8
+        assert args.concurrency_timeout == 30.0
+
+    def test_values_are_forwarded(self):
+        with patch("toolregistry_server.app.App.serve_mcp") as mock_serve:
+            main(
+                [
+                    "mcp",
+                    "--config",
+                    "tools.yaml",
+                    "--transport",
+                    "streamable-http",
+                    "--client-concurrency",
+                    "2",
+                    "--concurrency-timeout",
+                    "5",
+                ]
+            )
+
+        kwargs = mock_serve.call_args.kwargs
+        assert kwargs["client_concurrency"] == 2
+        assert kwargs["concurrency_timeout"] == 5.0
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--client-concurrency", "0"],
+            ["--concurrency-timeout", "0"],
+        ],
+    )
+    def test_nonsense_knobs_are_rejected_by_the_parser(self, flags):
+        with pytest.raises(SystemExit) as exc:
+            main(["mcp", "--config", "tools.yaml", *flags])
+
+        assert exc.value.code == 2

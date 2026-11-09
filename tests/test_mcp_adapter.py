@@ -2438,3 +2438,53 @@ class TestDeclaredHintsAreTheDefault:
         annotations = tools["tagged_reader"].annotations
         assert get_field(annotations, "read_only_hint", "readOnlyHint") is True
         assert get_field(annotations, "destructive_hint", "destructiveHint") is False
+
+
+# ---------------------------------------------------------------------------
+# Per-client concurrency wiring (#145)
+# ---------------------------------------------------------------------------
+
+
+class TestClientQuotaWiring:
+    """The standalone server throttles a network transport per client."""
+
+    @staticmethod
+    def _adapter(monkeypatch, table, **kwargs):
+        from toolregistry_server.adapters.mcp import MCPAdapter
+
+        captured = {}
+        monkeypatch.setattr(
+            MCPAdapter, "run", lambda self, **run_kwargs: captured.update(adapter=self)
+        )
+        MCPAdapter.create_and_run(table, **kwargs)
+        return captured["adapter"]
+
+    def test_a_network_transport_gets_a_limiter(
+        self, route_table_with_tools, monkeypatch
+    ):
+        adapter = self._adapter(
+            monkeypatch,
+            route_table_with_tools,
+            transport="streamable-http",
+            client_concurrency=3,
+            concurrency_timeout=5,
+        )
+
+        assert adapter._client_limiter.default_limit == 3  # noqa: SLF001
+        assert adapter._client_limiter.timeout == 5.0  # noqa: SLF001
+
+    def test_stdio_runs_unthrottled(self, route_table_with_tools, monkeypatch):
+        adapter = self._adapter(
+            monkeypatch, route_table_with_tools, transport="stdio", client_concurrency=3
+        )
+
+        assert adapter._client_limiter is None  # noqa: SLF001
+
+    def test_a_bad_limit_fails_at_startup(self, route_table_with_tools, monkeypatch):
+        with pytest.raises(ValueError):
+            self._adapter(
+                monkeypatch,
+                route_table_with_tools,
+                transport="streamable-http",
+                client_concurrency=0,
+            )

@@ -321,3 +321,41 @@ class TestPolicyRefusal:
             )
             is None
         )
+
+
+class TestUntypedPolicy:
+    """A policy core's untyped setter accepted is ignored with one warning."""
+
+    def test_a_duck_typed_policy_is_ignored_and_reported(self, table, monkeypatch):
+        from io import StringIO
+
+        from toolregistry_server import isolation
+        from toolregistry_server._vendor.structlog import (
+            BoundLogger,
+            ConsoleRenderer,
+            PrintLogger,
+            TimeStamper,
+            add_log_level,
+        )
+
+        stream = StringIO()
+        logger = BoundLogger(
+            logger=PrintLogger(file=stream),
+            processors=[add_log_level, TimeStamper(), ConsoleRenderer(colors=False)],
+            context={},
+        )
+        monkeypatch.setattr(isolation, "logger", logger)
+
+        class FakePolicy:
+            def evaluate(self, tool, parameters):  # pragma: no cover - never used
+                raise AssertionError("an untyped policy must not be evaluated")
+
+        table.registry.set_permission_policy(FakePolicy())
+        route = _route(table, "alpha-add")
+
+        assert policy_refusal_sync(table.registry, route, {"a": 1, "b": 2}) is None
+        assert policy_refusal_sync(table.registry, route, {"a": 1, "b": 2}) is None
+
+        output = stream.getvalue()
+        assert output.count("not a PermissionPolicy") == 1
+        assert "FakePolicy" in output
