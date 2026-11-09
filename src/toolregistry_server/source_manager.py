@@ -813,13 +813,18 @@ class SourceManager:
         failures = _invalid_patterns(self.registry, affected)
         if not failures:
             return result, []
+        detail = _redact_url_userinfo(source.url)
         for tool_name, schema_path, pattern, error_name in failures:
             logger.error(
                 f"Dropping tool {tool_name!r} from OpenAPI source "
-                f"{source.url!r}: invalid regex at {schema_path} "
+                f"{detail!r}: invalid regex at {schema_path} "
                 f"({error_name}): {pattern!r}"
             )
         dropped = sorted({name for name, *_ in failures})
+        logger.info(
+            f"Refreshed OpenAPI tools from {detail}: dropped {len(dropped)} "
+            f"tool(s) with an invalid regex: {dropped}"
+        )
         for name in dropped:
             self.registry._unregister(name)  # ty: ignore[unresolved-attribute]
         gone = set(dropped)
