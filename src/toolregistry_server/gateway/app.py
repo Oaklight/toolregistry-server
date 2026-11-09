@@ -1066,6 +1066,11 @@ class GatewayAdapter(Adapter):
         self._host = host
         self._port = port
         self._socket_path = target
+        if target is not None:
+            # Validate before either backend sees the path.  The httpserver
+            # backend unlinks an existing socket without probing it, so a
+            # live listener must be refused here.
+            prepare_unix_socket(target)
         where = f"unix:{target}" if target else f"{host}:{port}"
 
         if self._backend == "httpserver":

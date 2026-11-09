@@ -15,7 +15,10 @@ import time
 
 import httpx
 import pytest
+from toolregistry import ToolRegistry
 
+from toolregistry_server import RouteTable
+from toolregistry_server.gateway import GatewayAdapter
 from toolregistry_server.gateway.unix import prepare_unix_socket
 
 pytestmark = pytest.mark.skipif(
@@ -115,6 +118,35 @@ def _wait_for_mode(path, expected, process, timeout=5):
             return
         time.sleep(0.01)
     raise AssertionError(f"socket mode {mode:#o}, expected {expected:#o}")
+
+
+def test_httpserver_backend_refuses_a_live_listener(tmp_path):
+    """The httpserver backend must not unlink and take over a live socket."""
+    path = tmp_path / "hub.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.listen(1)
+    try:
+        registry = ToolRegistry()
+        gateway = GatewayAdapter.create(
+            RouteTable(registry),
+            backend="httpserver",
+            mcp_enabled=False,
+            sse_enabled=False,
+            admin_enabled=False,
+            socket_path=str(path),
+        )
+        with pytest.raises(ValueError, match="already listening"):
+            gateway.run(socket_path=str(path))
+
+        # The live listener is still there and still accepting.
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(str(path))
+        finally:
+            probe.close()
+    finally:
+        listener.close()
 
 
 _SERVER_SCRIPT = """
