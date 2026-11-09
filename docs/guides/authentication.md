@@ -158,11 +158,17 @@ The key row is read on every request. Revocation and expiry therefore take
 effect on the next request; there is no restart or cache to wait for.
 `last_used_at` records only the latest successful use.
 
-Scoped keys do not receive the `discover_tools` / `call_deferred` proxy pair.
-`call_deferred` can invoke any registered tool by name, so leaving it reachable
-would let a key bypass its scope; both tools are hidden from listings and the
-document and refused on call. They remain available to operator/static-token
-principals. Scope-aware discovery for scoped keys is a follow-up.
+Scoped keys keep the `discover_tools` / `call_deferred` pair, because both
+enforce the key's scope on the tool they act on: discovery results are
+filtered to names the key may call, and `call_deferred` refuses a target
+outside the scope with the same message a direct call to it gets. The pair
+stays visible whatever the key's namespaces are — the proxies are registered
+in the default namespace, and judging them by it would deny discovery to every
+key scoped elsewhere — but an explicit per-tool override for either name still
+decides, so a key that denies them does not see them or reach them. The target
+check reads the live registry rather than the route table, so a tool
+registered while a configuration diff is still applying is judged the same
+way.
 
 ### Python API
 

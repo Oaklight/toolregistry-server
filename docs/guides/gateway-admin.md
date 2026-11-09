@@ -104,13 +104,15 @@ idempotent, and the original revocation time is kept.
 
 ### Scoped keys and deferred tools
 
-!!! note "Current limitation"
-    A scoped key does not see or call the discovery proxies `discover_tools`
-    and `call_deferred`: they are hidden from a scoped `tools/list` and
-    refused on call, on both the MCP and the OpenAPI surface. The proxies can
-    bypass the per-call scope check, so they stay fail-closed until scope-aware
-    discovery lands ([#195](https://github.com/Oaklight/toolregistry-server/issues/195)).
-    Operator and static-token principals are unaffected.
+!!! note "Scoped keys and the discovery proxies"
+    A scoped key keeps `discover_tools` and `call_deferred`, and both enforce
+    its scope on the tool they act on: discovery returns only names the key may
+    call, and a `call_deferred` target outside the scope is refused with the
+    same message a direct call to it gets. The pair stays visible whatever the
+    key's namespaces are — the proxies live in the default namespace — while an
+    explicit per-tool deny for either name still removes it. Operator and
+    static-token principals are unaffected. See
+    [Authentication](authentication.md).
 
 ## Frontends page
 
