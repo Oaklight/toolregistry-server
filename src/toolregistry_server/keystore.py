@@ -65,6 +65,8 @@ from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
 
+from .isolation import validate_concurrency
+
 __all__ = [
     "ApiKeyRecord",
     "ApiKeyStore",
@@ -124,7 +126,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at TEXT NOT NULL,
     expires_at TEXT,
     revoked_at TEXT,
-    last_used_at TEXT
+    last_used_at TEXT,
+    max_concurrency INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_last_used
     ON api_keys(last_used_at DESC);
@@ -134,6 +137,20 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_last_used
 # ---------------------------------------------------------------------------
 # Timestamps
 # ---------------------------------------------------------------------------
+
+
+def _migrate_schema(connection: sqlite3.Connection) -> None:
+    """Add columns introduced after the first release, in place.
+
+    ``CREATE TABLE IF NOT EXISTS`` leaves an existing database untouched, so
+    an older file gains ``max_concurrency`` here instead of failing on the
+    first insert or select.
+    """
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(api_keys)").fetchall()
+    }
+    if "max_concurrency" not in columns:
+        connection.execute("ALTER TABLE api_keys ADD COLUMN max_concurrency INTEGER")
 
 
 def _utcnow() -> datetime:
@@ -414,6 +431,8 @@ class ApiKeyRecord:
         revoked_at: Canonical revocation time, or ``None`` while active.
         last_used_at: Canonical time of the latest successful verification,
             or ``None`` when the key has never been used.
+        max_concurrency: In-flight calls this key may run at once, or
+            ``None`` to use the process ``--client-concurrency``.
     """
 
     id: str
@@ -423,6 +442,7 @@ class ApiKeyRecord:
     expires_at: str | None = None
     revoked_at: str | None = None
     last_used_at: str | None = None
+    max_concurrency: int | None = None
 
     @property
     def revoked(self) -> bool:
@@ -452,6 +472,7 @@ class ApiKeyRecord:
             "expires_at": self.expires_at,
             "revoked_at": self.revoked_at,
             "last_used_at": self.last_used_at,
+            "max_concurrency": self.max_concurrency,
             "active": self.active(),
         }
 
@@ -484,12 +505,15 @@ class Principal:
         scopes: The scope specification.  Ignored when *unrestricted* is set.
         unrestricted: Whether the caller may use every tool.  Static
             ``--tokens`` credentials map here.
+        max_concurrency: The key's in-flight call limit, or ``None`` for the
+            process default.  A static operator token has no override.
     """
 
     key_id: str | None = None
     label: str | None = None
     scopes: ScopeSpec = field(default_factory=ScopeSpec)
     unrestricted: bool = False
+    max_concurrency: int | None = None
 
     @classmethod
     def operator(cls, label: str = "operator") -> Principal:
@@ -526,6 +550,7 @@ class Principal:
             "label": self.label,
             "scopes": self.scopes.to_dict(),
             "unrestricted": self.unrestricted,
+            "max_concurrency": self.max_concurrency,
         }
 
     def token_scopes(self) -> list[str]:
@@ -579,6 +604,7 @@ class ApiKeyStore:
         self._connection.row_factory = sqlite3.Row
         with self._lock:
             self._connection.executescript(_SCHEMA)
+            _migrate_schema(self._connection)
             if database != ":memory:":
                 self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.commit()
@@ -613,6 +639,7 @@ class ApiKeyStore:
         scopes: ScopeSpec | Mapping[str, Any] | Sequence[str] | None = None,
         *,
         expires_at: datetime | str | None = None,
+        max_concurrency: int | None = None,
     ) -> CreatedKey:
         """Create a key and return its one-time secret.
 
@@ -621,16 +648,22 @@ class ApiKeyStore:
             scopes: What the key may call; see :meth:`ScopeSpec.coerce`.
                 ``None`` creates a key that can call nothing.
             expires_at: Optional expiry timestamp.  Must be in the future.
+            max_concurrency: In-flight call limit for this key, or ``None``
+                for the process ``--client-concurrency``.
 
         Returns:
             The stored record and the plaintext secret.
 
         Raises:
-            ValueError: If *label* is empty, or *expires_at* is not in the
-                future.
+            ValueError: If *label* is empty, *expires_at* is not in the
+                future, or *max_concurrency* is not a positive integer.
         """
         if not label or not label.strip():
             raise ValueError("label must not be empty")
+        if max_concurrency is not None:
+            max_concurrency = validate_concurrency(
+                max_concurrency, label="max_concurrency"
+            )
         specification = ScopeSpec.coerce(scopes)
         now_moment = self._clock()
         if now_moment.tzinfo is None:
@@ -652,12 +685,14 @@ class ApiKeyStore:
             expires,
             None,
             None,
+            max_concurrency,
         )
         with self._lock:
             self._connection.execute(
                 "INSERT INTO api_keys (id, label, secret_digest, secret_hash, "
-                "scopes, created_at, expires_at, revoked_at, last_used_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "scopes, created_at, expires_at, revoked_at, last_used_at, "
+                "max_concurrency) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
             self._connection.commit()
@@ -736,6 +771,34 @@ class ApiKeyStore:
         assert row is not None
         return _row_to_record(row)
 
+    def set_max_concurrency(self, key_id: str, value: int | None) -> ApiKeyRecord:
+        """Set or clear one key's in-flight call limit.
+
+        Args:
+            key_id: The key to update.
+            value: A positive limit, or ``None`` to use the process default.
+
+        Returns:
+            The updated record.
+
+        Raises:
+            KeyError: If *key_id* is unknown.
+            ValueError: If *value* is not a positive integer or ``None``.
+        """
+        if value is not None:
+            value = validate_concurrency(value, label="max_concurrency")
+        with self._lock:
+            if self._select_id(key_id) is None:
+                raise KeyError(key_id)
+            self._connection.execute(
+                "UPDATE api_keys SET max_concurrency = ? WHERE id = ?",
+                (value, key_id),
+            )
+            self._connection.commit()
+            row = self._select_id(key_id)
+        assert row is not None
+        return _row_to_record(row)
+
     # -- authentication ----------------------------------------------------
 
     def verify(self, secret: str | None) -> Principal | None:
@@ -786,7 +849,12 @@ class ApiKeyStore:
             return None
         self._remember(digest, key_id)
         record = _row_to_record(fresh)
-        return Principal(key_id=record.id, label=record.label, scopes=record.scopes)
+        return Principal(
+            key_id=record.id,
+            label=record.label,
+            scopes=record.scopes,
+            max_concurrency=record.max_concurrency,
+        )
 
     # Alias with the verb used by the existing authentication module.
     authenticate = verify
@@ -855,6 +923,7 @@ def _row_to_record(row: sqlite3.Row) -> ApiKeyRecord:
         expires_at=row["expires_at"],
         revoked_at=row["revoked_at"],
         last_used_at=row["last_used_at"],
+        max_concurrency=row["max_concurrency"],
     )
 
 

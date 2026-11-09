@@ -26,7 +26,7 @@ Note:
 """
 
 import asyncio
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..._vendor.structlog import get_logger
 from .. import Adapter
@@ -54,6 +54,8 @@ def route_table_to_mcp_server(
     version: str | None = None,
     instructions: str | None = None,
     principal_resolver: "PrincipalResolver | None" = None,
+    refuse_operator_token: bool = False,
+    client_limiter: Any | None = None,
 ) -> "Server":
     """Create an MCP low-level server from a RouteTable.
 
@@ -73,6 +75,8 @@ def route_table_to_mcp_server(
             deferred-tool hint when discovery is served.
         principal_resolver: Optional API key resolver, forwarded to the
             adapter.  ``None`` keeps the historical unscoped behaviour.
+        refuse_operator_token: Refuse static-token principals on MCP.
+        client_limiter: Per-principal call budget, forwarded to the adapter.
 
     Returns:
         A configured MCP Server instance.
@@ -90,6 +94,8 @@ def route_table_to_mcp_server(
         version=version,
         instructions=instructions,
         principal_resolver=principal_resolver,
+        refuse_operator_token=refuse_operator_token,
+        client_limiter=client_limiter,
     )
 
 
@@ -221,6 +227,9 @@ class MCPAdapter(Adapter):
         principal_resolver: Optional resolver for inbound API keys.  When
             set, ``tools/list`` is filtered and ``tools/call`` is scoped;
             ``None`` keeps static-token behaviour unchanged.
+        allow_operator_token: Accept static ``--tokens`` credentials when a
+            key store is configured.  Without it a key-scoped MCP endpoint
+            refuses them, because every client would share one principal.
     """
 
     def __init__(
@@ -233,6 +242,7 @@ class MCPAdapter(Adapter):
         version: str | None = None,
         instructions: str | None = None,
         principal_resolver: "PrincipalResolver | None" = None,
+        allow_operator_token: bool = False,
     ) -> None:
         super().__init__(route_table)
         self._principal_resolver = principal_resolver
@@ -244,6 +254,11 @@ class MCPAdapter(Adapter):
             version=version,
             instructions=instructions,
             principal_resolver=principal_resolver,
+            refuse_operator_token=bool(
+                not allow_operator_token
+                and principal_resolver is not None
+                and getattr(principal_resolver, "has_keys", False)
+            ),
         )
 
     @property
@@ -373,6 +388,14 @@ class MCPAdapter(Adapter):
             ),
         )
         parser.add_argument(
+            "--allow-operator-token",
+            action="store_true",
+            help=(
+                "Accept static --tokens credentials on MCP when --keys-db is "
+                "set. Without this flag a key-scoped MCP endpoint refuses them"
+            ),
+        )
+        parser.add_argument(
             "--server-url",
             type=str,
             default=None,
@@ -439,6 +462,7 @@ class MCPAdapter(Adapter):
             version=identity.version,
             instructions=kwargs.pop("instructions", None),
             principal_resolver=principal_resolver,
+            allow_operator_token=kwargs.pop("allow_operator_token", False),
         )
         adapter.run(**kwargs)
 

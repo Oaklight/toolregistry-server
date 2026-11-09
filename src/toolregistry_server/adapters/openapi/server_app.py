@@ -55,6 +55,7 @@ from ..._vendor.httpserver import (
 )
 from ..._vendor.structlog import get_logger
 from ...auth import verify_token
+from ...isolation import identity_header, policy_refusal, principal_key
 from ...regex_guard import (
     DEFAULT_REGEX_BUDGET,
     DEFAULT_REGEX_TIMEOUT,
@@ -210,6 +211,24 @@ def _proxy_refusal(
     )
 
 
+async def _authorisation_refusal(
+    request: Any,
+    tool_name: str,
+    arguments: Any,
+    registry: Any,
+    principal_resolver: Any,
+    route: Any,
+) -> Response | None:
+    """Return the response for a call the scope or the process policy refuses."""
+    refusal = _proxy_refusal(
+        request, tool_name, arguments, registry, principal_resolver
+    )
+    if refusal is not None:
+        return refusal
+    message = await policy_refusal(registry, route, arguments)
+    return None if message is None else _error(403, message)
+
+
 def _filtered_result(
     request: Any,
     tool_name: str,
@@ -269,8 +288,13 @@ def _make_tool_handler(
                 return _error(status, getattr(exc, "detail", str(exc)))
             raise
 
-        refusal = _proxy_refusal(
-            request, tool_name, arguments, route_table.registry, principal_resolver
+        refusal = await _authorisation_refusal(
+            request,
+            tool_name,
+            arguments,
+            route_table.registry,
+            principal_resolver,
+            current,
         )
         if refusal is not None:
             return refusal
@@ -555,21 +579,44 @@ def _add_auth(
     async def _require_token(request) -> Response | None:
         header = request.headers.get("authorization", "")
         scheme, _, credential = header.partition(" ")
+        principal = None
         if scheme.lower() != "bearer" or not credential:
             response = _error(401, "Not authenticated")
         elif principal_resolver is not None:
             principal = await asyncio.to_thread(principal_resolver.resolve, credential)
-            if principal is None:
-                response = _error(401, "Invalid authentication token")
-            else:
-                request.state.principal = principal
-                return None
+            response = (
+                None
+                if principal is not None
+                else _error(401, "Invalid authentication token")
+            )
         elif not verify_token(credential, tokens):
             response = _error(401, "Invalid authentication token")
         else:
-            return None
-        response.headers["WWW-Authenticate"] = "Bearer"
-        return response
+            response = None
+        if response is not None:
+            response.headers["WWW-Authenticate"] = "Bearer"
+            return response
+        if principal_resolver is not None:
+            request.state.principal = principal
+        claimed = identity_header(getattr(request, "headers", None))
+        if claimed is not None:
+            # Identity comes only from the credential; a shared server must
+            # not let a client name itself, its cwd or its environment.
+            logger.warning(
+                "refused a reserved client header",
+                header=claimed,
+                client_key=(
+                    principal_key(principal)
+                    if principal is not None
+                    else "static-token"
+                ),
+                path=getattr(request, "path", ""),
+            )
+            return _error(
+                400,
+                f"{claimed} is not accepted: identity comes from the bearer credential",
+            )
+        return None
 
 
 _ETAG_PATHS = frozenset({"/tools", "/openapi.json"})

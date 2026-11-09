@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import weakref
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -231,7 +232,7 @@ class TestTransportSelection:
             httpx = http
 
             @staticmethod
-            def streamablehttp_client(url, httpx_client_factory=None):
+            def streamablehttp_client(url, headers=None, httpx_client_factory=None):
                 return url, httpx_client_factory
 
         monkeypatch.setattr(shim, "_streamable_http_module", lambda: FakeModule)
@@ -244,6 +245,44 @@ class TestTransportSelection:
         assert client.headers == {"x": "1"}
         assert client.timeout == 5.0
         assert "auth" in client.__dict__
+
+    def test_new_style_client_sends_the_hub_credential(self, monkeypatch):
+        http = _FakeHttp()
+        calls = []
+
+        class FakeModule:
+            httpx = http
+
+            @staticmethod
+            def streamable_http_client(url, http_client=None):
+                calls.append((url, http_client))
+                return "new-transport"
+
+        monkeypatch.setattr(shim, "_streamable_http_module", lambda: FakeModule)
+
+        assert (
+            shim.open_hub_transport("http://x/mcp", None, "trk_hub") == "new-transport"
+        )
+        assert calls[0][1].headers == {"Authorization": "Bearer trk_hub"}
+
+    def test_old_style_client_forwards_the_hub_credential(self, monkeypatch):
+        http = _FakeHttp()
+        captured = {}
+
+        class FakeModule:
+            httpx = http
+
+            @staticmethod
+            def streamablehttp_client(url, headers=None, httpx_client_factory=None):
+                captured["headers"] = headers
+                return "old-transport"
+
+        monkeypatch.setattr(shim, "_streamable_http_module", lambda: FakeModule)
+
+        assert (
+            shim.open_hub_transport("http://x/mcp", None, "trk_hub") == "old-transport"
+        )
+        assert captured["headers"] == {"Authorization": "Bearer trk_hub"}
 
     def test_an_sdk_without_a_streamable_client_is_refused(self, monkeypatch):
         class FakeModule:
@@ -258,6 +297,31 @@ class TestTransportSelection:
         import httpx
 
         assert shim._sdk_http_module(SimpleNamespace()) is httpx
+
+
+class TestShimCredential:
+    """The key the shim presents comes from the config, never a header."""
+
+    def test_an_explicit_key_wins(self):
+        assert _config(key="trk_inline").credential() == "trk_inline"
+
+    def test_a_key_file_is_read_and_stripped(self, tmp_path):
+        path = tmp_path / "hub.key"
+        path.write_text("trk_file\n", encoding="utf-8")
+        assert _config(key_file=str(path)).credential() == "trk_file"
+
+    def test_a_missing_key_file_is_a_config_error(self, tmp_path):
+        with pytest.raises(shim.ShimError, match="key file"):
+            _config(key_file=str(tmp_path / "missing")).credential()
+
+    def test_an_empty_key_file_is_a_config_error(self, tmp_path):
+        path = tmp_path / "hub.key"
+        path.write_text("\n", encoding="utf-8")
+        with pytest.raises(shim.ShimError, match="empty"):
+            _config(key_file=str(path)).credential()
+
+    def test_without_a_key_nothing_is_sent(self):
+        assert _config().credential() is None
 
 
 class TestHubConnectionWithoutAHub:
@@ -546,6 +610,7 @@ class TestALostConnection:
 
 
 _HUB_SCRIPT = """
+import os
 import sys
 
 from toolregistry import ToolRegistry
@@ -565,6 +630,7 @@ options = {
     "registry": registry,
     "host": "127.0.0.1",
     "port": 0,
+    "keys_db": os.path.join(os.environ["TOOLREGISTRY_HOME"], "keys.db"),
 }
 if len(sys.argv) > 2:
     options["socket_path"] = sys.argv[2]
@@ -614,6 +680,18 @@ def _terminate(process: subprocess.Popen) -> None:
         process.wait(timeout=10)
 
 
+def _create_hub_key(home) -> str:
+    """Create the key a test shim presents to its hub."""
+    from toolregistry_server.keystore import ApiKeyStore
+
+    store = ApiKeyStore(Path(home) / "keys.db")
+    try:
+        created = store.create("shim-test", {"namespaces": ["*"]})
+        return created.secret
+    finally:
+        store.close()
+
+
 def _text_of(result) -> str:
     return "".join(block.text for block in result.content)
 
@@ -621,13 +699,21 @@ def _text_of(result) -> str:
 class TestShimAgainstARealHub:
     """A real gateway serves the shim; stopping it degrades cleanly."""
 
-    async def test_a_stale_document_starts_a_hub_through_ensure(self, tmp_path):
+    async def test_a_stale_document_starts_a_hub_through_ensure(
+        self, tmp_path, isolated_home
+    ):
         """A document naming a dead address is "no hub"; the shim starts one."""
         config = tmp_path / "tools.yaml"
         config.write_text("tools: []\n", encoding="utf-8")
         write_endpoint(_tcp_endpoint(name="shim-spawn", port=_unused_port()))
         connection = shim.HubConnection(
-            shim.ShimConfig(name="shim-spawn", config_path=str(config), spawn=True)
+            shim.ShimConfig(
+                name="shim-spawn",
+                config_path=str(config),
+                spawn=True,
+                keys_db=str(Path(isolated_home) / "keys.db"),
+                key=_create_hub_key(isolated_home),
+            )
         )
         try:
             assert await connection.list_tools() == []
@@ -636,9 +722,11 @@ class TestShimAgainstARealHub:
             await connection.close()
             local_hub.stop_hub("shim-spawn", timeout=10)
 
-    async def test_a_tool_call_goes_through_the_hub(self):
+    async def test_a_tool_call_goes_through_the_hub(self, isolated_home):
         process = _start_hub("shim-tcp")
-        connection = shim.HubConnection(_config(name="shim-tcp"))
+        connection = shim.HubConnection(
+            _config(name="shim-tcp", key=_create_hub_key(isolated_home))
+        )
         try:
             await asyncio.to_thread(_wait_for_endpoint, "shim-tcp", process)
             await connection.start()
@@ -652,9 +740,11 @@ class TestShimAgainstARealHub:
             await connection.close()
             _terminate(process)
 
-    async def test_stopping_the_hub_makes_calls_fail_once(self):
+    async def test_stopping_the_hub_makes_calls_fail_once(self, isolated_home):
         process = _start_hub("shim-stop")
-        connection = shim.HubConnection(_config(name="shim-stop"))
+        connection = shim.HubConnection(
+            _config(name="shim-stop", key=_create_hub_key(isolated_home))
+        )
         try:
             await asyncio.to_thread(_wait_for_endpoint, "shim-stop", process)
             await connection.start()
@@ -672,10 +762,14 @@ class TestShimAgainstARealHub:
             _terminate(process)
 
     @pytest.mark.skipif(os.name == "nt", reason="local hub is POSIX-only")
-    async def test_the_hub_is_reachable_over_a_unix_socket(self, tmp_path):
+    async def test_the_hub_is_reachable_over_a_unix_socket(
+        self, tmp_path, isolated_home
+    ):
         sock = str(tmp_path / "hub.sock")
         process = _start_hub("shim-uds", sock)
-        connection = shim.HubConnection(_config(name="shim-uds"))
+        connection = shim.HubConnection(
+            _config(name="shim-uds", key=_create_hub_key(isolated_home))
+        )
         try:
             endpoint = await asyncio.to_thread(_wait_for_endpoint, "shim-uds", process)
             assert endpoint.transport == "unix"

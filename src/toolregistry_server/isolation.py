@@ -1,0 +1,513 @@
+"""Per-client isolation for a shared gateway (#145).
+
+A hub serves several clients at once, so three things must stay per client:
+
+* **Identity** comes only from the bearer credential.  A request that claims
+  an identity, working directory or environment through a header is refused:
+  a shared hub must not let a client name itself, and the shim cannot vouch
+  for headers it forwards.
+* **Quota** is one in-flight call budget per principal, so one client cannot
+  consume every worker.  A client key may carry a lower ``max_concurrency``;
+  the process default stays the ceiling.
+* **Policy** is the process permission policy.  A key scope can narrow it
+  (an allow requires both) but never widen it: the policy is evaluated on
+  every call, and ``ASK`` without a handler is a refusal, not an allow.
+
+Counters are kept per principal for the gateway admin extension.  They are
+plain integers updated on the event loop, so no lock is needed.
+
+Nothing here reads local files: the shim connects without the hub's lock, so
+every decision is made from the authenticated connection.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import math
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Any
+
+from ._vendor.structlog import get_logger
+from .scoped_discovery import CALL_DEFERRED_TOOL_NAME, TARGET_ARGUMENT, find_tool
+
+logger = get_logger()
+
+#: In-flight calls one principal may have when its key sets no override.
+DEFAULT_CLIENT_CONCURRENCY = 8
+#: Seconds a call waits for a slot before it is refused.
+DEFAULT_CONCURRENCY_TIMEOUT = 30.0
+#: JSON-RPC server-error code used for "too many concurrent calls".
+BUSY_ERROR_CODE = -32000
+
+#: Headers that claim an identity, working directory or environment.  They
+#: are refused rather than ignored or forwarded: the credential is the only
+#: identity a shared hub accepts.  The list is exact, not a prefix rule, so
+#: an unrelated ``x-client-version`` keeps working.
+RESERVED_CLIENT_HEADERS = frozenset(
+    {
+        "x-client-cwd",
+        "x-client-env",
+        "x-client-environment",
+        "x-client-id",
+        "x-client-identity",
+        "x-forwarded-user",
+        "x-remote-user",
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def validate_concurrency(value: Any, *, label: str = "client concurrency") -> int:
+    """Return *value* as a positive concurrency limit.
+
+    Args:
+        value: The configured limit.
+        label: Name used in the error message.
+
+    Returns:
+        The limit as an ``int``.
+
+    Raises:
+        ValueError: If *value* is not an integer of at least one.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be an integer, got {value!r}")
+    if value < 1:
+        raise ValueError(f"{label} must be at least 1, got {value!r}")
+    return value
+
+
+def validate_timeout(value: Any, *, label: str = "concurrency timeout") -> float:
+    """Return *value* as a positive, finite number of seconds.
+
+    Args:
+        value: The configured timeout.
+        label: Name used in the error message.
+
+    Returns:
+        The timeout as a ``float``.
+
+    Raises:
+        ValueError: If *value* is not a finite number greater than zero.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number of seconds, got {value!r}")
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"{label} must be a positive number of seconds, got {value!r}")
+    return seconds
+
+
+# ---------------------------------------------------------------------------
+# Identity headers
+# ---------------------------------------------------------------------------
+
+
+def identity_header(headers: Any) -> str | None:
+    """Return the reserved header a request carries, lowercased, if any.
+
+    Args:
+        headers: A case-insensitive mapping (Starlette), a plain mapping, or
+            the raw ``(name, value)`` pairs of an ASGI scope.
+
+    Returns:
+        The first reserved header name found, or ``None``.
+    """
+    if not headers:
+        return None
+    items = headers.items() if hasattr(headers, "items") else headers
+    try:
+        iterator = iter(items)
+    except TypeError:
+        return None
+    for name, _value in iterator:
+        if isinstance(name, bytes):
+            name = name.decode("latin-1", "replace")
+        lowered = str(name).lower()
+        if lowered in RESERVED_CLIENT_HEADERS:
+            return lowered
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Principal helpers
+# ---------------------------------------------------------------------------
+
+
+def principal_key(principal: Any) -> str:
+    """Return the accounting key for *principal*.
+
+    A stored key is identified by its id; a static token (or any principal
+    without a key row) falls back to its label, so operators and anonymous
+    callers each get their own budget.
+
+    Args:
+        principal: The authenticated caller.
+
+    Returns:
+        A stable key for the limiter and the counters.
+    """
+    key_id = getattr(principal, "key_id", None)
+    if key_id:
+        return str(key_id)
+    label = getattr(principal, "label", None)
+    return f"label:{label}" if label else "anonymous"
+
+
+def principal_client_id(principal: Any) -> str | None:
+    """Return the human-readable client name for *principal*, if any."""
+    label = getattr(principal, "label", None)
+    return str(label) if label else None
+
+
+def operator_refusal(principal: Any, *, allow_operator: bool) -> str | None:
+    """Return why an operator token may not use MCP, or ``None``.
+
+    Static bearer tokens are unscoped operator credentials.  Once a key
+    store is in use, a shared hub accepts client keys only; an operator
+    token would be a credential every client could share.  The refusal is
+    configurable so a deployment that has not adopted keys keeps working.
+
+    Args:
+        principal: The resolved principal.
+        allow_operator: Whether the deployment opted back in.
+
+    Returns:
+        The refusal message, or ``None``.
+    """
+    if allow_operator:
+        return None
+    if principal is not None and getattr(principal, "unrestricted", False):
+        return (
+            "operator tokens are not accepted on MCP requests; use a client "
+            "key from the key store, or start the server with "
+            "--allow-operator-token"
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Quota
+# ---------------------------------------------------------------------------
+
+
+class ClientBusyTimeout(RuntimeError):
+    """A call waited for its client's slot longer than allowed."""
+
+    def __init__(self, client_key: str, limit: int, timeout: float) -> None:
+        self.client_key = client_key
+        self.limit = limit
+        self.timeout = timeout
+        super().__init__(
+            f"too many concurrent calls for client {client_key!r}: "
+            f"{limit} in flight, waited {timeout:g}s for a slot"
+        )
+
+
+@dataclass
+class _Counters:
+    calls: int = 0
+    errors: int = 0
+    active: int = 0
+    queued: int = 0
+
+
+@dataclass
+class _ClientState:
+    client_id: str | None
+    key_id: str | None
+    limit: int
+    counters: _Counters = field(default_factory=_Counters)
+    semaphore: asyncio.Semaphore | None = None
+
+
+class ClientLimiter:
+    """One in-flight call budget per principal.
+
+    Args:
+        default_limit: Calls a principal may run at once when its key sets
+            no ``max_concurrency``.
+        timeout: Seconds a call waits for a slot before it fails.
+
+    Raises:
+        ValueError: If *default_limit* or *timeout* is out of range.
+    """
+
+    def __init__(
+        self,
+        default_limit: int = DEFAULT_CLIENT_CONCURRENCY,
+        timeout: float = DEFAULT_CONCURRENCY_TIMEOUT,
+    ) -> None:
+        self._default = validate_concurrency(default_limit)
+        self._timeout = validate_timeout(timeout)
+        self._clients: dict[str, _ClientState] = {}
+
+    @property
+    def default_limit(self) -> int:
+        """The limit used when the principal's key sets no override."""
+        return self._default
+
+    @property
+    def timeout(self) -> float:
+        """Seconds a call may wait for a slot."""
+        return self._timeout
+
+    def limit_for(self, principal: Any) -> int:
+        """Return the concurrency limit that applies to *principal*.
+
+        The process value is the ceiling.  A key's ``max_concurrency`` can
+        narrow it, never raise it: an operator grants a client less of the
+        shared budget, and the process flag stays the deployment's bound.
+        """
+        override = getattr(principal, "max_concurrency", None)
+        if (
+            isinstance(override, int)
+            and not isinstance(override, bool)
+            and override > 0
+        ):
+            return min(override, self._default)
+        return self._default
+
+    def _state_for(self, principal: Any) -> tuple[str, _ClientState]:
+        key = principal_key(principal)
+        limit = self.limit_for(principal)
+        state = self._clients.get(key)
+        if state is None:
+            state = _ClientState(
+                client_id=principal_client_id(principal),
+                key_id=getattr(principal, "key_id", None),
+                limit=limit,
+            )
+            self._clients[key] = state
+        if state.limit != limit or state.semaphore is None:
+            # A changed override takes effect for calls that start now.
+            state.limit = limit
+            state.semaphore = asyncio.Semaphore(limit)
+        return key, state
+
+    @asynccontextmanager
+    async def slot(self, principal: Any) -> AsyncIterator[None]:
+        """Hold one slot for *principal* for the duration of a call.
+
+        Args:
+            principal: The authenticated caller.
+
+        Raises:
+            ClientBusyTimeout: If no slot opens within the configured wait.
+        """
+        key, state = self._state_for(principal)
+        semaphore = state.semaphore
+        assert semaphore is not None  # set by _state_for
+        counters = state.counters
+        counters.queued += 1
+        try:
+            try:
+                await asyncio.wait_for(semaphore.acquire(), self._timeout)
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                counters.errors += 1
+                raise ClientBusyTimeout(key, state.limit, self._timeout) from exc
+        finally:
+            counters.queued -= 1
+        counters.active += 1
+        counters.calls += 1
+        try:
+            yield
+        except BaseException:
+            counters.errors += 1
+            raise
+        finally:
+            counters.active -= 1
+            semaphore.release()
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Return one record per principal seen, sorted by client key."""
+        return [
+            {
+                "client_key": key,
+                "client_id": state.client_id,
+                "key_id": state.key_id,
+                "limit": state.limit,
+                "calls": state.counters.calls,
+                "errors": state.counters.errors,
+                "active": state.counters.active,
+                "queued": state.counters.queued,
+            }
+            for key, state in sorted(self._clients.items())
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Process permission policy
+# ---------------------------------------------------------------------------
+
+
+async def policy_refusal(
+    registry: Any, route: Any, arguments: Mapping[str, Any]
+) -> str | None:
+    """Return why the process permission policy refuses *route*, or ``None``.
+
+    The key scope and the process policy both have to allow a call.  A
+    configured policy therefore applies to every frontend: a rule that one
+    frontend bypassed would be no rule at all.  ``ASK`` goes through the
+    registry's handler when one exists; otherwise it resolves to the
+    registry fallback, which defaults to ``DENY``.
+
+    ``call_deferred`` is judged twice: once as itself, and once as the tool
+    it will invoke, because core runs that tool below the route this check
+    sees.
+
+    Args:
+        registry: The live ``ToolRegistry``.
+        route: The route about to be called.
+        arguments: The validated call arguments.
+
+    Returns:
+        A refusal message naming the tool and the reason, or ``None``.
+    """
+    policy = _permission_policy(registry)
+    if policy is None:
+        return None
+    resolver = getattr(registry, "_aresolve_permission", None)
+    for tool, parameters, name in _evaluations(registry, route, arguments):
+        if resolver is not None:
+            result = await resolver(tool, parameters)
+        else:  # pragma: no cover - all supported cores expose the helper
+            result = _evaluate_policy(registry, policy, tool, parameters)
+        message = _denial(name, policy, tool, parameters, result)
+        if message is not None:
+            return message
+    return None
+
+
+def policy_refusal_sync(
+    registry: Any, route: Any, arguments: Mapping[str, Any]
+) -> str | None:
+    """Synchronous counterpart to :func:`policy_refusal`.
+
+    A synchronous frontend cannot await the registry's async helper, so this
+    uses the synchronous one.  Both reach the same decision: an ``ASK`` is
+    answered by the handler when one is configured, else by the fallback.
+    """
+    policy = _permission_policy(registry)
+    if policy is None:
+        return None
+    resolver = getattr(registry, "_resolve_permission", None)
+    for tool, parameters, name in _evaluations(registry, route, arguments):
+        if resolver is not None:
+            result = resolver(tool, parameters)
+        else:  # pragma: no cover - all supported cores expose the helper
+            result = _evaluate_policy(registry, policy, tool, parameters)
+        message = _denial(name, policy, tool, parameters, result)
+        if message is not None:
+            return message
+    return None
+
+
+def _evaluations(
+    registry: Any, route: Any, arguments: Mapping[str, Any]
+) -> list[tuple[Any, dict[str, Any], str]]:
+    """Return every ``(tool, parameters, name)`` a call must satisfy.
+
+    A direct call has one: the route's tool.  ``call_deferred`` has two,
+    because its argument names a tool that core invokes directly.
+    """
+    pairs: list[tuple[Any, dict[str, Any], str]] = []
+    tool = getattr(route, "tool", None)
+    if tool is not None:
+        name = str(getattr(route, "tool_name", getattr(tool, "name", "tool")))
+        pairs.append((tool, dict(arguments), name))
+    proxied = _deferred_target(registry, route, arguments)
+    if proxied is not None:
+        pairs.append(proxied)
+    return pairs
+
+
+def _deferred_target(
+    registry: Any, route: Any, arguments: Mapping[str, Any]
+) -> tuple[Any, dict[str, Any], str] | None:
+    """Return the tool ``call_deferred`` will invoke, with its arguments."""
+    if getattr(route, "tool_name", None) != CALL_DEFERRED_TOOL_NAME:
+        return None
+    if not isinstance(arguments, Mapping):
+        return None
+    target_name = arguments.get(TARGET_ARGUMENT)
+    if not isinstance(target_name, str) or not target_name:
+        return None
+    tool = find_tool(registry, target_name)
+    if tool is None:
+        return None
+    parameters = {
+        key: value for key, value in arguments.items() if key != TARGET_ARGUMENT
+    }
+    return tool, parameters, str(getattr(tool, "name", target_name))
+
+
+def _denial(
+    name: str, policy: Any, tool: Any, parameters: dict[str, Any], result: Any
+) -> str | None:
+    """Turn a permission result into a refusal message, or ``None``."""
+    if _is_allow(result):
+        return None
+    message = f"Tool {name!r} is denied by the process permission policy"
+    reason = _policy_reason(policy, tool, parameters)
+    return f"{message}: {reason}" if reason else message
+
+
+def _permission_policy(registry: Any) -> Any:
+    getter = getattr(registry, "get_permission_policy", None)
+    return getter() if getter is not None else None
+
+
+def _is_allow(result: Any) -> bool:
+    """Whether a permission result is an allow."""
+    return getattr(result, "value", result) == "allow"
+
+
+def _evaluate_policy(
+    registry: Any, policy: Any, tool: Any, parameters: dict[str, Any]
+) -> Any:
+    """Evaluate *policy* without core's handler bridge (fallback path)."""
+    from toolregistry.permissions import PermissionResult
+
+    outcome = policy.evaluate(tool, parameters)
+    result = outcome if isinstance(outcome, PermissionResult) else outcome.result
+    if result is not PermissionResult.ASK:
+        return result
+    handler = policy.handler or registry.get_permission_handler()
+    if handler is not None:  # pragma: no cover - handled by the registry helper
+        return result
+    fallback = getattr(registry, "permission_fallback", PermissionResult.DENY)
+    return PermissionResult.DENY if fallback is PermissionResult.ASK else fallback
+
+
+def _policy_reason(policy: Any, tool: Any, parameters: dict[str, Any]) -> str:
+    """Return the matched rule's reason, if the policy has one."""
+    try:
+        outcome = policy.evaluate(tool, parameters)
+    except Exception:  # pragma: no cover - a policy must not break a refusal
+        return ""
+    return str(getattr(outcome, "reason", "") or "")
+
+
+__all__ = [
+    "BUSY_ERROR_CODE",
+    "DEFAULT_CLIENT_CONCURRENCY",
+    "DEFAULT_CONCURRENCY_TIMEOUT",
+    "RESERVED_CLIENT_HEADERS",
+    "ClientBusyTimeout",
+    "ClientLimiter",
+    "identity_header",
+    "operator_refusal",
+    "policy_refusal",
+    "policy_refusal_sync",
+    "principal_client_id",
+    "principal_key",
+    "validate_concurrency",
+    "validate_timeout",
+]

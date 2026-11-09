@@ -30,6 +30,7 @@ import weakref
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .. import __version__
@@ -66,7 +67,7 @@ class ShimError(RuntimeError):
 
 @dataclass(frozen=True)
 class ShimConfig:
-    """How the shim finds and (optionally) starts its hub.
+    """How the shim finds, authenticates to and (optionally) starts its hub.
 
     Attributes:
         name: Hub name; keeps hubs apart.
@@ -74,6 +75,10 @@ class ShimConfig:
         socket_path: Unix socket the hub listens on, when opting out of TCP.
         connect_timeout: Seconds allowed for one connect + initialize.
         spawn: Whether the shim may start a hub that is not running.
+        keys_db: Key store a hub the shim starts must use.  Hub mode
+            requires one, so a shim that spawns without it cannot connect.
+        key: Bearer key this shim presents to the hub.
+        key_file: File holding the key; read once, at startup.
     """
 
     name: str = DEFAULT_NAME
@@ -81,6 +86,27 @@ class ShimConfig:
     socket_path: str | None = None
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
     spawn: bool = True
+    keys_db: str | None = None
+    key: str | None = None
+    key_file: str | None = None
+
+    def credential(self) -> str | None:
+        """Return the bearer key this shim presents, if one is configured.
+
+        Raises:
+            ShimError: When the key file cannot be read, or is empty.
+        """
+        if self.key:
+            return self.key
+        if not self.key_file:
+            return None
+        try:
+            secret = Path(self.key_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ShimError(f"cannot read the hub key file: {exc}") from exc
+        if not secret:
+            raise ShimError("the hub key file is empty")
+        return secret
 
 
 def _streamable_http_module() -> Any:
@@ -101,24 +127,38 @@ def _sdk_http_module(transport_module: Any) -> Any:
     return importlib.import_module("httpx")
 
 
-def _uds_client(transport_module: Any, socket_path: str) -> Any:
+def _http_client(
+    transport_module: Any, socket_path: str | None, credential: str | None
+) -> Any:
+    """Build the async HTTP client the streamable-HTTP transport uses."""
     http = _sdk_http_module(transport_module)
     # The streamable-HTTP transport keeps a GET stream open, so the client
     # needs the SDK's read timeout (300 s); the library default (5 s) would
     # tear the transport down while the hub is simply quiet.
     timeout = http.Timeout(30.0, read=300.0)
+    headers = {"Authorization": f"Bearer {credential}"} if credential else None
+    if socket_path is None:
+        return http.AsyncClient(headers=headers, timeout=timeout)
     return http.AsyncClient(
-        transport=http.AsyncHTTPTransport(uds=socket_path), timeout=timeout
+        transport=http.AsyncHTTPTransport(uds=socket_path),
+        headers=headers,
+        timeout=timeout,
     )
 
 
-def open_hub_transport(url: str, socket_path: str | None = None) -> Any:
+def open_hub_transport(
+    url: str,
+    socket_path: str | None = None,
+    credential: str | None = None,
+) -> Any:
     """Open the streamable-HTTP transport to a hub.
 
     Args:
         url: MCP endpoint URL (``http://host:port/mcp`` or a placeholder for
             a Unix socket).
         socket_path: Unix socket to connect through, or ``None`` for TCP.
+        credential: Bearer key the hub requires, or ``None`` when the hub is
+            not key-scoped.  The key is only ever sent to the hub's address.
 
     Returns:
         An async context manager yielding ``(read_stream, write_stream)``.
@@ -129,25 +169,33 @@ def open_hub_transport(url: str, socket_path: str | None = None) -> Any:
     module = _streamable_http_module()
     new_style = getattr(module, "streamable_http_client", None)
     if new_style is not None:
-        client = _uds_client(module, socket_path) if socket_path else None
+        client = (
+            _http_client(module, socket_path, credential)
+            if socket_path or credential
+            else None
+        )
         return new_style(url, http_client=client)
 
     old_style = getattr(module, "streamablehttp_client", None)
     if old_style is None:  # pragma: no cover - both names cover the range
         raise ShimError("the installed MCP SDK has no streamable-HTTP client")
+    headers = {"Authorization": f"Bearer {credential}"} if credential else None
     if socket_path is None:
-        return old_style(url)
+        return old_style(url, headers=headers)
 
     def factory(*_args: Any, **kwargs: Any) -> Any:
         allowed = {
             key: kwargs[key] for key in ("headers", "timeout", "auth") if key in kwargs
         }
         http = _sdk_http_module(module)
+        client_headers = allowed.pop("headers", None) or headers
         return http.AsyncClient(
-            transport=http.AsyncHTTPTransport(uds=socket_path), **allowed
+            transport=http.AsyncHTTPTransport(uds=socket_path),
+            headers=client_headers,
+            **allowed,
         )
 
-    return old_style(url, httpx_client_factory=factory)
+    return old_style(url, headers=headers, httpx_client_factory=factory)
 
 
 def endpoint_url(endpoint: HubEndpoint) -> str:
@@ -205,6 +253,7 @@ class HubConnection:
 
     def __init__(self, config: ShimConfig) -> None:
         self._config = config
+        self._credential = config.credential()
         self._session: Any = None
         self._owner: asyncio.Task | None = None
         self._stop: asyncio.Event | None = None
@@ -403,10 +452,13 @@ class HubConnection:
             argv += ["--config", self._config.config_path]
         if self._config.socket_path is not None:
             argv += ["--socket", self._config.socket_path]
-        options = {
+        options: dict[str, Any] = {
             "config_path": self._config.config_path,
             "socket_path": self._config.socket_path,
         }
+        if self._config.keys_db is not None:
+            argv += ["--keys-db", self._config.keys_db]
+            options["keys_db"] = self._config.keys_db
         # stdout is the MCP channel; quiet keeps the endpoint JSON off it.
         local_hub.ensure_hub(
             None,
@@ -516,7 +568,7 @@ class HubConnection:
         stack = AsyncExitStack()
         try:
             streams = await stack.enter_async_context(
-                open_hub_transport(endpoint_url(endpoint), socket)
+                open_hub_transport(endpoint_url(endpoint), socket, self._credential)
             )
             session = await stack.enter_async_context(
                 ClientSession(streams[0], streams[1])

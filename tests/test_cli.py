@@ -1167,6 +1167,9 @@ class TestGatewayCommand:
             admin_token=None,
             admin_token_file=None,
             admin_allow_private_hosts=False,
+            client_concurrency=8,
+            concurrency_timeout=30.0,
+            allow_operator_token=False,
             config_reload=False,
             write_config=True,
         )
@@ -1193,6 +1196,10 @@ class TestLocalHubCommand:
         assert args.idle_timeout == 0.0
         assert args.socket_path is None
         assert args.json_output is False
+        assert args.keys_db is None
+        assert args.client_concurrency == 8
+        assert args.concurrency_timeout == 30.0
+        assert args.allow_operator_token is False
 
     def test_status_accepts_name_and_json(self):
         args = (
@@ -1284,6 +1291,8 @@ class TestHubShimCommand:
         assert args.socket_path is None
         assert args.connect_timeout == 5.0
         assert args.spawn is True
+        assert args.keys_db is None
+        assert args.key_file is None
 
     def test_options(self):
         args = (
@@ -1355,3 +1364,92 @@ class TestHubShimCommand:
             main(["hub-shim"])
 
         assert exc.value.code == 1
+
+
+class TestClientIsolationFlags:
+    """Per-client isolation knobs (#145)."""
+
+    @patch("toolregistry_server.app.App.serve_gateway")
+    def test_gateway_forwards_the_quota_flags(self, mock_serve):
+        main(
+            [
+                "gateway",
+                "--config",
+                "tools.yaml",
+                "--client-concurrency",
+                "2",
+                "--concurrency-timeout",
+                "5",
+                "--allow-operator-token",
+            ]
+        )
+
+        kwargs = mock_serve.call_args.kwargs
+        assert kwargs["client_concurrency"] == 2
+        assert kwargs["concurrency_timeout"] == 5.0
+        assert kwargs["allow_operator_token"] is True
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--client-concurrency", "0"],
+            ["--concurrency-timeout", "0"],
+        ],
+    )
+    def test_nonsense_knobs_are_rejected_by_the_parser(self, flags):
+        with pytest.raises(SystemExit) as exc:
+            main(["gateway", "--config", "tools.yaml", *flags])
+
+        assert exc.value.code == 2
+
+    @patch("toolregistry_server.gateway.local_hub.ensure_hub", return_value=0)
+    def test_local_hub_forwards_the_key_store(self, mock_ensure):
+        main(
+            [
+                "local-hub",
+                "ensure",
+                "--config",
+                "tools.yaml",
+                "--keys-db",
+                "/tmp/keys.db",
+            ]
+        )
+
+        options = mock_ensure.call_args.args[1]
+        assert options["keys_db"] == "/tmp/keys.db"
+
+    @patch("toolregistry_server.gateway.shim.run_stdio", return_value=0)
+    def test_hub_shim_passes_its_key_and_store(self, mock_run, monkeypatch):
+        monkeypatch.delenv("TOOLREGISTRY_HUB_KEY", raising=False)
+        main(
+            [
+                "hub-shim",
+                "--keys-db",
+                "/tmp/keys.db",
+                "--key-file",
+                "/tmp/hub.key",
+            ]
+        )
+
+        config = mock_run.call_args.args[0]
+        assert config.keys_db == "/tmp/keys.db"
+        assert config.key_file == "/tmp/hub.key"
+        assert config.key is None
+
+    @patch("toolregistry_server.gateway.shim.run_stdio", return_value=0)
+    def test_hub_shim_reads_the_key_from_the_environment(self, mock_run, monkeypatch):
+        monkeypatch.setenv("TOOLREGISTRY_HUB_KEY", "trk_from_env")
+        main(["hub-shim"])
+
+        assert mock_run.call_args.args[0].key == "trk_from_env"
+
+    @patch("toolregistry_server.gateway.shim.run_stdio", return_value=0)
+    def test_an_explicit_key_file_wins_over_the_environment(
+        self, mock_run, monkeypatch
+    ):
+        monkeypatch.setenv("TOOLREGISTRY_HUB_KEY", "trk_from_env")
+        main(["hub-shim", "--key-file", "/tmp/hub.key"])
+
+        config = mock_run.call_args.args[0]
+        assert config.key_file == "/tmp/hub.key"
+        assert config.key is None

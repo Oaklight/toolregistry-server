@@ -10,6 +10,7 @@
 const STRINGS = {
     en: {
         'gw.tab.keys': 'Keys',
+        'gw.tab.clients': 'Clients',
         'gw.tab.frontends': 'Frontends',
         'gw.tab.sources': 'Sources',
         'gw.refresh': 'Refresh',
@@ -47,6 +48,16 @@ const STRINGS = {
         'gw.keys.created.secret': 'Secret',
         'gw.keys.created.stored': 'I have stored it',
 
+        'gw.clients.title': 'Clients',
+        'gw.clients.hint': 'Live per-client call counters for this process. They reset when the gateway restarts.',
+        'gw.clients.client': 'Client',
+        'gw.clients.key': 'Key',
+        'gw.clients.limit': 'Limit',
+        'gw.clients.calls': 'Calls',
+        'gw.clients.errors': 'Errors',
+        'gw.clients.active': 'Active',
+        'gw.clients.queued': 'Queued',
+
         'gw.frontends.title': 'Frontends',
         'gw.frontends.hint': 'A disabled frontend answers 404 on its path; the others keep serving.',
         'gw.frontends.name': 'Frontend',
@@ -82,6 +93,7 @@ const STRINGS = {
     },
     zh: {
         'gw.tab.keys': '密钥',
+        'gw.tab.clients': '客户端',
         'gw.tab.frontends': '前端',
         'gw.tab.sources': '来源',
         'gw.refresh': '刷新',
@@ -118,6 +130,16 @@ const STRINGS = {
         'gw.keys.created.hint': '请立即保存此密钥。它不会再次显示，也无法找回。',
         'gw.keys.created.secret': '密钥',
         'gw.keys.created.stored': '我已保存',
+
+        'gw.clients.title': '客户端',
+        'gw.clients.hint': '本进程内按客户端统计的调用计数，网关重启后清零。',
+        'gw.clients.client': '客户端',
+        'gw.clients.key': '密钥 ID',
+        'gw.clients.limit': '并发上限',
+        'gw.clients.calls': '调用',
+        'gw.clients.errors': '错误',
+        'gw.clients.active': '进行中',
+        'gw.clients.queued': '排队',
 
         'gw.frontends.title': '前端',
         'gw.frontends.hint': '停用的前端在其路径上返回 404，其他前端继续服务。',
@@ -158,6 +180,7 @@ const state = {
     lang: 'en',
     tab: 'keys',
     keys: [],
+    clients: [],
     frontends: [],
     sources: [],
     secret: null,
@@ -485,6 +508,58 @@ async function revokeKey(record) {
     }
 }
 
+// ---------------------------------------------------------------- clients
+
+function renderClients() {
+    const host = root.querySelector('#gw-clients');
+    if (!host) return;
+    host.replaceChildren();
+
+    const rows = state.clients.map((record) => el('tr', {}, [
+        el('td', { text: record.client_id || record.client_key }),
+        el('td', { class: 'gw-mono', text: record.key_id || '—' }),
+        el('td', { text: record.limit }),
+        el('td', { text: record.calls }),
+        el('td', { text: record.errors }),
+        el('td', { text: record.active }),
+        el('td', { text: record.queued }),
+    ]));
+
+    host.appendChild(
+        section('gw.clients.title', 'gw.clients.hint', [
+            el('button', {
+                class: 'gw-btn',
+                type: 'button',
+                text: T('gw.refresh'),
+                onclick: () => loadClients(),
+            }),
+        ], table(
+            [
+                'gw.clients.client',
+                'gw.clients.key',
+                'gw.clients.limit',
+                'gw.clients.calls',
+                'gw.clients.errors',
+                'gw.clients.active',
+                'gw.clients.queued',
+            ],
+            rows,
+        )),
+    );
+}
+
+async function loadClients() {
+    const host = root.querySelector('#gw-clients');
+    if (!host) return;
+    try {
+        const data = await call('get', '/clients');
+        state.clients = data.clients || [];
+        renderClients();
+    } catch (error) {
+        host.replaceChildren(message(error.message, 'error'));
+    }
+}
+
 // ---------------------------------------------------------------- frontends
 
 function renderFrontends() {
@@ -767,6 +842,7 @@ async function removeSource(record) {
 function renderTabs() {
     const tabs = [
         ['keys', 'gw.tab.keys'],
+        ['clients', 'gw.tab.clients'],
         ['frontends', 'gw.tab.frontends'],
         ['sources', 'gw.tab.sources'],
     ];
@@ -793,6 +869,7 @@ function render() {
     const shell = el('div', { class: 'gw-shell' }, [renderTabs()]);
     const panes = {
         keys: el('div', { id: 'gw-keys', class: 'gw-pane', role: 'tabpanel' }),
+        clients: el('div', { id: 'gw-clients', class: 'gw-pane', role: 'tabpanel' }),
         frontends: el('div', { id: 'gw-frontends', class: 'gw-pane', role: 'tabpanel' }),
         sources: el('div', { id: 'gw-sources', class: 'gw-pane', role: 'tabpanel' }),
     };
@@ -803,12 +880,14 @@ function render() {
     root.appendChild(shell);
 
     if (state.tab === 'keys') renderKeys();
+    else if (state.tab === 'clients') renderClients();
     else if (state.tab === 'frontends') renderFrontends();
     else renderSources();
 }
 
 async function refreshCurrent() {
     if (state.tab === 'keys') await loadKeys();
+    else if (state.tab === 'clients') await loadClients();
     else if (state.tab === 'frontends') await loadFrontends();
     else await loadSources();
 }

@@ -32,6 +32,7 @@ from ..adapters.openapi.adapter import (
     _validate_arguments,
 )
 from ..adapters.openapi.serialisation import encode_tool_result
+from ..isolation import policy_refusal, policy_refusal_sync
 from ..regex_guard import (
     DEFAULT_REGEX_BUDGET,
     DEFAULT_REGEX_TIMEOUT,
@@ -462,6 +463,28 @@ def _filtered_result(
     return result
 
 
+async def _require_policy(route: Any, arguments: Any, registry: Any) -> None:
+    """Refuse a call the process permission policy denies.
+
+    Raises:
+        fastapi.HTTPException: ``403`` with the policy's message.
+    """
+    from fastapi import HTTPException
+
+    message = await policy_refusal(registry, route, arguments)
+    if message is not None:
+        raise HTTPException(status_code=403, detail=message)
+
+
+def _require_policy_sync(route: Any, arguments: Any, registry: Any) -> None:
+    """Synchronous counterpart of :func:`_require_policy`."""
+    from fastapi import HTTPException
+
+    message = policy_refusal_sync(registry, route, arguments)
+    if message is not None:
+        raise HTTPException(status_code=403, detail=message)
+
+
 def _require_proxy_target(
     tool_name: str,
     arguments: Any,
@@ -603,6 +626,7 @@ def _add_route_from_entry(
                 _require_proxy_target(
                     tname, arguments, rt.registry, principal_resolver, principal
                 )
+                await _require_policy(current_route, arguments, rt.registry)
                 try:
                     result = await h(**arguments)
                 except HTTPException:
@@ -650,6 +674,7 @@ def _add_route_from_entry(
                 _require_proxy_target(
                     tname, arguments, rt.registry, principal_resolver, principal
                 )
+                _require_policy_sync(current_route, arguments, rt.registry)
                 try:
                     result = h(**arguments)
                 except HTTPException:

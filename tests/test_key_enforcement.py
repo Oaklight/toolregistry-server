@@ -1025,3 +1025,184 @@ def test_allowed_tool_outside_the_namespace_list(table, store, resolver):
         ).status_code
         == 200
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-client isolation (#145): operator tokens, quota and the process policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mcp_refuses_an_operator_token_when_keys_are_configured(
+    table, store, resolver, monkeypatch
+):
+    """A key-scoped MCP endpoint accepts client keys only."""
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: "operator-token",
+    )
+    server = route_table_to_mcp_server(
+        table, principal_resolver=resolver, refuse_operator_token=True
+    )
+
+    async with create_test_client(server) as client:
+        try:
+            listed = await client.list_tools()
+        except McpErrorClass as exc:
+            assert "operator tokens are not accepted" in str(exc)
+        else:
+            # If a generation turns the refusal into an empty page, no tool
+            # may leak; either way the operator sees nothing.
+            assert list(listed.tools) == []
+        message = await _mcp_error_message(client, "alpha-add", {"a": 1, "b": 2})
+
+    assert "operator tokens are not accepted" in message
+
+
+@pytest.mark.asyncio
+async def test_mcp_keeps_an_operator_token_when_the_deployment_allows_it(
+    table, store, resolver, monkeypatch
+):
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: "operator-token",
+    )
+    server = route_table_to_mcp_server(table, principal_resolver=resolver)
+
+    async with create_test_client(server) as client:
+        result = await client.list_tools()
+
+    assert {tool.name for tool in result.tools} == {"alpha-add", "beta-echo"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_applies_the_process_permission_policy(
+    table, store, resolver, monkeypatch
+):
+    from toolregistry.permissions import (
+        PermissionPolicy,
+        PermissionResult,
+        PermissionRule,
+    )
+
+    created = store.create("both-bot", {"namespaces": ["alpha", "beta"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    table.registry.set_permission_policy(
+        PermissionPolicy(
+            rules=[
+                PermissionRule(
+                    name="deny-echo",
+                    match=lambda tool, _parameters: tool.name == "beta-echo",
+                    result=PermissionResult.DENY,
+                    reason="read-only host",
+                )
+            ],
+            fallback=PermissionResult.ALLOW,
+        )
+    )
+    server = route_table_to_mcp_server(table, principal_resolver=resolver)
+
+    async with create_test_client(server) as client:
+        allowed = await client.call_tool("alpha-add", {"a": 1, "b": 2})
+        denied = await _mcp_error_message(client, "beta-echo", {"text": "hi"})
+
+    assert allowed.content[0].text == "3"
+    assert "denied by the process permission policy" in denied
+    assert "read-only host" in denied
+
+
+@pytest.mark.asyncio
+async def test_mcp_reports_a_busy_client_with_the_server_error_code(
+    table, store, resolver, monkeypatch
+):
+    from contextlib import asynccontextmanager
+
+    from toolregistry_server.isolation import ClientBusyTimeout
+
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+
+    class _BusyLimiter:
+        @asynccontextmanager
+        async def slot(self, principal):
+            raise ClientBusyTimeout("key_1", 1, 0.01)
+            yield  # pragma: no cover - unreachable, the raise is the point
+
+    server = route_table_to_mcp_server(
+        table, principal_resolver=resolver, client_limiter=_BusyLimiter()
+    )
+
+    async with create_test_client(server) as client:
+        message = await _mcp_error_message(client, "alpha-add", {"a": 1, "b": 2})
+
+    assert "too many concurrent calls" in message
+
+
+# ---------------------------------------------------------------------------
+# The process permission policy on both OpenAPI backends (#145)
+# ---------------------------------------------------------------------------
+
+
+def _deny_echo_policy():
+    from toolregistry.permissions import (
+        PermissionPolicy,
+        PermissionResult,
+        PermissionRule,
+    )
+
+    return PermissionPolicy(
+        rules=[
+            PermissionRule(
+                name="deny-echo",
+                match=lambda tool, _parameters: tool.name == "beta-echo",
+                result=PermissionResult.DENY,
+                reason="read-only host",
+            )
+        ],
+        fallback=PermissionResult.ALLOW,
+    )
+
+
+def test_openapi_applies_the_process_permission_policy(table, store, resolver):
+    created = store.create("both-bot", {"namespaces": ["alpha", "beta"]})
+    table.registry.set_permission_policy(_deny_echo_policy())
+    client = _fastapi_client(table, resolver)
+    headers = _bearer(created.secret)
+
+    allowed = client.post("/tools/alpha/add", json={"a": 1, "b": 2}, headers=headers)
+    denied = client.post("/tools/beta/echo", json={"text": "hi"}, headers=headers)
+
+    assert allowed.status_code == 200
+    assert denied.status_code == 403
+    assert "denied by the process permission policy" in denied.json()["detail"]
+    assert "read-only host" in denied.json()["detail"]
+
+
+def test_openapi_without_a_policy_still_allows_everything(table, store, resolver):
+    created = store.create("both-bot", {"namespaces": ["alpha", "beta"]})
+    client = _fastapi_client(table, resolver)
+
+    response = client.post(
+        "/tools/beta/echo", json={"text": "hi"}, headers=_bearer(created.secret)
+    )
+
+    assert response.status_code == 200
+
+
+def test_httpserver_applies_the_process_permission_policy(httpserver, table, store):
+    url, _ = httpserver
+    created = store.create("both-bot", {"namespaces": ["alpha", "beta"]})
+    table.registry.set_permission_policy(_deny_echo_policy())
+
+    status, _, body = _request(
+        url, "/tools/beta/echo", {"text": "hi"}, headers=_bearer(created.secret)
+    )
+
+    assert status == 403
+    assert "denied by the process permission policy" in json.loads(body)["detail"]

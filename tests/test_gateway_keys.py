@@ -242,9 +242,32 @@ async def test_mcp_call_tool_is_scoped_on_the_gateway_server(
 
 
 @pytest.mark.asyncio
-async def test_mcp_operator_token_keeps_full_access(table, key_store, monkeypatch):
+async def test_mcp_operator_token_is_refused_when_keys_are_configured(
+    table, key_store, monkeypatch
+):
+    """A credential every client could share is not a client identity."""
     _, keys_db = key_store
     gateway = _gateway(table, keys_db, tokens=["operator-token"])
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: "operator-token",
+    )
+
+    async with create_test_client(gateway._mcp_server) as client:  # noqa: SLF001
+        message = await _mcp_error_message(client, "alpha-add", {"a": 1, "b": 2})
+
+    assert "operator tokens are not accepted" in message
+
+
+@pytest.mark.asyncio
+async def test_allow_operator_token_readmits_it(table, key_store, monkeypatch):
+    _, keys_db = key_store
+    gateway = _gateway(
+        table,
+        keys_db,
+        tokens=["operator-token"],
+        allow_operator_token=True,
+    )
     monkeypatch.setattr(
         "toolregistry_server.adapters.mcp.adapter._request_authorization",
         lambda: "operator-token",
