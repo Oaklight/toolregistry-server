@@ -171,7 +171,7 @@ def _proxy_refusal(
     request: Any,
     tool_name: str,
     arguments: Any,
-    route_table: RouteTable,
+    registry: Any,
     principal_resolver: Any | None,
 ) -> Response | None:
     """Return the ``403`` response when a proxy's target is out of scope.
@@ -181,7 +181,7 @@ def _proxy_refusal(
     """
     principal = getattr(request.state, "principal", None)
     target = refusing_target(
-        tool_name, arguments, route_table, principal_resolver, principal
+        tool_name, arguments, registry, principal_resolver, principal
     )
     if target is None:
         return None
@@ -251,7 +251,7 @@ def _make_tool_handler(
             raise
 
         refusal = _proxy_refusal(
-            request, tool_name, arguments, route_table, principal_resolver
+            request, tool_name, arguments, route_table.registry, principal_resolver
         )
         if refusal is not None:
             return refusal

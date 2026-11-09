@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -439,6 +440,84 @@ async def test_mcp_call_deferred_refuses_a_target_outside_the_scope(
 
     assert "not permitted" in proxied
     assert proxied == direct
+
+
+def _deferred_tool(namespace: str, name: str, ran: list[str]) -> Any:
+    """Build a deferred tool whose invocation records that it ran."""
+    from toolregistry.tool import Tool, ToolMetadata
+
+    def body() -> str:
+        """Run the tool."""
+        ran.append(name)
+        return f"ran {name}"
+
+    return Tool.from_function(
+        body,
+        name=name,
+        namespace=namespace,
+        metadata=ToolMetadata(defer=True),
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_deferred_refuses_a_target_added_while_routes_lag(
+    discovery_table, store, resolver, monkeypatch
+):
+    """A tool registered inside batch_changes is judged by the registry.
+
+    ``batch_changes`` defers the route rebuild, so the route table does not
+    know the new tool while core's ``call_deferred`` will resolve it in the
+    live registry.  Resolving the target against the registry closes that
+    window.
+    """
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(discovery_table, principal_resolver=resolver)
+    registry = discovery_table.registry
+    ran: list[str] = []
+    tool = _deferred_tool("admin", "admin-only", ran)
+
+    async with create_test_client(server) as client:
+        with discovery_table.batch_changes():
+            registry.register(tool)
+            # The window: the registry has it, the serving view does not.
+            assert discovery_table.get_route(tool.name) is None
+            message = await _mcp_error_message(
+                client, "call_deferred", {"_target_tool": tool.name}
+            )
+
+    assert "not permitted" in message
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_deferred_loads_a_target_added_while_routes_lag(
+    discovery_table, store, resolver, monkeypatch
+):
+    """The same window, with the target inside the key's scope."""
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(discovery_table, principal_resolver=resolver)
+    registry = discovery_table.registry
+    ran: list[str] = []
+    tool = _deferred_tool("alpha", "alpha-fresh", ran)
+
+    async with create_test_client(server) as client:
+        with discovery_table.batch_changes():
+            registry.register(tool)
+            assert discovery_table.get_route(tool.name) is None
+            result = await client.call_tool(
+                "call_deferred", {"_target_tool": tool.name}
+            )
+
+    assert get_field(result, "is_error", "isError") is False
+    assert ran == ["alpha-fresh"]
 
 
 @pytest.mark.asyncio

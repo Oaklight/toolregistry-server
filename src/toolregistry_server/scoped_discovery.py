@@ -7,8 +7,14 @@ they act on.  This module makes that decision in one place, and the MCP and
 OpenAPI surfaces call it with their own error envelope.
 
 The resolver stays the only authority on scope: every decision here goes
-through :meth:`PrincipalResolver.allows` / ``allows_route``.  This module only
-supplies the target and filters the result set.
+through :meth:`PrincipalResolver.allows`.  This module only supplies the
+target and filters the result set.
+
+The target is looked up in the **registry**, not the route table: core's
+``call_deferred`` resolves and invokes against the registry, and the route
+table is a serving view that deliberately lags while
+:meth:`RouteTable.batch_changes` defers a rebuild.  Judging by the route table
+would miss a tool registered inside that window and let core invoke it.
 """
 
 from __future__ import annotations
@@ -39,34 +45,35 @@ def _normalise_tool_name(name: str) -> str:
     return name.replace("/", "_").replace("-", "_").lower()
 
 
-def find_route(route_table: Any, tool_name: str) -> Any | None:
-    """Return the route *tool_name* names, or ``None``.
+def find_tool(registry: Any, tool_name: str) -> Any | None:
+    """Return the registered tool core would invoke for *tool_name*.
 
-    The exact name wins.  Otherwise the first route whose normalised name
-    matches is returned, which mirrors the registry-order first match core
-    applies before invoking a deferred target.
+    Mirrors ``ToolDiscoveryTool.call_deferred`` exactly: the exact name wins,
+    then the first registry-order name whose normalised form matches.  The
+    registry is the authority because that is what ``_invoke_raw`` uses; the
+    route table can lag behind it while a batch change defers its rebuild.
 
     Args:
-        route_table: The route table being served.
+        registry: The live ``ToolRegistry`` behind the served routes.
         tool_name: A tool name as supplied by the caller.
 
     Returns:
-        The matching route entry, or ``None`` when nothing matches.
+        The registered ``Tool``, or ``None`` when nothing matches.
     """
-    route = route_table.get_route(tool_name)
-    if route is not None:
-        return route
+    tool = registry.get_tool(tool_name)
+    if tool is not None:
+        return tool
     wanted = _normalise_tool_name(tool_name)
-    for candidate in route_table.list_routes(enabled_only=False):
-        if _normalise_tool_name(candidate.tool_name) == wanted:
-            return candidate
+    for name in registry.list_tools(include_disabled=True):
+        if _normalise_tool_name(name) == wanted:
+            return registry.get_tool(name)
     return None
 
 
 def refusing_target(
     tool_name: str,
     arguments: Any,
-    route_table: Any,
+    registry: Any,
     principal_resolver: Any | None,
     principal: Any | None,
 ) -> str | None:
@@ -74,19 +81,22 @@ def refusing_target(
 
     Only ``call_deferred`` needs this: its arguments name another tool, and
     core invokes that tool with ``ToolRegistry._invoke_raw``, below the route
-    the scope check saw.  A target that does not resolve is not refused here,
-    so the existing not-found error shape is preserved.
+    the scope check saw.  The target is resolved against the registry, the
+    same object core resolves and invokes against, so a tool registered while
+    ``batch_changes`` defers the route rebuild cannot be missed.  A target
+    that does not resolve is not refused here, so the existing not-found
+    error shape is preserved.
 
     Args:
         tool_name: The tool the client called.
         arguments: The validated call arguments.
-        route_table: The route table being served.
+        registry: The live registry behind the served routes.
         principal_resolver: The configured resolver, or ``None``.
         principal: The caller's principal, or ``None``.
 
     Returns:
-        The target's name when the principal may not call it, otherwise
-        ``None``.
+        The target's canonical name when the principal may not call it,
+        otherwise ``None``.
     """
     if principal_resolver is None or tool_name != CALL_DEFERRED_TOOL_NAME:
         return None
@@ -95,14 +105,14 @@ def refusing_target(
     target = arguments.get(TARGET_ARGUMENT)
     if not isinstance(target, str) or not target:
         return None
-    route = find_route(route_table, target)
-    if route is None:
+    tool = find_tool(registry, target)
+    if tool is None:
         return None
-    if principal_resolver.allows_route(principal, route):
+    if principal_resolver.allows(principal, tool.namespace, tool.name):
         return None
-    # The canonical spelling, so the refusal reads the same as a direct call
+    # The registry's spelling, so the refusal reads the same as a direct call
     # to that tool after a client rewrote the name.
-    return getattr(route, "tool_name", None) or target
+    return tool.name
 
 
 def filter_discovery_result(
@@ -146,6 +156,6 @@ __all__ = [
     "DISCOVERY_TOOL_NAME",
     "TARGET_ARGUMENT",
     "filter_discovery_result",
-    "find_route",
+    "find_tool",
     "refusing_target",
 ]
