@@ -28,6 +28,7 @@ One-shot usage (standalone server)::
 """
 
 import importlib
+import warnings
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
         ToolConfig,
         ToolSource,
     )
+
+    from .route_table import RouteTable
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +619,61 @@ def registry_from_config(
 
     apply_config(registry, config, strict_spec_regex=strict_spec_regex)
     return registry
+
+
+# ---------------------------------------------------------------------------
+# Route parameter overrides
+# ---------------------------------------------------------------------------
+
+
+def apply_parameter_overrides(route_table: "RouteTable", config: "ToolConfig") -> None:
+    """Apply ``config.tool_parameters`` to *route_table*.
+
+    The override changes the schema this route publishes and validates
+    against; the registry ``Tool`` and its metadata are left untouched.
+    Compatibility is decided by the same guard
+    :meth:`RouteTable.override_parameters` uses (#163), not by a second
+    implementation, but a rejected entry never reaches the caller:
+
+    * a stricter or malformed override is logged at error level and skipped;
+    * a looser one is logged at warning level and applied;
+    * an entry whose tool is not registered is logged and skipped.
+
+    Startup therefore never fails because of one entry.  The block is read
+    with ``getattr`` because a released core predates the field; that
+    fallback is removed when the server's ``toolregistry`` floor is bumped.
+
+    Args:
+        route_table: The table built from the registered tools.
+        config: The configuration the registry was built from.
+    """
+    parameters = getattr(config, "tool_parameters", {})
+    for tool_name, schema in parameters.items():
+        if route_table.get_route(tool_name) is None:
+            logger.warning(
+                "Skipping parameter override for an unregistered tool",
+                tool=tool_name,
+            )
+            continue
+        # The guard reports a looser override with ``warnings.warn``; capture
+        # it so it reaches the server log with the tool name attached.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                route_table.override_parameters(tool_name, schema)
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.error(
+                    "Skipping incompatible parameter override",
+                    tool=tool_name,
+                    error=str(exc),
+                )
+                continue
+        for warning in caught:
+            logger.warning(
+                "Parameter override relaxes the tool's validation model",
+                tool=tool_name,
+                error=str(warning.message),
+            )
 
 
 # ---------------------------------------------------------------------------

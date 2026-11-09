@@ -162,10 +162,20 @@ class App:
         return registry
 
     def _make_route_table(self, registry: ToolRegistry) -> RouteTable:
-        """Create a RouteTable from a registry."""
+        """Create a RouteTable from a registry and apply config overrides.
+
+        ``tool_parameters`` entries are applied here, after registration and
+        at the single point the table is built, so every adapter sees the
+        same served schemas.
+        """
+        from .registry_builder import apply_parameter_overrides
         from .route_table import RouteTable
 
-        return RouteTable(registry)
+        route_table = RouteTable(registry)
+        manager = self.source_manager
+        if manager is not None:
+            apply_parameter_overrides(route_table, manager.config)
+        return route_table
 
     def serve(self, adapter_cls: type[Adapter], **kwargs) -> None:
         """Build registry and serve via any adapter.
