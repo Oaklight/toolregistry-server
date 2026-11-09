@@ -389,14 +389,58 @@ def read_endpoint(name: str = DEFAULT_NAME) -> HubEndpoint | None:
     return endpoint
 
 
+def _read_private_text(path: Path | str) -> str | None:
+    """Read a private hub document, or return ``None`` when it is absent.
+
+    The entry must be a regular file owned by the current user and must not
+    be accessible to group or other.  It is opened without following a
+    symlink and with ``O_NONBLOCK``, so a planted FIFO cannot block the open.
+    The endpoint document and the owner-pid file share this check.
+
+    Args:
+        path: Document path.
+
+    Returns:
+        The file contents, or ``None`` when no entry exists.
+
+    Raises:
+        EndpointError: If the entry is unsafe or cannot be read.
+    """
+    source = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(source, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise EndpointError(f"cannot read hub document {source}: {exc}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise EndpointError(f"hub document {source} is not a regular file")
+        if os.name != "nt":
+            if info.st_uid != os.getuid():
+                raise EndpointError(f"hub document {source} is owned by another user")
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                raise EndpointError(
+                    f"hub document {source} is accessible to other users"
+                )
+        handle = os.fdopen(descriptor, "r", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    try:
+        with handle:
+            return handle.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise EndpointError(f"cannot read hub document {source}: {exc}") from exc
+
+
 def read_endpoint_file(path: Path | str) -> HubEndpoint | None:
     """Read one endpoint document, or ``None`` when the file is absent.
 
-    On POSIX the file must be owned by the current user and must not be
-    accessible to group or other, because a client trusts the document to
-    choose where it connects.  The file is opened without following a
-    symlink, and it must be a regular file: a planted FIFO or directory is
-    refused instead of opened.
+    The document is read through :func:`_read_private_text`, so it must be a
+    regular file owned by the current user that group and other cannot read.
 
     Args:
         path: Endpoint file path.
@@ -409,35 +453,9 @@ def read_endpoint_file(path: Path | str) -> HubEndpoint | None:
             document.
     """
     source = Path(path)
-    # O_NONBLOCK keeps a planted FIFO from blocking the open; the type check
-    # below then refuses it.  Regular files ignore the flag.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    try:
-        descriptor = os.open(source, flags)
-    except FileNotFoundError:
+    raw = _read_private_text(source)
+    if raw is None:
         return None
-    except OSError as exc:
-        raise EndpointError(f"cannot read hub endpoint {source}: {exc}") from exc
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise EndpointError(f"hub endpoint {source} is not a regular file")
-        if os.name != "nt":
-            if info.st_uid != os.getuid():
-                raise EndpointError(f"hub endpoint {source} is owned by another user")
-            if stat.S_IMODE(info.st_mode) & 0o077:
-                raise EndpointError(
-                    f"hub endpoint {source} is accessible to other users"
-                )
-        handle = os.fdopen(descriptor, "r", encoding="utf-8")
-    except BaseException:
-        os.close(descriptor)
-        raise
-    try:
-        with handle:
-            raw = handle.read()
-    except (OSError, UnicodeDecodeError) as exc:
-        raise EndpointError(f"cannot read hub endpoint {source}: {exc}") from exc
     try:
         payload = json.loads(raw)
     except ValueError as exc:
@@ -503,13 +521,27 @@ def write_owner_pid(name: str, pid: int) -> Path:
 
 
 def read_owner_pid(name: str = DEFAULT_NAME) -> int | None:
-    """Return the published owner pid, or ``None`` when absent or malformed."""
-    try:
-        text = pid_path(name).read_text(encoding="utf-8").strip()
-    except OSError:
+    """Return the published owner pid, or ``None`` when absent or malformed.
+
+    The pid file drives ``os.kill``, so it gets the same safe read as the
+    endpoint document: a symlink, another user's file, or a file that group
+    or other can read is refused rather than trusted.
+
+    Args:
+        name: Hub name.
+
+    Returns:
+        The pid, or ``None`` when the file is absent or does not hold a
+        positive integer.
+
+    Raises:
+        EndpointError: If the pid file exists but is unsafe or unreadable.
+    """
+    raw = _read_private_text(pid_path(name))
+    if raw is None:
         return None
     try:
-        pid = int(text)
+        pid = int(raw.strip())
     except ValueError:
         return None
     return pid if pid > 0 else None

@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -289,16 +290,20 @@ def ensure_hub(
         ``0`` when a hub is available, ``1`` when it could not be started.
     """
     _require_posix("ensure")
-    running = _running_endpoint(name)
-    if running is not None:
-        _print_endpoint(running)
-        return 0
-    if lock_is_held(name):
-        # Another process owns the name and is still publishing.
-        return _wait_for_endpoint(name, None, timeout)
+    try:
+        running = _running_endpoint(name)
+        if running is not None:
+            _print_endpoint(running)
+            return 0
+        if lock_is_held(name):
+            # Another process owns the name and is still publishing.
+            return _wait_for_endpoint(name, None, timeout)
 
-    process = _spawn_hub(options, name=name, idle_timeout=idle_timeout, argv=argv)
-    return _wait_for_endpoint(name, process, timeout)
+        process = _spawn_hub(options, name=name, idle_timeout=idle_timeout, argv=argv)
+        return _wait_for_endpoint(name, process, timeout)
+    except EndpointError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 def stop_hub(name: str = DEFAULT_NAME, *, timeout: float = DEFAULT_STOP_TIMEOUT) -> int:
@@ -321,6 +326,7 @@ def stop_hub(name: str = DEFAULT_NAME, *, timeout: float = DEFAULT_STOP_TIMEOUT)
     if not lock_is_held(name):
         if endpoint is not None:
             remove_endpoint(name)
+        remove_owner_pid(name)
         print(f"hub {name!r} is not running")
         return EXIT_NOT_RUNNING
     if endpoint is None:
@@ -331,7 +337,11 @@ def stop_hub(name: str = DEFAULT_NAME, *, timeout: float = DEFAULT_STOP_TIMEOUT)
     except EndpointError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    owner = read_owner_pid(name)
+    try:
+        owner = read_owner_pid(name)
+    except EndpointError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     if owner is None:
         print(f"hub {name!r} has not recorded its pid yet", file=sys.stderr)
         return 1
@@ -345,6 +355,16 @@ def stop_hub(name: str = DEFAULT_NAME, *, timeout: float = DEFAULT_STOP_TIMEOUT)
     if not endpoint.is_live():
         print(
             f"hub {name!r} holds its lock but pid {endpoint.pid} is gone",
+            file=sys.stderr,
+        )
+        return 1
+    if not _endpoint_accepts(endpoint):
+        # A starting hub holds the lock before it rewrites the pid file, so a
+        # stale document can agree with the old pid file.  Only a live
+        # listener on the published address makes the pid signal-safe.
+        print(
+            f"hub {name!r} is starting: nothing accepts on "
+            f"{_describe_address(endpoint)}",
             file=sys.stderr,
         )
         return 1
@@ -386,10 +406,17 @@ def status_hub(name: str = DEFAULT_NAME, *, as_json: bool = False) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     held = lock_is_held(name)
-    owner = read_owner_pid(name) if held else None
+    owner = None
+    if held:
+        try:
+            owner = read_owner_pid(name)
+        except EndpointError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     if not held:
         if endpoint is not None:
             remove_endpoint(name)
+        remove_owner_pid(name)
         state = "not-running"
         live = None
     elif endpoint is not None and endpoint.is_live() and owner == endpoint.pid:
@@ -669,6 +696,40 @@ def _log_tail(name: str, limit: int = 20) -> str:
 def _print_endpoint(endpoint: HubEndpoint) -> None:
     """Print the endpoint document as JSON."""
     print(json.dumps(endpoint.to_dict(), indent=2, sort_keys=True))
+
+
+def _endpoint_accepts(endpoint: HubEndpoint, timeout: float = 0.5) -> bool:
+    """Return whether a listener accepts on the published address.
+
+    A successful connect proves that a server is bound where the document
+    says.  Without it, a stale document could pair with a reused pid and make
+    ``stop`` signal an unrelated process.
+
+    Args:
+        endpoint: The endpoint document.
+        timeout: Connect timeout in seconds.
+
+    Returns:
+        ``True`` when the address accepts a connection.
+    """
+    if endpoint.transport == "unix" and endpoint.socket:
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(timeout)
+        try:
+            probe.connect(endpoint.socket)
+        except OSError:
+            return False
+        finally:
+            probe.close()
+        return True
+    if endpoint.host is None or endpoint.port is None:
+        return False
+    try:
+        connection = socket.create_connection((endpoint.host, endpoint.port), timeout)
+    except OSError:
+        return False
+    connection.close()
+    return True
 
 
 def _describe_address(endpoint: HubEndpoint) -> str:
