@@ -515,8 +515,8 @@ async def test_open_session_count_sees_a_streamable_http_session():
     try:
         url = f"http://{bound[0]}:{bound[1]}/mcp"
         async with (
-            streamablehttp_client(url) as (read, write, _),
-            client_session(read, write) as session,
+            streamablehttp_client(url) as streams,
+            client_session(streams[0], streams[1]) as session,
         ):
             await session.initialize()
 
