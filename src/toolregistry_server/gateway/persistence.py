@@ -340,7 +340,7 @@ def persist_frontend_settings(
         ``(persisted, warning)``.  *persisted* is true only when the file was
         rewritten.  *warning* explains a skipped or failed write; on success
         it carries :data:`~toolregistry_server.source_manager.COMMENTS_WARNING`
-        because JSONC comments are not preserved.
+        because file comments are not preserved.
     """
     if not write_config:
         return False, (

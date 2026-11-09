@@ -285,6 +285,46 @@ class TestBackendSelection:
             gateway.update_frontend("openapi", enabled=False)
 
 
+class TestHttpserverFrontendRecord:
+    """The reported path must be one the listener actually serves."""
+
+    def _gateway(self):
+        return _gateway(
+            backend="httpserver",
+            openapi_enabled=True,
+            mcp_enabled=False,
+            sse_enabled=False,
+        )
+
+    def _serves(self, app, path):
+        # The vendored App has no public route listing, so match the
+        # compiled patterns the request handler dispatches against.
+        return any(entry.pattern.fullmatch(path) for entry in app._routes)
+
+    def test_reports_the_listener_root(self):
+        record = self._gateway().list_frontends()[0]
+        assert record["name"] == "openapi"
+        assert record["path"] == "/"
+        assert "listener root" in record["note"]
+
+    def test_the_reported_path_prefixes_the_served_routes(self):
+        gateway = self._gateway()
+        prefix = gateway.list_frontends()[0]["path"].rstrip("/")
+        for route in ("/tools", "/openapi.json", "/docs", "/events"):
+            assert self._serves(gateway.app, f"{prefix}{route}"), route
+
+    def test_the_configured_mount_path_is_not_served(self):
+        gateway = self._gateway()
+        assert not self._serves(gateway.app, "/openapi/tools")
+
+    def test_saving_the_reported_record_is_accepted(self):
+        gateway = self._gateway()
+        result = gateway.update_frontend("openapi", path="/", enabled=True)
+        assert result["path"] == "/"
+        assert result["note"] == gateway.list_frontends()[0]["note"]
+        assert result["enabled"] is True
+
+
 class TestSourceManagerCoexistence:
     """The gateway keeps runtime source management wired up."""
 

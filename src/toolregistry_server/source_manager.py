@@ -31,7 +31,7 @@ the new tools, which is true for any registration and is not a regression.
 
 Persistence is never silent: an API-originated mutation rewrites the config
 file after writing ``<path>.bak``, returns whether the write succeeded, and
-warns that JSONC comments are not preserved.  A watcher-originated reload never
+warns that comments are not preserved.  A watcher-originated reload never
 writes.  ``write_config=False`` keeps every change in memory only.
 """
 
@@ -86,9 +86,10 @@ logger = get_logger()
 #: off.
 CONFIG_DISABLE_REASON = "Disabled by config (runtime source change)"
 
-#: Returned in every mutation result whose config was rewritten.  JSONC
-#: comments are not part of the parsed model, so a rewrite drops them.
-COMMENTS_WARNING = "the config file was rewritten; JSONC comments are not preserved"
+#: Returned in every mutation result whose config was rewritten.  Comments
+#: are not part of the parsed model in either supported format (JSONC or
+#: YAML), so a rewrite drops them.
+COMMENTS_WARNING = "the config file was rewritten; comments are not preserved"
 
 #: A source is identified by its declaration, not by its position, so
 #: reordering the ``tools`` list is not treated as a change.  Fields that live

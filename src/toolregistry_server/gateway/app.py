@@ -723,14 +723,38 @@ class GatewayAdapter(Adapter):
             return self._openapi_app
         return self._asgi
 
+    def _public_frontend(self, record: Frontend) -> dict[str, Any]:
+        """Return the frontend record the listener actually serves.
+
+        The httpserver backend has no mount prefix: its OpenAPI routes are
+        served at the listener root, so the configured ``/openapi`` path
+        names nothing a client can request.  Report the root and say why.
+
+        Args:
+            record: One registry record.
+
+        Returns:
+            The record with ``path`` describing the served prefix.
+        """
+        data = record.as_dict()
+        if self._backend == "httpserver" and record.name == "openapi":
+            data["path"] = "/"
+            data["note"] = (
+                "served at the listener root: /tools, /openapi.json, /docs, "
+                "/events and one POST route per tool"
+            )
+        return data
+
     def list_frontends(self) -> list[dict[str, Any]]:
         """Return the current frontend configuration.
 
         Returns:
             A list of records with ``name``, ``path``, ``enabled`` and
-            ``transport`` keys, in stable order.
+            ``transport`` keys, in stable order.  On the httpserver backend
+            the openapi record also carries a ``note`` explaining that its
+            path is the listener root.
         """
-        return [record.as_dict() for record in self._registry.snapshot()]
+        return [self._public_frontend(record) for record in self._registry.snapshot()]
 
     def update_frontend(
         self,
@@ -751,7 +775,10 @@ class GatewayAdapter(Adapter):
             path: New mount path, or ``None`` to keep the current value.
 
         Returns:
-            The updated record plus ``persisted`` and ``warning``.
+            The updated record plus ``persisted`` and ``warning``.  The
+            record describes what the listener serves: on the httpserver
+            backend the openapi ``path`` is ``"/"`` and a ``note`` explains
+            it.
 
         Raises:
             ValueError: If *name* is unknown, no change is requested, a value
@@ -769,6 +796,11 @@ class GatewayAdapter(Adapter):
                     "the httpserver backend cannot disable the openapi "
                     "frontend at runtime"
                 )
+            if path == "/":
+                # ``list_frontends`` reports the listener root, which the
+                # registry does not accept as a mount path.  Saving the
+                # record unchanged must not fail.
+                path = None
 
         if name == "admin" and enabled is True and not self._admin_token:
             raise ValueError(
@@ -786,7 +818,7 @@ class GatewayAdapter(Adapter):
                 write_config=self._write_config,
             )
 
-        result = record.as_dict()
+        result = self._public_frontend(record)
         result["persisted"] = persisted
         result["warning"] = warning
         return result
