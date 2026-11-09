@@ -34,7 +34,6 @@ from toolregistry_server.adapters.mcp._compat import (
     create_test_client,
     get_field,
 )
-from toolregistry_server.adapters.openapi import OpenAPIAdapter
 from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
 from toolregistry_server.keystore import ApiKeyStore, PrincipalResolver, ScopeSpec
 
@@ -624,8 +623,17 @@ async def test_scoped_token_verifier_accepts_static_operator_tokens(resolver):
 
 
 def _fastapi_client(table, resolver) -> TestClient:
-    adapter = OpenAPIAdapter(table, principal_resolver=resolver)
-    return TestClient(adapter.app)
+    from fastapi import Depends
+
+    from toolregistry_server.auth import create_scoped_bearer_dependency
+    from toolregistry_server.gateway.openapi_asgi import create_openapi_app
+
+    app = create_openapi_app(
+        table,
+        dependencies=[Depends(create_scoped_bearer_dependency(resolver))],
+        principal_resolver=resolver,
+    )
+    return TestClient(app)
 
 
 def test_openapi_spec_lists_only_scoped_paths(table, store, resolver):
@@ -785,8 +793,9 @@ def test_openapi_operator_keeps_the_proxy_tools(discovery_table, resolver):
 
 def test_openapi_without_a_resolver_keeps_todays_behaviour(table):
     """No ``--keys-db`` means no scoping and no key authentication."""
-    adapter = OpenAPIAdapter(table)
-    client = TestClient(adapter.app)
+    from toolregistry_server.gateway.openapi_asgi import create_openapi_app
+
+    client = TestClient(create_openapi_app(table))
 
     response = client.get("/openapi.json")
 

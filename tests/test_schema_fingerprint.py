@@ -194,7 +194,7 @@ class TestSSEEventsEndpoint:
         """
         from fastapi import FastAPI
 
-        from toolregistry_server.adapters.openapi.adapter import add_events_endpoint
+        from toolregistry_server.gateway.openapi_asgi import add_events_endpoint
 
         app = FastAPI()
         add_events_endpoint(app, route_table)
@@ -218,7 +218,7 @@ class TestSSEEventsEndpoint:
 
         from fastapi import FastAPI
 
-        from toolregistry_server.adapters.openapi.adapter import add_events_endpoint
+        from toolregistry_server.gateway.openapi_asgi import add_events_endpoint
 
         app = FastAPI()
         add_events_endpoint(app, rt)
