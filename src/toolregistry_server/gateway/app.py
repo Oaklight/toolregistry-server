@@ -458,7 +458,13 @@ class _GatewayASGI:
         if scope["type"] == "lifespan":
             await self._lifespan(scope, receive, send)
         elif scope["type"] == "http":
-            await self._http(scope, receive, send)
+            # An in-flight request counts as activity for the idle clock,
+            # even when it runs longer than the idle timeout.
+            self._gateway._active_requests += 1
+            try:
+                await self._http(scope, receive, send)
+            finally:
+                self._gateway._active_requests -= 1
         else:
             # No websocket frontend is hosted.
             await send({"type": "websocket.close", "code": 1000})
@@ -666,6 +672,7 @@ class GatewayAdapter(Adapter):
         self._sse_path: str | None = None
         self._sse_wrapped: Any = None
         self._sse_connections = 0
+        self._active_requests = 0
         self._activity_hook: Callable[[], None] | None = None
         panel_registry = (
             self._registry_obj
@@ -865,19 +872,20 @@ class GatewayAdapter(Adapter):
         self._activity_hook = hook
 
     def open_session_count(self) -> int:
-        """Return the number of MCP transport sessions that are open.
+        """Return the number of sessions or requests that are in flight.
 
         Streamable-HTTP sessions are counted from the session manager; an SSE
-        stream counts as one session while its request is in flight.  A hub
-        with an idle timeout treats a non-zero count as activity, so a
-        connected but quiet client keeps it alive.
+        stream counts as one session while its request is in flight, and any
+        other in-flight request counts once.  A hub with an idle timeout
+        treats a non-zero count as activity, so a connected but quiet client,
+        or a request that outlives the timeout, keeps it alive.
 
         Returns:
-            The number of open sessions.
+            The number of open sessions and in-flight requests.
         """
         manager = self._session_manager
         sessions = len(getattr(manager, "_server_instances", None) or ())
-        return sessions + self._sse_connections
+        return sessions + self._sse_connections + self._active_requests
 
     def update_frontend(
         self,
