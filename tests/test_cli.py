@@ -1177,3 +1177,81 @@ class TestGatewayCommand:
         main(["gateway", "--config", "tools.yaml", "--socket", "/tmp/hub.sock"])
 
         assert mock_serve.call_args.kwargs["socket_path"] == "/tmp/hub.sock"
+
+
+class TestLocalHubCommand:
+    """The local-hub subcommand and its actions (#145)."""
+
+    def test_defaults_match_a_local_resident_hub(self):
+        args = CLI().create_parser().parse_args(["local-hub"])
+
+        assert args.command == "local-hub"
+        assert args.action == "run"
+        assert args.name == "default"
+        assert args.host == "127.0.0.1"
+        assert args.port == 0
+        assert args.idle_timeout == 0.0
+        assert args.socket_path is None
+        assert args.json_output is False
+
+    def test_status_accepts_name_and_json(self):
+        args = (
+            CLI()
+            .create_parser()
+            .parse_args(["local-hub", "status", "--name", "work", "--json"])
+        )
+
+        assert args.action == "status"
+        assert args.name == "work"
+        assert args.json_output is True
+
+    @patch("toolregistry_server.gateway.local_hub.run_hub", return_value=0)
+    def test_run_dispatch_forwards_options(self, mock_run):
+        main(
+            [
+                "local-hub",
+                "run",
+                "--config",
+                "tools.yaml",
+                "--name",
+                "work",
+                "--idle-timeout",
+                "30",
+            ]
+        )
+
+        assert mock_run.call_args.kwargs["name"] == "work"
+        assert mock_run.call_args.kwargs["idle_timeout"] == 30.0
+        options = mock_run.call_args.args[1]
+        assert options["config_path"] == "tools.yaml"
+        assert options["host"] == "127.0.0.1"
+        assert options["port"] == 0
+
+    @patch("toolregistry_server.gateway.local_hub.ensure_hub", return_value=0)
+    def test_ensure_dispatch_passes_the_invoking_argv(self, mock_ensure):
+        main(["local-hub", "ensure", "--config", "tools.yaml", "--name", "work"])
+
+        assert mock_ensure.call_args.kwargs["argv"] == [
+            "local-hub",
+            "ensure",
+            "--config",
+            "tools.yaml",
+            "--name",
+            "work",
+        ]
+
+    @patch("toolregistry_server.gateway.local_hub.status_hub", return_value=3)
+    def test_status_dispatch_exits_with_the_code(self, mock_status):
+        with pytest.raises(SystemExit) as exc:
+            main(["local-hub", "status", "--name", "work", "--json"])
+
+        assert exc.value.code == 3
+        mock_status.assert_called_once_with("work", as_json=True)
+
+    @patch("toolregistry_server.gateway.local_hub.stop_hub", return_value=0)
+    def test_stop_dispatch_does_not_need_a_config(self, mock_stop):
+        with pytest.raises(SystemExit) as exc:
+            main(["local-hub", "stop", "--name", "work"])
+
+        assert exc.value.code == 0
+        assert mock_stop.call_args.kwargs["timeout"] == 15.0

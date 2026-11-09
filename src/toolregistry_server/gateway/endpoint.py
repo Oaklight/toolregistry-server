@@ -304,9 +304,22 @@ def socket_path(name: str = DEFAULT_NAME) -> Path:
     return hub_dir() / f"{name}.sock"
 
 
-def _ensure_hub_dir() -> Path:
+def ensure_hub_dir() -> Path:
+    """Create the hub directory ``0700`` and tighten an existing one.
+
+    The directory is the only barrier that keeps another user away from the
+    endpoint, lock and socket files, so an existing directory with looser
+    bits is narrowed rather than trusted.
+
+    Returns:
+        The hub directory.
+    """
     directory = hub_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        mode = stat.S_IMODE(directory.stat().st_mode)
+        if mode != 0o700:
+            os.chmod(directory, 0o700)
     return directory
 
 
@@ -327,7 +340,7 @@ def write_endpoint(endpoint: HubEndpoint) -> Path:
     Raises:
         OSError: If the directory or file cannot be written.
     """
-    directory = _ensure_hub_dir()
+    directory = ensure_hub_dir()
     destination = endpoint_path(endpoint.name)
     payload = json.dumps(endpoint.to_dict(), indent=2, sort_keys=True) + "\n"
     descriptor, temporary = tempfile.mkstemp(
@@ -339,6 +352,9 @@ def write_endpoint(endpoint: HubEndpoint) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, 0o600)
+        # The directory is deliberately not fsynced: a rename lost to a crash
+        # leaves the previous document, and pid liveness already treats a
+        # crashed writer's document as stale.
         os.replace(temporary, destination)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):

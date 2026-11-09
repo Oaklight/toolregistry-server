@@ -138,6 +138,7 @@ class CLI:
         from .app import App
 
         self.app = app or App()
+        self._argv: list[str] = []
 
     def create_parser(self) -> argparse.ArgumentParser:
         """Create the argument parser.
@@ -161,7 +162,7 @@ class CLI:
 
         sub = parser.add_subparsers(
             dest="command",
-            metavar="{openapi,mcp,gateway,keys}",
+            metavar="{openapi,mcp,gateway,local-hub,keys}",
         )
 
         openapi_parser = sub.add_parser("openapi", help="Start OpenAPI server")
@@ -182,11 +183,61 @@ class CLI:
         keys_parser = sub.add_parser("keys", help="Manage inbound API keys")
         add_keys_subparser(keys_parser)
 
+        from .gateway.endpoint import DEFAULT_NAME
+
+        local_hub_parser = sub.add_parser(
+            "local-hub", help="Run a resident gateway shared by local clients"
+        )
+        GatewayAdapter.add_cli_arguments(local_hub_parser)
+        self._add_source_runtime_arguments(local_hub_parser)
+        local_hub_parser.add_argument(
+            "action",
+            nargs="?",
+            choices=("run", "ensure", "stop", "status"),
+            default="run",
+            help=(
+                "run serves in the foreground (default); ensure starts a "
+                "detached hub and prints its endpoint; stop signals the hub; "
+                "status reports it"
+            ),
+        )
+        local_hub_parser.add_argument(
+            "--name",
+            default=DEFAULT_NAME,
+            metavar="NAME",
+            help="Hub name (default: default)",
+        )
+        local_hub_parser.add_argument(
+            "--idle-timeout",
+            type=float,
+            default=0.0,
+            metavar="SECONDS",
+            help=(
+                "Exit after SECONDS without a request or an open MCP session "
+                "(default: 0, stay resident)"
+            ),
+        )
+        local_hub_parser.add_argument(
+            "--timeout",
+            type=float,
+            default=None,
+            metavar="SECONDS",
+            help="Wait limit for ensure and stop",
+        )
+        local_hub_parser.add_argument(
+            "--json",
+            dest="json_output",
+            action="store_true",
+            help="Print status as JSON",
+        )
+        local_hub_parser.set_defaults(host="127.0.0.1", port=0)
+
         self.configure_subparsers(
             {
                 "openapi": openapi_parser,
                 "mcp": mcp_parser,
                 "gateway": gateway_parser,
+                "local-hub": local_hub_parser,
             }
         )
 
@@ -258,6 +309,10 @@ class CLI:
                 sys.exit(exit_code)
             return
 
+        if parsed.command == "local-hub":
+            self._dispatch_local_hub(parsed)
+            return
+
         config_path = getattr(parsed, "config", None)
         if config_path is None:
             logger.error("No config file specified. Use --config to provide one.")
@@ -306,51 +361,83 @@ class CLI:
                 options["keys_db"] = keys_db
             self.app.serve_mcp(**options)
         elif parsed.command == "gateway":
-            options = {
-                "config_path": config_path,
-                "profile": getattr(parsed, "profile", None),
-                "host": parsed.host,
-                "port": parsed.port,
-                "socket_path": getattr(parsed, "socket_path", None),
-                "tokens_path": getattr(parsed, "tokens", None),
-                "server_url": getattr(parsed, "server_url", None),
-                "backend": getattr(parsed, "backend", "fastapi"),
-                "max_body_size": getattr(
-                    parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE
-                ),
-                "regex_timeout": getattr(
-                    parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT
-                ),
-                "regex_budget": getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
-                "strict_spec_regex": getattr(parsed, "strict_spec_regex", False),
-                "tools_list_ttl_ms": getattr(parsed, "tools_list_ttl_ms", None),
-                "tools_list_cache_scope": getattr(
-                    parsed, "tools_list_cache_scope", None
-                ),
-                "openapi_path": getattr(parsed, "openapi_path", None),
-                "mcp_path": getattr(parsed, "mcp_path", None),
-                "sse_path": getattr(parsed, "sse_path", None),
-                "admin_path": getattr(parsed, "admin_path", None),
-                "openapi_enabled": getattr(parsed, "openapi", None),
-                "mcp_enabled": getattr(parsed, "mcp", None),
-                "sse_enabled": getattr(parsed, "sse", None),
-                "admin_enabled": getattr(parsed, "admin", None),
-                "admin_token": getattr(parsed, "admin_token", None),
-                "admin_token_file": getattr(parsed, "admin_token_file", None),
-                "admin_allow_private_hosts": getattr(
-                    parsed, "admin_allow_private_hosts", False
-                ),
-                "config_reload": getattr(parsed, "config_reload", False),
-                "write_config": getattr(parsed, "config_write", True),
-            }
-            if keys_db is not None:
-                options["keys_db"] = keys_db
-            self.app.serve_gateway(**options)
+            self.app.serve_gateway(**self._gateway_options(config_path, parsed))
+
+    @staticmethod
+    def _gateway_options(
+        config_path: str | None, parsed: argparse.Namespace
+    ) -> dict[str, Any]:
+        """Build the gateway construction options from parsed arguments."""
+        options: dict[str, Any] = {
+            "config_path": config_path,
+            "profile": getattr(parsed, "profile", None),
+            "host": parsed.host,
+            "port": parsed.port,
+            "socket_path": getattr(parsed, "socket_path", None),
+            "tokens_path": getattr(parsed, "tokens", None),
+            "server_url": getattr(parsed, "server_url", None),
+            "backend": getattr(parsed, "backend", "fastapi"),
+            "max_body_size": getattr(parsed, "max_body_size", DEFAULT_MAX_BODY_SIZE),
+            "regex_timeout": getattr(parsed, "regex_timeout", DEFAULT_REGEX_TIMEOUT),
+            "regex_budget": getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
+            "strict_spec_regex": getattr(parsed, "strict_spec_regex", False),
+            "tools_list_ttl_ms": getattr(parsed, "tools_list_ttl_ms", None),
+            "tools_list_cache_scope": getattr(parsed, "tools_list_cache_scope", None),
+            "openapi_path": getattr(parsed, "openapi_path", None),
+            "mcp_path": getattr(parsed, "mcp_path", None),
+            "sse_path": getattr(parsed, "sse_path", None),
+            "admin_path": getattr(parsed, "admin_path", None),
+            "openapi_enabled": getattr(parsed, "openapi", None),
+            "mcp_enabled": getattr(parsed, "mcp", None),
+            "sse_enabled": getattr(parsed, "sse", None),
+            "admin_enabled": getattr(parsed, "admin", None),
+            "admin_token": getattr(parsed, "admin_token", None),
+            "admin_token_file": getattr(parsed, "admin_token_file", None),
+            "admin_allow_private_hosts": getattr(
+                parsed, "admin_allow_private_hosts", False
+            ),
+            "config_reload": getattr(parsed, "config_reload", False),
+            "write_config": getattr(parsed, "config_write", True),
+        }
+        keys_db = getattr(parsed, "keys_db", None)
+        if keys_db is not None:
+            options["keys_db"] = keys_db
+        return options
+
+    def _dispatch_local_hub(self, parsed: argparse.Namespace) -> None:
+        """Run one ``local-hub`` action."""
+        from .gateway import local_hub
+
+        action = parsed.action
+        name = parsed.name
+        if action == "status":
+            sys.exit(local_hub.status_hub(name, as_json=parsed.json_output))
+        if action == "stop":
+            timeout = parsed.timeout or local_hub.DEFAULT_STOP_TIMEOUT
+            sys.exit(local_hub.stop_hub(name, timeout=timeout))
+
+        options = self._gateway_options(getattr(parsed, "config", None), parsed)
+        if action == "run":
+            code = local_hub.run_hub(
+                self.app, options, name=name, idle_timeout=parsed.idle_timeout
+            )
+        else:
+            code = local_hub.ensure_hub(
+                self.app,
+                options,
+                name=name,
+                idle_timeout=parsed.idle_timeout,
+                timeout=parsed.timeout or local_hub.DEFAULT_ENSURE_TIMEOUT,
+                argv=self._argv,
+            )
+        if code:
+            sys.exit(code)
 
     def main(self, args: list[str] | None = None) -> NoReturn | None:
         """Run the CLI."""
         parser = self.create_parser()
-        parsed = parser.parse_args(args)
+        self._argv = list(sys.argv[1:] if args is None else args)
+        parsed = parser.parse_args(self._argv)
 
         # --version
         if parsed.version:

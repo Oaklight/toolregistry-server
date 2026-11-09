@@ -22,6 +22,7 @@ from toolregistry_server.gateway.endpoint import (
     EndpointError,
     HubEndpoint,
     endpoint_path,
+    ensure_hub_dir,
     hub_dir,
     lock_path,
     read_endpoint,
@@ -59,6 +60,17 @@ def test_write_creates_a_private_file_and_directory(isolated_home):
     assert endpoint_file == endpoint_path()
     assert stat.S_IMODE(endpoint_file.stat().st_mode) == 0o600
     assert stat.S_IMODE(hub_dir().stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
+def test_an_existing_directory_is_tightened(isolated_home):
+    directory = hub_dir()
+    directory.mkdir(parents=True)
+    os.chmod(directory, 0o755)
+
+    ensure_hub_dir()
+
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
 
 
 def test_round_trip():
