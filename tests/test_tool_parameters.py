@@ -240,3 +240,144 @@ class TestAppAppliesConfig:
         route = table.get_route("plain")
         assert route.parameter_schema_override is None
         assert route.served_parameters_schema["properties"]["q"]["type"] == "string"
+
+
+def _write_parameter_config(path, block) -> None:
+    """Write a config file carrying *block* as ``tool_parameters``."""
+    payload: dict = {"mode": "denylist"}
+    if block is not None:
+        payload["tool_parameters"] = block
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _integer_override() -> dict:
+    return {
+        "proxy": {
+            "type": "object",
+            "properties": {"q": {"type": "integer"}},
+            "required": ["q"],
+            "additionalProperties": False,
+        }
+    }
+
+
+def _boolean_override() -> dict:
+    return {
+        "proxy": {
+            "type": "object",
+            "properties": {"q": {"type": "boolean"}},
+            "required": ["q"],
+            "additionalProperties": False,
+        }
+    }
+
+
+def _reloading_app(tmp_path, block):
+    """Build an app, a live table and the manager that can reload the file."""
+    path = tmp_path / "tools.json"
+    _write_parameter_config(path, block)
+    app = App()
+    registry = app.prepare_registry(config_path=str(path))
+
+    def proxy(**kwargs):
+        return kwargs
+
+    registry.register(
+        Tool(
+            name="proxy",
+            description="proxy tool",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+                "additionalProperties": False,
+            },
+            callable=proxy,
+        )
+    )
+    table = app._make_route_table(registry)  # noqa: SLF001 - test fixture
+    app._attach_source_manager(table)  # noqa: SLF001 - test fixture
+    return app, table, path
+
+
+class TestReloadReappliesParameterOverrides:
+    """A config reload updates the served route schema (#165).
+
+    ``apply_parameter_overrides`` used to run only when the route table was
+    built, so with ``--config-reload`` an added, changed or removed
+    ``tool_parameters`` entry stayed stale until restart.
+    """
+
+    @staticmethod
+    def _reload(app) -> bool:
+        manager = app.source_manager
+        assert manager is not None
+        return manager.reload_from_path()
+
+    def test_a_reload_applies_a_new_entry(self, tmp_path) -> None:
+        app, table, path = _reloading_app(tmp_path, None)
+        assert table.get_route("proxy").parameter_schema_override is None
+
+        _write_parameter_config(path, _integer_override())
+        assert self._reload(app) is True
+
+        route = table.get_route("proxy")
+        assert route.served_parameters_schema["properties"]["q"]["type"] == "integer"
+        assert _validate_arguments(route, {"q": 3}) == {"q": 3}
+        with pytest.raises(RequestValidationError) as excinfo:
+            _validate_arguments(route, {"q": "text"})
+        assert excinfo.value.status_code == 422
+
+    def test_a_reload_replaces_a_changed_entry(self, tmp_path) -> None:
+        app, table, path = _reloading_app(tmp_path, _integer_override())
+        assert (
+            table.get_route("proxy").served_parameters_schema["properties"]["q"]["type"]
+            == "integer"
+        )
+
+        _write_parameter_config(path, _boolean_override())
+        assert self._reload(app) is True
+
+        route = table.get_route("proxy")
+        assert route.served_parameters_schema["properties"]["q"]["type"] == "boolean"
+        assert _validate_arguments(route, {"q": True}) == {"q": True}
+        with pytest.raises(RequestValidationError):
+            _validate_arguments(route, {"q": 3})
+
+    def test_a_reload_clears_a_removed_entry(self, tmp_path) -> None:
+        app, table, path = _reloading_app(tmp_path, _integer_override())
+
+        _write_parameter_config(path, None)
+        assert self._reload(app) is True
+
+        route = table.get_route("proxy")
+        assert route.parameter_schema_override is None
+        assert route.served_parameters_schema["properties"]["q"]["type"] == "string"
+        assert _validate_arguments(route, {"q": "text"}) == {"q": "text"}
+
+    def test_an_unchanged_reload_does_not_disturb_the_route(self, tmp_path) -> None:
+        app, table, path = _reloading_app(tmp_path, _integer_override())
+        route = table.get_route("proxy")
+        before = route.parameter_schema_override
+        events: list[tuple[str, str]] = []
+        table.add_listener(lambda name, event: events.append((name, event)))
+
+        _write_parameter_config(path, _integer_override())
+        assert self._reload(app) is True
+
+        assert table.get_route("proxy") is route
+        assert route.parameter_schema_override is before
+        assert events == []
+
+    def test_an_unchanged_block_reaches_a_late_registered_tool(self) -> None:
+        """Startup skips an entry whose tool is missing; a later pass applies it."""
+        from toolregistry_server.registry_builder import sync_parameter_overrides
+
+        table = _proxy_table()
+        config = ToolConfig(tool_parameters=_integer_override())
+        assert table.get_route("proxy").parameter_schema_override is None
+
+        sync_parameter_overrides(table, config, previous=config, new_names={"proxy"})
+
+        served = table.get_route("proxy").served_parameters_schema
+        assert served["properties"]["q"]["type"] == "integer"
