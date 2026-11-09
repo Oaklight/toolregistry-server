@@ -692,6 +692,33 @@ class TestRouteOverrides:
         table.override_parameters("greet", None)
         assert route.served_parameters_schema == route.parameters_schema
 
+    def test_clear_without_a_stored_override_is_silent(self) -> None:
+        table = self._table()
+        events: list[tuple[str, str]] = []
+        table.add_listener(lambda name, event: events.append((name, event)))
+        version = table.version
+
+        table.clear_parameter_override("greet")
+
+        assert table.version == version
+        assert events == []
+        assert table.get_route("greet").parameter_schema_override is None
+
+    def test_clear_with_a_stored_override_notifies_once(self) -> None:
+        table = self._table()
+        table.override_parameters(
+            "greet", {"type": "object", "properties": {"name": {"type": "string"}}}
+        )
+        events: list[tuple[str, str]] = []
+        table.add_listener(lambda name, event: events.append((name, event)))
+        version = table.version
+
+        table.clear_parameter_override("greet")
+
+        assert table.version == version + 1
+        assert events == [("greet", ChangeEventType.METADATA_UPDATE.value)]
+        assert table.get_route("greet").parameter_schema_override is None
+
     def test_hint_override_can_suppress_every_claim(self) -> None:
         from toolregistry import ToolRegistry
         from toolregistry.tool import ToolMetadata

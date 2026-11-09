@@ -317,6 +317,23 @@ def _source_app(tmp_path, sources, block):
     return app, table, path
 
 
+def _pet_spec(*operation_ids: str) -> dict:
+    """A minimal OpenAPI document with one GET operation per id."""
+    return {
+        "openapi": "3.0.0",
+        "info": {"title": "Pet API", "version": "1"},
+        "paths": {
+            f"/{operation_id}": {
+                "get": {
+                    "operationId": operation_id,
+                    "responses": {"200": {"description": "ok"}},
+                }
+            }
+            for operation_id in operation_ids
+        },
+    }
+
+
 def _reloading_app(tmp_path, block):
     """Build an app, a live table and the manager that can reload the file."""
     path = tmp_path / "tools.json"
@@ -491,3 +508,28 @@ class TestReloadReappliesParameterOverrides:
             route.served_parameters_schema["properties"]["q"].get("description")
             == "overridden"
         )
+
+    def test_an_openapi_refresh_reaches_a_tool_it_adds(self, tmp_path) -> None:
+        spec_path = tmp_path / "pets.json"
+        spec_path.write_text(json.dumps(_pet_spec("list_pets")), encoding="utf-8")
+        app, table, _ = _source_app(
+            tmp_path,
+            [{"type": "openapi", "url": str(spec_path), "namespace": "pet"}],
+            {"pet-list_owners": {"type": "object", "properties": {}}},
+        )
+        manager = app.source_manager
+        assert manager is not None
+        assert table.get_route("pet-list_pets") is not None
+        assert table.get_route("pet-list_owners") is None
+
+        spec_path.write_text(
+            json.dumps(_pet_spec("list_pets", "list_owners", "list_visits")),
+            encoding="utf-8",
+        )
+        result = manager.refresh(manager.list()[0].to_dict()["id"])
+
+        assert set(result.added) == {"pet-list_owners", "pet-list_visits"}
+        # The entry names ``pet-list_owners`` only; the refresh applies it
+        # without a config reload and leaves the unnamed tool alone.
+        assert table.get_route("pet-list_owners").parameter_schema_override is not None
+        assert table.get_route("pet-list_visits").parameter_schema_override is None

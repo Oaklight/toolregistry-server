@@ -918,18 +918,21 @@ class RouteTable:
         and that contract stays.  A reload can remove a configuration entry
         and the route in the same pass, and the stored override must still
         be forgotten: leaving it in the map re-attaches it to a later tool
-        that takes the same name.  Notifying only when a route exists keeps
-        a removal that leaves no route silent.
+        that takes the same name.  With a route present the published
+        override is cleared; the notification fires only when a stored entry
+        was actually dropped, so a removal that had nothing to clear does
+        not bump the table version or emit an event.
 
         Args:
             tool_name: Tool name whose stored override is dropped.
         """
-        self._parameter_overrides.pop(tool_name, None)
+        removed = self._parameter_overrides.pop(tool_name, None)
         route = self._routes.get(tool_name)
         if route is None:
             return
         route.parameter_schema_override = None
-        self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
+        if removed is not None:
+            self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
 
     def override_parameters(
         self, tool_name: str, parameters: dict[str, Any] | None
