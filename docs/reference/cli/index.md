@@ -38,15 +38,17 @@ toolregistry-server [options] <subcommand> [subcommand-options]
 toolregistry-server openapi [options]
 ```
 
+The standalone server always runs on the vendored `httpserver`: it needs no
+extra, and it has no `--backend` and no `--reload` (both were uvicorn-only).
+The gateway command keeps its `--backend` choice.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--config PATH` | - | Path to a JSONC or YAML configuration file (required) |
 | `--host HOST` | `0.0.0.0` | Bind host |
 | `--port PORT` | `8000` | Bind port |
 | `--tokens PATH` | - | File of Bearer tokens, one per line (`#` starts a comment). Tokens are compared in constant time; `API_BEARER_TOKEN` (comma-separated) is read as well |
-| `--backend {fastapi,httpserver}` | `fastapi` | HTTP backend: `fastapi` (uvicorn) or the vendored, zero-dependency `httpserver` |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest accepted request body. Must be positive; a larger body returns `413` with a JSON error |
-| `--reload` | `false` | Enable auto-reload for development (FastAPI/uvicorn only; ignored with a warning on `httpserver`) |
 | `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
 | `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes (requires the `regex` extra). `0` disables execution |
 | `--regex-budget SECONDS` | `0.25` | Per-request ceiling shared by all spec-supplied regex matches. `0` disables execution |

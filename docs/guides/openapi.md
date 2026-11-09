@@ -185,23 +185,34 @@ Events are emitted when tools are registered, unregistered, enabled, or disabled
 
 ## HTTP Backends
 
-The adapter can serve on either of two backends with the same wire contract:
+The standalone `openapi` command serves on the vendored `httpserver` and needs
+no third-party package. The `gateway` command has two backends with the same
+OpenAPI wire contract:
 
-| Backend | Server | Third-party packages |
-|---|---|---|
-| `fastapi` (default) | uvicorn | FastAPI, uvicorn and their dependencies |
-| `httpserver` | vendored `httpserver` | none |
+| Command | Backend | Server | Third-party packages |
+|---|---|---|---|
+| `openapi` | `httpserver` (only) | vendored `httpserver` | none |
+| `gateway` | `fastapi` (default) | uvicorn | FastAPI and uvicorn (`[gateway]`) |
+| `gateway` | `httpserver` | vendored `httpserver` | none; openapi frontend only |
 
 ```bash
-toolregistry-server openapi --config tools.yaml --backend httpserver
+toolregistry-server openapi --config tools.yaml
+toolregistry-server gateway --config tools.yaml --backend httpserver
 ```
 
 ```python
-OpenAPIAdapter(route_table, backend="httpserver")
-App().serve_openapi(config_path="tools.yaml", backend="httpserver")
+OpenAPIAdapter(route_table)                    # standalone, always httpserver
+App().serve_openapi(config_path="tools.yaml")  # same, through the app façade
 ```
 
-`httpserver` is the zero-dependency path from epic #101. It serves the same routes, the same 422 `{"detail": [...]}` envelope, the same ETag/`304` behaviour on `/tools` and `/openapi.json`, and streams `/events` over Server-Sent Events; a differential test suite exercises both apps over sockets and asserts identical status, `ETag` and body bytes. `--reload` is a uvicorn feature: on `httpserver` it logs a warning and is ignored.
+`httpserver` is the zero-dependency path from epic #101 and the standalone
+server's only backend. It serves the same routes, the same 422
+`{"detail": [...]}` envelope, the same ETag/`304` behaviour on `/tools` and
+`/openapi.json`, and streams `/events` over Server-Sent Events; a differential
+test suite drives both gateway backends over sockets and asserts identical
+status, `ETag` and body bytes. `--backend` is a gateway option only; the
+standalone `openapi` command has no `--backend` and no `--reload`, and passing
+`reload=True` to a gateway run is ignored with a warning.
 
 Both backends encode tool results with the same helper, which uses core's `ToolResultJSONEncoder`: a `bytes` result is base64 on either backend, and non-finite floats and `Decimal` values (`NaN`, `Infinity`) become `null` instead of a bare `NaN` or the string `"NaN"`.
 

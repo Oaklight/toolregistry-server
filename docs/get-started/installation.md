@@ -8,25 +8,31 @@ Install the core package:
 pip install toolregistry-server
 ```
 
-This installs the core routing layer (`RouteTable`, `RouteEntry`) and the dependency-free `httpserver` OpenAPI backend. The FastAPI backend and MCP support are extras.
+This installs the core routing layer (`RouteTable`, `RouteEntry`) and the
+dependency-free `httpserver` OpenAPI server, which is what the standalone
+`openapi` command runs. MCP support and the ASGI gateway backend are extras.
 
 ## With Protocol Support
 
 !!! tip
-    **zsh users** (default on macOS): wrap the package name in quotes, e.g. `pip install 'toolregistry-server[openapi]'` — zsh treats `[]` as glob patterns.
+    **zsh users** (default on macOS): wrap the package name in quotes, e.g. `pip install 'toolregistry-server[gateway]'` — zsh treats `[]` as glob patterns.
 
-### OpenAPI Support
+### ASGI Gateway Backend
 
-For exposing tools as RESTful HTTP endpoints with FastAPI:
+The gateway serves OpenAPI, MCP and the admin panel from one ASGI application.
+Its ASGI backend needs FastAPI and uvicorn:
 
 ```bash
-pip install toolregistry-server[openapi]
+pip install toolregistry-server[gateway]
 ```
 
 This additionally installs:
 
 - `FastAPI` (>=0.119.0)
 - `Uvicorn` with standard extras (>=0.24.0)
+
+The standalone `openapi` command does not need this extra. `[openapi]` is kept
+as an empty alias so existing requirements still resolve; it installs nothing.
 
 ### MCP Support
 
