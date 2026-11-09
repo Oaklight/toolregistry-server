@@ -613,7 +613,7 @@ def record_tool_call(
             exception_type=None if error is None else type(error).__qualname__,
             metadata={
                 "key_id": getattr(principal, "key_id", None),
-                "client_id": getattr(principal, "label", None),
+                "client_id": principal_client_id(principal),
             },
         )
     )
