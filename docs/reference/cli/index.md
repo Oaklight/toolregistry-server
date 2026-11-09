@@ -123,6 +123,7 @@ every request. The admin panel is disabled by default.
 | `--config PATH` | - | Path to a JSONC or YAML configuration file (required) |
 | `--host HOST` | `0.0.0.0` | Bind host |
 | `--port PORT` | `8000` | Bind port |
+| `--socket PATH` | - | Bind a Unix domain socket instead of `--host`/`--port` (POSIX only; takes precedence). Clients need a UDS-capable HTTP transport |
 | `--tokens PATH` | - | File of Bearer tokens applied to every frontend. `API_BEARER_TOKEN` is read as well |
 | `--server-url URL` | derived from `--host`/`--port` | Public MCP URL used in protected-resource metadata |
 | `--backend {fastapi,httpserver}` | `fastapi` | Multiple frontends require `fastapi`; `httpserver` can serve only the openapi frontend |
