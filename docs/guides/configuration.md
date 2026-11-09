@@ -412,7 +412,9 @@ gateway.update_frontend("sse", path="/events")
 关闭写入，并在 `warning` 中报告。
 
 在 `--backend httpserver` 下，OpenAPI 前端没有挂载前缀：它直接服务在监听根
-（`/tools`、`/openapi.json`、`/docs`、`/events`）。因此 `list_frontends()` 把它的
+（`/tools`、`/openapi.json`、`/docs`、`/redoc`、`/events`）。应用构建之后再注册的
+工具立即可调用；被移除的工具保留其路由并返回 503，与 FastAPI 后端一致。
+因此 `list_frontends()` 把它的
 `path` 报告为 `"/"` 并附带一条 `note` 说明原因；把这个 `"/"` 原样传给
 `update_frontend` 会被视为无变更而不是报错，所以保存未改动的记录也能成功。
 

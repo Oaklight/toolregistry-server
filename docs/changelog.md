@@ -18,6 +18,8 @@
 
 - **OpenAPI 源可就地刷新规范文档**（#182）：`SourceManager.refresh(ref)` 会带着 ETag 重新拉取来源保存的 `spec_url`，并把文档交给 core 的 `OpenAPIIntegration.refresh()`。`304` 不做任何改动——不更新 `last_refreshed_at`，不重建路由。文档变化时会对新增、移除与更新的工具做 diff，保持手动禁用的工具仍被禁用，并重新应用命名空间标签、部署 profile 与 `tool_metadata`；spec 正则无法编译的工具会被丢弃并在 diff 中报告。当保存的 base URL 本就来自文档时，移动后的 `servers[0]` 会被采纳，且只有该候选地址接受出站地址策略检查。每次拉取都在 I/O 前重新校验规范 URL；失败时注册表与上一份有效文档保持不变。通过 `POST /ext/gateway/sources/<id>/refresh` 与 OpenAPI 源行上的 **刷新规范** 动作暴露。见[OpenAPI API](guides/openapi.md)。
 
+- **httpserver 版 OpenAPI 应用补齐 FastAPI 组装中剩余的表面**（epic #101）：`/redoc` 从 CDN 提供 ReDoc，版本固定并带 SRI 哈希，运维配置的标题像 `/docs` 一样经过 HTML 转义。应用构建之后注册的工具通过 `RouteTable` 变更监听器即时可调用，无需重启；被移除的工具保留其路由并返回 503，与 FastAPI 的快照行为一致。关闭时会等待进行中的请求完成并移除监听器。默认后端不变；移除 FastAPI 是下一阶段。见[配置](guides/configuration.md)。
+
 ### 修复
 
 - **启动来源现在也会触发 `on_registered`**（#203）：`SourceManager.apply_initial()` 会注册配置中的来源，但从不调用 `on_registered`，因此依赖该钩子做注册后处理的下游——例如 Hub 的 `output_schema` 处理——在启动时不会执行，工具要等到后续一次 diff 才获得这些元数据。现在启动过程会在注册循环结束后以本次注册的全部名称调用一次钩子，位置与一次 diff 相同：在 `tool_metadata` 与部署配置过滤之前。没有任何名称注册时（空配置或全部来源被排除）不调用；钩子抛异常时记录日志，工具保持注册。
