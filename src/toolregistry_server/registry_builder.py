@@ -29,6 +29,7 @@ One-shot usage (standalone server)::
 
 import importlib
 import warnings
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -626,7 +627,12 @@ def registry_from_config(
 # ---------------------------------------------------------------------------
 
 
-def apply_parameter_overrides(route_table: "RouteTable", config: "ToolConfig") -> None:
+def apply_parameter_overrides(
+    route_table: "RouteTable",
+    config: "ToolConfig",
+    *,
+    names: Iterable[str] | None = None,
+) -> None:
     """Apply ``config.tool_parameters`` to *route_table*.
 
     The override changes the schema this route publishes and validates
@@ -646,8 +652,16 @@ def apply_parameter_overrides(route_table: "RouteTable", config: "ToolConfig") -
     Args:
         route_table: The table built from the registered tools.
         config: The configuration the registry was built from.
+        names: Apply only the entries for these tool names.  ``None``
+            applies every entry.  A diff uses this to reach the tools it
+            registered without re-logging entries that did not change.
     """
     parameters = getattr(config, "tool_parameters", {})
+    if names is not None:
+        wanted = set(names)
+        parameters = {
+            name: schema for name, schema in parameters.items() if name in wanted
+        }
     for tool_name, schema in parameters.items():
         if route_table.get_route(tool_name) is None:
             logger.warning(
@@ -674,6 +688,53 @@ def apply_parameter_overrides(route_table: "RouteTable", config: "ToolConfig") -
                 tool=tool_name,
                 error=str(warning.message),
             )
+
+
+def sync_parameter_overrides(
+    route_table: "RouteTable",
+    config: "ToolConfig",
+    *,
+    previous: "ToolConfig | None" = None,
+    new_names: Iterable[str] = (),
+) -> None:
+    """Bring *route_table* in line with ``config.tool_parameters``.
+
+    A reload re-reads the whole file, so the block can shrink as well as
+    grow.  :func:`apply_parameter_overrides` only applies names the block
+    carries; this wrapper also clears a name the previous block carried and
+    the current one does not, so a removed entry stops shaping the served
+    schema without a restart.  Only names the previous block carried are
+    cleared: an override set programmatically is not the file's to remove.
+
+    An unchanged block normally leaves the table alone entirely, so a
+    reload that did not touch ``tool_parameters`` produces no route
+    notifications.  When *new_names* names tools this pass registered, the
+    entries for them are applied even then: startup may have skipped such
+    an entry while the tool was missing.  A rejected entry is logged and
+    skipped exactly as at startup, so one bad entry never fails the reload.
+
+    Args:
+        route_table: The live table serving the registry.
+        config: The configuration the reload produced.
+        previous: The configuration the table was last synchronised with,
+            or ``None`` for a first synchronisation.
+        new_names: Tools registered since the last synchronisation.
+    """
+    current = getattr(config, "tool_parameters", {})
+    previous_block = (
+        getattr(previous, "tool_parameters", {}) if previous is not None else {}
+    )
+    pending = set(new_names)
+    if previous_block == current:
+        if not pending:
+            return
+        apply_parameter_overrides(route_table, config, names=pending)
+        return
+    for tool_name in set(previous_block) - set(current):
+        # A tool the reload also unregistered has no route left to clear.
+        if route_table.get_route(tool_name) is not None:
+            route_table.override_parameters(tool_name, None)
+    apply_parameter_overrides(route_table, config)
 
 
 # ---------------------------------------------------------------------------

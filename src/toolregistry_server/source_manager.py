@@ -77,6 +77,7 @@ from .registry_builder import (
     register_mcp_source,
     register_openapi_source,
     register_python_source,
+    sync_parameter_overrides,
 )
 
 if TYPE_CHECKING:
@@ -1067,6 +1068,7 @@ class SourceManager:
     def _apply_diff(self, new_config: ToolConfig) -> dict[str, int]:
         """Apply *new_config* source by source and update the entries."""
         counts = {"registered": 0, "unregistered": 0, "enabled": 0, "disabled": 0}
+        previous_config = self.config
         old_sources = index_sources(self.config.tools)
         new_sources = index_sources(new_config.tools)
         new_names: set[str] = set()
@@ -1105,7 +1107,26 @@ class SourceManager:
                 # manager on the old config would desynchronise them.
                 self.config = new_config
                 self._entries = entries
+        self._sync_parameter_overrides(previous_config, new_config, new_names)
         return counts
+
+    def _sync_parameter_overrides(
+        self, previous: ToolConfig, current: ToolConfig, new_names: set[str]
+    ) -> None:
+        """Re-apply the reloaded ``tool_parameters`` to the live table.
+
+        Startup applies the block once, when the route table is built; a
+        reload changes it without rebuilding the table, so a diff has to
+        bring the routes in line (#165).  Removed entries are cleared, an
+        unchanged block is a no-op unless this pass registered a tool the
+        block names, and a rejected entry is logged and skipped so one bad
+        entry never fails the reload.
+        """
+        if self.route_table is None:
+            return
+        sync_parameter_overrides(
+            self.route_table, current, previous=previous, new_names=new_names
+        )
 
     def _after_registration(self, new_config: ToolConfig, new_names: set[str]) -> None:
         """Run the post-registration steps for one diff.
