@@ -1,7 +1,19 @@
-"""Tests for the OpenAPI adapter module."""
+"""Tests for the OpenAPI adapter module.
+
+Contract tests run against both backends through ``make_client``.  Tests
+that are genuinely about the FastAPI assembly (``create_openapi_app``, the
+ASGI middleware, ``TestClient``-only loop semantics) stay FastAPI-only; they
+are removed with the assembly when workstream 4 retires it.
+"""
 
 import asyncio
+import json as _json
+import threading
+import time
+import urllib.error
+import urllib.request
 from io import StringIO
+from urllib.parse import urlencode
 
 import pytest
 from toolregistry import ToolRegistry
@@ -23,6 +35,7 @@ from toolregistry_server.adapters.openapi.adapter import (
     setup_dynamic_openapi,
 )
 from toolregistry_server.adapters.openapi.middleware import add_etag_middleware
+from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
 
 
 def _capture_logs(monkeypatch, module):
@@ -67,6 +80,151 @@ def registry() -> ToolRegistry:
 def route_table(registry: ToolRegistry) -> RouteTable:
     """Create a RouteTable from the registry."""
     return RouteTable(registry)
+
+
+# ============== Backend-neutral client ==============
+
+
+class _Headers(dict):
+    """Case-insensitive response headers, like ``httpx.Headers``."""
+
+    def __getitem__(self, key):
+        return super().__getitem__(str(key).lower())
+
+    def __setitem__(self, key, value):
+        super().__setitem__(str(key).lower(), value)
+
+    def get(self, key, default=None):
+        return super().get(str(key).lower(), default)
+
+    def __contains__(self, key):
+        return super().__contains__(str(key).lower())
+
+
+class _Reply:
+    """The subset of ``httpx.Response`` the contract tests use."""
+
+    def __init__(self, status_code: int, headers, content: bytes) -> None:
+        self.status_code = status_code
+        self.headers = _Headers(headers)
+        self.content = content
+
+    def json(self):
+        return _json.loads(self.content)
+
+    @property
+    def text(self) -> str:
+        return self.content.decode()
+
+
+class _FastAPIClient:
+    """Drive the FastAPI app in process through ``TestClient``."""
+
+    def __init__(self, table, **kwargs) -> None:
+        from fastapi.testclient import TestClient
+
+        self._client = TestClient(
+            create_openapi_app(table, **kwargs), raise_server_exceptions=False
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def get(self, path, headers=None) -> _Reply:
+        response = self._client.get(path, headers=headers)
+        return _Reply(response.status_code, dict(response.headers), response.content)
+
+    def post(self, path, json=None, content=None, data=None, headers=None) -> _Reply:
+        kwargs = {}
+        if json is not None:
+            kwargs["json"] = json
+        if content is not None:
+            kwargs["content"] = content
+        if data is not None:
+            kwargs["data"] = data
+        response = self._client.post(path, headers=headers, **kwargs)
+        return _Reply(response.status_code, dict(response.headers), response.content)
+
+
+class _HttpServerClient:
+    """Drive the httpserver app over a real socket on an ephemeral port."""
+
+    def __init__(self, table, **kwargs) -> None:
+        self._app = create_httpserver_app(table, **kwargs)
+        self._thread = threading.Thread(
+            target=self._app.run,
+            kwargs={"host": "127.0.0.1", "port": 0},
+            daemon=True,
+        )
+        self._thread.start()
+        deadline = time.time() + 5
+        while time.time() < deadline and not self._app.port:
+            time.sleep(0.02)
+        if not self._app.port:
+            raise RuntimeError("the httpserver app did not start")
+        self._base = f"http://127.0.0.1:{self._app.port}"
+
+    def close(self) -> None:
+        self._app.shutdown()
+        self._thread.join(timeout=5)
+
+    def _request(self, request) -> _Reply:
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return _Reply(response.status, dict(response.headers), response.read())
+        except urllib.error.HTTPError as error:
+            return _Reply(error.code, dict(error.headers), error.read())
+
+    def get(self, path, headers=None) -> _Reply:
+        return self._request(
+            urllib.request.Request(
+                self._base + path, headers=dict(headers or {}), method="GET"
+            )
+        )
+
+    def post(self, path, json=None, content=None, data=None, headers=None) -> _Reply:
+        merged = dict(headers or {})
+        body = content
+        if json is not None:
+            body = _json.dumps(json).encode()
+            merged.setdefault("Content-Type", "application/json")
+        elif data is not None:
+            body = urlencode(data).encode()
+            merged.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        return self._request(
+            urllib.request.Request(
+                self._base + path, data=body, headers=merged, method="POST"
+            )
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_signal_handlers(monkeypatch):
+    """``App.run`` installs signal handlers, which only work in the main thread."""
+    loop_classes = [asyncio.BaseEventLoop]
+    unix = getattr(asyncio, "unix_events", None)
+    if unix is not None:
+        loop_classes.append(unix._UnixSelectorEventLoop)  # noqa: SLF001 - test shim
+    for loop_class in loop_classes:
+        monkeypatch.setattr(loop_class, "add_signal_handler", lambda *a, **k: None)
+
+
+@pytest.fixture(params=["fastapi", "httpserver"])
+def make_client(request):
+    """Build a client for one backend; close every client at teardown."""
+    clients = []
+
+    def factory(table, **kwargs):
+        if request.param == "fastapi":
+            client = _FastAPIClient(table, **kwargs)
+        else:
+            client = _HttpServerClient(table, **kwargs)
+        clients.append(client)
+        return client
+
+    yield factory
+    for client in clients:
+        client.close()
 
 
 # ============== Request Validation Tests ==============
@@ -372,14 +530,11 @@ class TestCreateOpenAPIApp:
 
 
 class TestOpenAPIIntegration:
-    """Integration tests using TestClient."""
+    """Integration tests, run against both backends."""
 
-    def test_sync_endpoint(self, route_table: RouteTable):
+    def test_sync_endpoint(self, route_table: RouteTable, make_client):
         """Test calling a sync endpoint."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         response = client.post(
             "/tools/default/add",
@@ -398,22 +553,21 @@ class TestOpenAPIIntegration:
         ],
         ids=["array", "string", "number", "form"],
     )
-    def test_non_object_body_returns_422_not_500(self, route_table: RouteTable, kwargs):
+    def test_non_object_body_returns_422_not_500(
+        self, route_table: RouteTable, make_client, kwargs
+    ):
         """Malformed bodies are client errors, never internal server errors."""
-        from fastapi.testclient import TestClient
-
-        client = TestClient(create_openapi_app(route_table))
+        client = make_client(route_table)
         response = client.post("/tools/default/add", **kwargs)
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert detail[0]["loc"] == ["body"]
+        # The second loc element is parser-specific: a form body is a JSON
+        # decode error on the httpserver, a body-type error on FastAPI.
+        assert detail[0]["loc"][0] == "body"
 
-    def test_async_endpoint(self, route_table: RouteTable):
+    def test_async_endpoint(self, route_table: RouteTable, make_client):
         """Test calling an async endpoint."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         response = client.post(
             "/tools/default/async_greet",
@@ -422,12 +576,9 @@ class TestOpenAPIIntegration:
         assert response.status_code == 200
         assert response.json() == "Hello async, World!"
 
-    def test_disabled_tool_returns_503(self, route_table: RouteTable):
+    def test_disabled_tool_returns_503(self, route_table: RouteTable, make_client):
         """Test that disabled tools return 503."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         # Disable the tool
         route_table.disable("add", reason="Testing")
@@ -439,12 +590,11 @@ class TestOpenAPIIntegration:
         assert response.status_code == 503
         assert "disabled" in response.json()["detail"].lower()
 
-    def test_openapi_schema_excludes_disabled(self, route_table: RouteTable):
+    def test_openapi_schema_excludes_disabled(
+        self, route_table: RouteTable, make_client
+    ):
         """Test that OpenAPI schema excludes disabled tools."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         # Get schema before disabling
         response = client.get("/openapi.json")
@@ -459,18 +609,20 @@ class TestOpenAPIIntegration:
         schema_after = response.json()
         assert "/tools/default/add" not in schema_after["paths"]
 
-    def test_events_cap_rejects_new_subscribers(self, route_table: RouteTable):
+    def test_events_cap_rejects_new_subscribers(
+        self, route_table: RouteTable, make_client
+    ):
         """A capped ``/events`` returns 503 instead of subscribing (#149)."""
-        from fastapi.testclient import TestClient
-
-        client = TestClient(create_openapi_app(route_table, max_sse_subscribers=0))
+        client = make_client(route_table, max_sse_subscribers=0)
         response = client.get("/events")
         assert response.status_code == 503
         assert response.json()["detail"] == "Too many event subscribers"
 
-    def test_negative_events_cap_is_rejected(self, route_table: RouteTable):
-        with pytest.raises(ValueError, match="max_subscribers"):
-            create_openapi_app(route_table, max_sse_subscribers=-1)
+    def test_negative_events_cap_is_rejected(
+        self, route_table: RouteTable, make_client
+    ):
+        with pytest.raises(ValueError, match="subscribers"):
+            make_client(route_table, max_sse_subscribers=-1)
 
 
 # ============== Dynamic OpenAPI Tests ==============
@@ -521,11 +673,12 @@ class TestDynamicOpenAPI:
 
 
 class TestToolsEndpoint:
-    """Tests for the /tools endpoint."""
+    """Tests for the /tools endpoint, run against both backends."""
 
-    def test_spec_regexes_stay_in_the_published_schema(self, route_table):
+    def test_spec_regexes_stay_in_the_published_schema(
+        self, route_table: RouteTable, make_client
+    ):
         """Filtering the validation copy must not change the contract."""
-        from fastapi.testclient import TestClient
 
         def proxy(**kwargs):
             return kwargs
@@ -542,7 +695,7 @@ class TestToolsEndpoint:
         )
         route_table._registry.register(tool)  # noqa: SLF001 - test fixture
         route_table.refresh_all()
-        client = TestClient(create_openapi_app(route_table))
+        client = make_client(route_table)
 
         before = client.get("/openapi.json").json()
         etag_before = client.get("/tools").headers["etag"]
@@ -558,12 +711,9 @@ class TestToolsEndpoint:
         # The served schema drives the ETag; validation must not move it.
         assert client.get("/tools").headers["etag"] == etag_before
 
-    def test_tools_endpoint_returns_list(self, route_table: RouteTable):
+    def test_tools_endpoint_returns_list(self, route_table: RouteTable, make_client):
         """Test that /tools endpoint returns a list of tools."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         response = client.get("/tools")
         assert response.status_code == 200
@@ -574,12 +724,9 @@ class TestToolsEndpoint:
         assert isinstance(data["tools"], list)
         assert len(data["tools"]) == 3  # greet, add, async_greet
 
-    def test_tools_endpoint_tool_structure(self, route_table: RouteTable):
+    def test_tools_endpoint_tool_structure(self, route_table: RouteTable, make_client):
         """Test that each tool has the expected structure."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         response = client.get("/tools")
         data = response.json()
@@ -591,12 +738,9 @@ class TestToolsEndpoint:
             assert "path" in tool
             assert "description" in tool
 
-    def test_tools_endpoint_etag_header(self, route_table: RouteTable):
+    def test_tools_endpoint_etag_header(self, route_table: RouteTable, make_client):
         """Test that /tools endpoint returns ETag header."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         response = client.get("/tools")
         assert response.status_code == 200
@@ -606,12 +750,11 @@ class TestToolsEndpoint:
         data = response.json()
         assert response.headers["ETag"] == data["etag"]
 
-    def test_tools_endpoint_conditional_request(self, route_table: RouteTable):
+    def test_tools_endpoint_conditional_request(
+        self, route_table: RouteTable, make_client
+    ):
         """Test that /tools endpoint supports If-None-Match."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         # First request to get ETag
         response1 = client.get("/tools")
@@ -622,12 +765,11 @@ class TestToolsEndpoint:
         response2 = client.get("/tools", headers={"If-None-Match": etag})
         assert response2.status_code == 304
 
-    def test_tools_endpoint_etag_changes_on_disable(self, route_table: RouteTable):
+    def test_tools_endpoint_etag_changes_on_disable(
+        self, route_table: RouteTable, make_client
+    ):
         """Test that ETag changes when a tool is disabled."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         # Get initial ETag
         response1 = client.get("/tools")
@@ -643,12 +785,11 @@ class TestToolsEndpoint:
         # ETags should be different
         assert etag1 != etag2
 
-    def test_tools_endpoint_excludes_disabled(self, route_table: RouteTable):
+    def test_tools_endpoint_excludes_disabled(
+        self, route_table: RouteTable, make_client
+    ):
         """Test that /tools endpoint excludes disabled tools."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app)
+        client = make_client(route_table)
 
         # Initially all tools visible
         response1 = client.get("/tools")
@@ -670,24 +811,18 @@ class TestToolsEndpoint:
 
 
 class TestETagMiddleware:
-    """Tests for ETag middleware."""
+    """Tests for ETag middleware, run against both backends."""
 
-    def test_etag_middleware_adds_header(self, route_table: RouteTable):
+    def test_etag_middleware_adds_header(self, route_table: RouteTable, make_client):
         """Test that ETag middleware adds ETag header to responses."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table, enable_etag=True)
-        client = TestClient(app)
+        client = make_client(route_table, enable_etag=True)
 
         response = client.get("/tools")
         assert "ETag" in response.headers
 
-    def test_etag_middleware_304_on_match(self, route_table: RouteTable):
+    def test_etag_middleware_304_on_match(self, route_table: RouteTable, make_client):
         """Test that middleware returns 304 when ETag matches."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table, enable_etag=True)
-        client = TestClient(app)
+        client = make_client(route_table, enable_etag=True)
 
         # Get ETag
         response1 = client.get("/tools")
@@ -697,36 +832,29 @@ class TestETagMiddleware:
         response2 = client.get("/tools", headers={"If-None-Match": etag})
         assert response2.status_code == 304
 
-    def test_etag_middleware_200_on_mismatch(self, route_table: RouteTable):
+    def test_etag_middleware_200_on_mismatch(
+        self, route_table: RouteTable, make_client
+    ):
         """Test that middleware returns 200 when ETag doesn't match."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table, enable_etag=True)
-        client = TestClient(app)
+        client = make_client(route_table, enable_etag=True)
 
         # Request with non-matching If-None-Match
         response = client.get("/tools", headers={"If-None-Match": '"invalid"'})
         assert response.status_code == 200
 
-    def test_etag_middleware_disabled(self, route_table: RouteTable):
+    def test_etag_middleware_disabled(self, route_table: RouteTable, make_client):
         """Test that ETag middleware can be disabled."""
-        from fastapi.testclient import TestClient
-
         # Create app without ETag middleware
-        app = create_openapi_app(route_table, enable_etag=False)
-        client = TestClient(app)
+        client = make_client(route_table, enable_etag=False)
 
         # /tools endpoint still adds ETag header (it's built into the endpoint)
         response = client.get("/tools")
         assert response.status_code == 200
         # The endpoint itself adds ETag, but middleware doesn't intercept
 
-    def test_etag_middleware_only_on_get(self, route_table: RouteTable):
+    def test_etag_middleware_only_on_get(self, route_table: RouteTable, make_client):
         """Test that ETag middleware only applies to GET requests."""
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(route_table, enable_etag=True)
-        client = TestClient(app)
+        client = make_client(route_table, enable_etag=True)
 
         # POST request should not be affected by ETag middleware
         response = client.post(
@@ -757,20 +885,19 @@ class TestAddToolsEndpoint:
 
 
 class TestToolExecutionErrorHandling:
-    """Tests for tool execution error handling in OpenAPI endpoints."""
+    """Tests for tool execution error handling, run against both backends."""
 
-    def test_sync_tool_exception_returns_500(self, route_table: RouteTable):
+    def test_sync_tool_exception_returns_500(
+        self, route_table: RouteTable, make_client
+    ):
         """Sync tool that raises should return structured 500."""
-        from fastapi.testclient import TestClient
 
         def fail_sync() -> str:
             raise RuntimeError("boom")
 
         route_table._registry.register(fail_sync, name="fail_sync")
         route_table._rebuild()
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app, raise_server_exceptions=False)
+        client = make_client(route_table)
 
         response = client.post("/tools/default/fail_sync", json={})
         assert response.status_code == 500
@@ -778,24 +905,31 @@ class TestToolExecutionErrorHandling:
         assert detail == "Tool 'fail_sync' execution failed"
         assert "boom" not in detail
 
-    def test_async_tool_exception_returns_500(self, route_table: RouteTable):
+    def test_async_tool_exception_returns_500(
+        self, route_table: RouteTable, make_client
+    ):
         """Async tool that raises should return structured 500."""
-        from fastapi.testclient import TestClient
 
         async def fail_async() -> str:
             raise ValueError("async boom")
 
         route_table._registry.register(fail_async, name="fail_async")
         route_table._rebuild()
-
-        app = create_openapi_app(route_table)
-        client = TestClient(app, raise_server_exceptions=False)
+        client = make_client(route_table)
 
         response = client.post("/tools/default/fail_async", json={})
         assert response.status_code == 500
         detail = response.json()["detail"]
         assert detail == "Tool 'fail_async' execution failed"
         assert "async boom" not in detail
+
+
+class TestFastAPITracebackLogging:
+    """The FastAPI assembly's traceback logging.
+
+    The httpserver app logs the same traceback from its own handler; see
+    ``tests/test_openapi_server_app.py``.
+    """
 
     def test_sync_tool_exception_traceback_is_logged(
         self, route_table: RouteTable, monkeypatch
@@ -990,32 +1124,33 @@ class TestOperationExtensions:
         return RouteTable(registry)
 
     @staticmethod
-    def _operation(table: RouteTable, tool_name: str) -> dict:
-        from fastapi.testclient import TestClient
-
-        app = create_openapi_app(table)
-        schema = TestClient(app).get("/openapi.json").json()
+    def _operation(table: RouteTable, tool_name: str, make_client) -> dict:
+        schema = make_client(table).get("/openapi.json").json()
         return schema["paths"][f"/tools/default/{tool_name}"]["post"]
 
-    def test_read_only_extensions(self, annotated_table: RouteTable) -> None:
-        op = self._operation(annotated_table, "current_time")
+    def test_read_only_extensions(
+        self, annotated_table: RouteTable, make_client
+    ) -> None:
+        op = self._operation(annotated_table, "current_time", make_client)
         assert op["x-read-only"] is True
         assert op["x-destructive"] is False
         assert op["x-idempotent"] is True
         assert op["x-open-world"] is False
         assert op["x-title"] == "Current Time"
 
-    def test_destructive_extensions(self, annotated_table: RouteTable) -> None:
-        op = self._operation(annotated_table, "remove_file")
+    def test_destructive_extensions(
+        self, annotated_table: RouteTable, make_client
+    ) -> None:
+        op = self._operation(annotated_table, "remove_file", make_client)
         assert op["x-destructive"] is True
         assert op["x-idempotent"] is False
         # Unset stays unset; the extension is absent, not fabricated.
         assert "x-read-only" not in op
 
     def test_unannotated_operation_has_no_extensions(
-        self, annotated_table: RouteTable
+        self, annotated_table: RouteTable, make_client
     ) -> None:
-        op = self._operation(annotated_table, "plain")
+        op = self._operation(annotated_table, "plain", make_client)
         assert not [key for key in op if key.startswith("x-")]
 
 
