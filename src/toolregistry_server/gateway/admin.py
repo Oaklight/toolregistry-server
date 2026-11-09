@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
+import ipaddress
 import json
 import shlex
 import threading
@@ -86,6 +88,17 @@ _HOP_BY_HOP = frozenset(
 )
 
 _MCP_TRANSPORT_ALIASES = {"http": "streamable-http"}
+
+#: Address the hosted panel binds.  It must be a loopback address: the
+#: gateway is then the only peer that can reach the panel, which is what
+#: lets the panel trust a forwarded client address.
+#:
+#: Single-tenant assumption: while the panel binds loopback, any local
+#: process that can reach the ephemeral port is a trusted peer and can
+#: forge a throttle key.  That is better than locking out every remote
+#: client, and no worse than the local exposure before the proxy existed,
+#: but the host must not run untrusted code.
+_PANEL_BIND_HOST = "127.0.0.1"
 
 #: Headers that state where a request came from.  The gateway is the edge,
 #: so it replaces a client-supplied value with what the ASGI scope saw
@@ -601,9 +614,24 @@ class GatewayAdminHost:
             if self._source_manager is not None
             else None
         )
+        trusted: dict[str, Any] = {}
+        # The panel listens on loopback only, so this gateway is the only
+        # peer that can reach it; trusting that peer lets the panel key its
+        # authentication throttle on the client the gateway saw instead of
+        # collapsing everyone onto 127.0.0.1.  If the bind address stops
+        # being loopback, any peer could reach the panel, so nothing may be
+        # trusted to state a forwarded address.
+        #
+        # ``trusted_proxies`` reached core after the 0.20.1 floor.  Check
+        # for it so a released core keeps working; this detection goes away
+        # when the floor moves to core 0.21.0.
+        if _binds_loopback(_PANEL_BIND_HOST) and "trusted_proxies" in (
+            inspect.signature(server_factory.__init__).parameters
+        ):
+            trusted["trusted_proxies"] = (_PANEL_BIND_HOST,)
         return server_factory(
             self._registry,
-            host="127.0.0.1",
+            host=_PANEL_BIND_HOST,
             port=0,
             serve_ui=True,
             auth_token=self._admin_token,
@@ -615,6 +643,7 @@ class GatewayAdminHost:
             # condition for disabling the allowlist.
             allowed_hosts=(),
             allow_private_hosts=self._allow_private_hosts,
+            **trusted,
         )
 
     def ensure_started(self) -> int:
@@ -781,6 +810,14 @@ def _incoming_host(headers: Sequence[tuple[bytes, bytes]]) -> bytes | None:
         if name.lower() == b"host":
             return value
     return None
+
+
+def _binds_loopback(host: str) -> bool:
+    """Return whether *host* is a literal loopback address."""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 async def _forward(
