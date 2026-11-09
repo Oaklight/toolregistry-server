@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import threading
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Literal
@@ -53,6 +54,7 @@ from .frontends import (
     normalize_path,
 )
 from .persistence import load_frontend_settings, persist_frontend_settings
+from .unix import prepare_unix_socket
 
 logger = get_logger()
 
@@ -469,6 +471,8 @@ class GatewayAdapter(Adapter):
             resource metadata.
         host: Bind host, also used to derive metadata URLs.
         port: Bind port, also used to derive metadata URLs.
+        socket_path: Unix domain socket to bind instead of a TCP address.
+            POSIX only; takes precedence over ``host`` and ``port``.
         max_body_size: Largest request body accepted by the OpenAPI
             frontend.
         max_sse_subscribers: Largest number of concurrent OpenAPI
@@ -509,6 +513,7 @@ class GatewayAdapter(Adapter):
         server_url: str | None = None,
         host: str = "0.0.0.0",
         port: int = 8000,
+        socket_path: str | None = None,
         max_body_size: int = DEFAULT_MAX_BODY_SIZE,
         max_sse_subscribers: int = DEFAULT_MAX_SSE_SUBSCRIBERS,
         regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
@@ -545,6 +550,7 @@ class GatewayAdapter(Adapter):
         self._server_url = server_url
         self._host = host
         self._port = port
+        self._socket_path = socket_path
         self._max_body_size = max_body_size
         self._max_sse_subscribers = max_sse_subscribers
         self._regex_timeout = regex_timeout
@@ -1013,6 +1019,7 @@ class GatewayAdapter(Adapter):
         host: str = "0.0.0.0",
         port: int = 8000,
         reload: bool = False,
+        socket_path: str | None = None,
         **kwargs,
     ) -> None:
         """Start the gateway server (blocking).
@@ -1021,39 +1028,55 @@ class GatewayAdapter(Adapter):
             host: Host to bind to.
             port: Port to bind to.
             reload: Accepted for CLI parity; ignored in gateway mode.
+            socket_path: Unix socket to bind instead of *host*/*port*.
+                ``None`` keeps the socket configured at construction, if any.
         """
         if reload:
             logger.warning("--reload is not supported in gateway mode; it is ignored")
+        target = socket_path if socket_path is not None else self._socket_path
         self._host = host
         self._port = port
+        self._socket_path = target
+        where = f"unix:{target}" if target else f"{host}:{port}"
 
         if self._backend == "httpserver":
-            logger.info(f"Starting gateway (openapi only, httpserver) on {host}:{port}")
+            logger.info(f"Starting gateway (openapi only, httpserver) on {where}")
             try:
-                self._openapi_app.run(host=host, port=port)
+                self._openapi_app.run(host=host, port=port, socket=target)
             finally:
                 self.close()
             return
 
-        logger.info(f"Starting gateway on {host}:{port}")
-        asyncio.run(self.run_async(host=host, port=port))
+        logger.info(f"Starting gateway on {where}")
+        asyncio.run(self.run_async(host=host, port=port, socket_path=target))
 
     async def run_async(self, **kwargs) -> None:
         """Start the gateway server in the current event loop.
 
         Args:
-            **kwargs: ``host`` and ``port`` bind options.  Other keywords are
-                accepted for parity with :meth:`Adapter.run_async`.
+            **kwargs: ``host``, ``port`` and ``socket_path`` bind options.
+                Other keywords are accepted for parity with
+                :meth:`Adapter.run_async`.
         """
         import uvicorn
 
         host = kwargs.get("host", "0.0.0.0")
         port = kwargs.get("port", 8000)
+        target: str | None = kwargs.get("socket_path")
         self._host = host
         self._port = port
-        server = uvicorn.Server(
-            uvicorn.Config(self._asgi, host=host, port=port, log_level="info")
-        )
+        self._socket_path = target
+        config: dict[str, Any] = {"log_level": "info"}
+        if target is not None:
+            prepare_unix_socket(target)
+            config["uds"] = target
+        else:
+            config["host"] = host
+            config["port"] = port
+        server = uvicorn.Server(uvicorn.Config(self._asgi, **config))
+        # uvicorn creates the socket during serve(); a umask of 0177 makes the
+        # socket file mode 0600 instead of the default 0755.
+        previous_umask = os.umask(0o177) if target is not None else None
         try:
             await server.serve()
         except KeyboardInterrupt:
@@ -1061,6 +1084,8 @@ class GatewayAdapter(Adapter):
         except asyncio.CancelledError:
             logger.info("Gateway shutdown requested (CancelledError)")
         finally:
+            if previous_umask is not None:
+                os.umask(previous_umask)
             # uvicorn closes the listener and the lifespan on its own graceful
             # path; this covers an interrupted serve(), where it may not.
             await self.shutdown()
@@ -1084,6 +1109,16 @@ class GatewayAdapter(Adapter):
             type=int,
             default=8000,
             help="Port to bind the gateway to (default: 8000)",
+        )
+        parser.add_argument(
+            "--socket",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help=(
+                "Unix domain socket to bind instead of --host/--port "
+                "(POSIX only; not usable by clients without a UDS transport)"
+            ),
         )
         parser.add_argument(
             "--tokens",
@@ -1283,6 +1318,7 @@ class GatewayAdapter(Adapter):
             backend=kwargs.get("backend", "fastapi"),
             config_path=kwargs.get("config_path"),
             write_config=kwargs.get("write_config", True),
+            socket_path=kwargs.get("socket_path"),
             server_url=kwargs.get("server_url"),
             host=kwargs.get("host", "0.0.0.0"),
             port=kwargs.get("port", 8000),

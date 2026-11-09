@@ -1146,6 +1146,7 @@ class TestGatewayCommand:
             profile=None,
             host="0.0.0.0",
             port=9000,
+            socket_path=None,
             tokens_path=None,
             server_url=None,
             backend="fastapi",
@@ -1169,3 +1170,10 @@ class TestGatewayCommand:
             config_reload=False,
             write_config=True,
         )
+
+    @patch("toolregistry_server.app.App.serve_gateway")
+    def test_gateway_command_passes_socket(self, mock_serve):
+        """--socket reaches the gateway adapter (#145)."""
+        main(["gateway", "--config", "tools.yaml", "--socket", "/tmp/hub.sock"])
+
+        assert mock_serve.call_args.kwargs["socket_path"] == "/tmp/hub.sock"

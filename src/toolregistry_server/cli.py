@@ -311,6 +311,7 @@ class CLI:
                 "profile": getattr(parsed, "profile", None),
                 "host": parsed.host,
                 "port": parsed.port,
+                "socket_path": getattr(parsed, "socket_path", None),
                 "tokens_path": getattr(parsed, "tokens", None),
                 "server_url": getattr(parsed, "server_url", None),
                 "backend": getattr(parsed, "backend", "fastapi"),
