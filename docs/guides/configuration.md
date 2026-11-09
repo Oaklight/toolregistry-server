@@ -219,6 +219,29 @@ tools:
     enabled: false  # 等 API 密钥配置好再启用
 ```
 
+## 按路由的参数覆盖
+
+`tool_parameters` 用于替换某条路由对外发布并据以校验的参数 schema，不修改已注册的工具本身。它是顶层块，按精确的已注册工具名索引，与 `tool_metadata` 的键相同：
+
+```yaml
+tool_parameters:
+  calculator-evaluate:
+    type: object
+    properties:
+      expression:
+        type: string
+      precision:
+        type: integer
+    required: [expression]
+```
+
+每个值必须是 JSON Schema 对象。`type` 可省略、为 `"object"`，或为包含 `"object"` 的列表；`properties` 出现时必须是映射。
+
+服务器在注册完成、构建路由表时应用该块，并在注册表发生变化时再次应用：配置热重载会应用、修改或清除条目；source 重试成功后会为它带回的工具应用条目；OpenAPI 刷新会为它新增的工具应用条目。兼容性按工具自身的模型判断：比模型更严格的覆盖会记日志并跳过，更宽松的会记警告并应用，未注册工具的条目会记日志并跳过。单条条目不会导致启动失败。
+
+!!! note
+    该块需要 `toolregistry` 0.21.0 或更高版本。更旧的 core 不为该键建模，因此该块在那里不生效。
+
 ## 部署配置
 
 `--profile` 在所有源注册完成后应用命名过滤器。配置文件可以在 `profiles:` 下覆盖内置默认值：

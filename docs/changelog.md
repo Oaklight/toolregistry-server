@@ -20,6 +20,8 @@
 
 - **httpserver 版 OpenAPI 应用补齐 FastAPI 组装中剩余的表面**（epic #101）：`/redoc` 从 CDN 提供 ReDoc，版本固定并带 SRI 哈希，运维配置的标题像 `/docs` 一样经过 HTML 转义。应用构建之后注册的工具通过 `RouteTable` 变更监听器即时可调用，无需重启；被移除的工具保留其路由并返回 503，与 FastAPI 的快照行为一致。关闭时会等待进行中的请求完成并移除监听器。默认后端不变；移除 FastAPI 是下一阶段。见[配置](guides/configuration.md)。
 
+- **配置中的按路由参数覆盖会真正生效**（#165）：顶层 `tool_parameters` 块按精确的已注册工具名索引，替换某条路由对外发布并据以校验的 schema，不修改已注册的工具本身。服务器在构建路由表时应用该块，并在注册表每次变化时再次应用：配置热重载会应用、修改或清除条目；source 重试成功后会为它带回的工具应用条目；OpenAPI 刷新会为它新增的工具应用条目。兼容性沿用既有守卫按工具自身的模型判断，因此比模型更严格的覆盖会记日志并跳过，更宽松的会记警告并应用，未注册工具的条目会记日志并跳过；单条条目不会让启动或重载失败。清除条目时即使路由已不存在也会丢弃存储的覆盖，同名工具之后不会再继承它。该块需要 `toolregistry` 0.21.0 或更高版本。见[配置](guides/configuration.md)。
+
 ### 变更
 
 - **独立 OpenAPI 服务器变为零依赖，FastAPI 移至 `gateway` extra**（epic #101）：`toolregistry-server openapi` 现在只运行在内联的 `httpserver` 上，因此 `pip install toolregistry-server` 即可提供完整的 OpenAPI 契约，无需任何第三方包。FastAPI 组装移至 gateway 私有的 `toolregistry_server.gateway.openapi_asgi`，只由 gateway 的 ASGI 后端使用；`create_openapi_app` 与 ETag/请求体上限中间件不再能从 `adapters.openapi` 导入。`pyproject.toml` 新增 `gateway = [fastapi, uvicorn]`，`openapi = []` 作为空别名保留；`all` 改为拉取 `[gateway]` 与 `[mcp]`。**破坏性变更**：`openapi` 命令移除 `--backend` 与 `--reload`（两者都只属于 uvicorn；gateway 保留 `--backend`），`OpenAPIAdapter(..., backend=...)` 被移除，`OpenAPIAdapter.app` 现在返回内联的 `httpserver.App` 而不是 ASGI 应用。未安装该 extra 时启动 gateway 会抛出指明 `toolregistry-server[gateway]` 的 `ImportError`。见[OpenAPI API](guides/openapi.md)与[安装](get-started/installation.md)。
@@ -29,6 +31,9 @@
 - **启动来源现在也会触发 `on_registered`**（#203）：`SourceManager.apply_initial()` 会注册配置中的来源，但从不调用 `on_registered`，因此依赖该钩子做注册后处理的下游——例如 Hub 的 `output_schema` 处理——在启动时不会执行，工具要等到后续一次 diff 才获得这些元数据。现在启动过程会在注册循环结束后以本次注册的全部名称调用一次钩子，位置与一次 diff 相同：在 `tool_metadata` 与部署配置过滤之前。没有任何名称注册时（空配置或全部来源被排除）不调用；钩子抛异常时记录日志，工具保持注册。
 - **同名替换会被复查非法 spec 正则，部分丢弃也可见**（#171）：加载时的检查比较的是工具名快照，因此当 source 用同名工具替换已存在的工具时，不会产生*新*名字，替换后的 schema 也就不会被编译——替换引入的坏 `pattern` 会留在注册表中，直到第一次调用才失败。现在改为比较工具对象：本次注册创建或替换的每个名字都会被检查，带非法正则的替换与新工具一样被丢弃。source 的汇总行会报告丢弃数量与工具名（例如 `Loaded OpenAPI tools from '…': dropped 2 tool(s) with an invalid regex: ['a', 'b']`），全部丢弃时的日志也带上数量与列表。`--strict-spec-regex` 与 hub 的 source 失败语义（只有全部丢弃才为 false）不变。
 - **httpserver 后端上报真正提供服务的 OpenAPI 路径，注释丢失警告同时覆盖两种格式**（#196）：gateway 之前上报配置的 `/openapi`，但该后端实际上把 OpenAPI 服务在监听根（`/tools`、`/openapi.json`、`/docs`、`/events`）。现在 `list_frontends()` 返回 `path: "/"` 并用 `note` 列出这些路由，`update_frontend()` 返回同样的结构；提交 `"/"` 会被视为「无变更」，因此保存未改动的记录也能成功，其他路径仍会得到「运行期不可修改」的拒绝。持久化仍写入配置中的路径，文件可正常重新加载。`COMMENTS_WARNING` 现在写「注释不会被保留」，而不是只提 JSONC——对 YAML writer 而言旧措辞本就不准确。
+
+- **托管面板按真实客户端计节流键**（#205）：gateway 之前原样转发入站请求头到回环面板，客户端自带的 `X-Forwarded-For` 会原样到达，所有请求看起来都来自 127.0.0.1。现在会丢弃 `Forwarded`、`X-Forwarded-For`、`X-Forwarded-Proto` 与 `X-Forwarded-Host`，改为声明 socket 对端、scheme 以及它看到的 `Host`。当面板绑定回环地址时，gateway 还会把该地址作为受信代理传给面板（`trusted_proxies`，core#431），于是面板的认证节流按转发来的客户端计键：单个客户端耗尽配额不再锁死所有面板用户，不可信对端的伪造请求头也无法换桶。非回环绑定不受信任何人；单租户假设——能连到面板端口的本机进程都是受信对端——记录在常量旁边。该受信代理接线在 `toolregistry` 0.21.0 上生效，在 0.20.1 下限上是无操作。
+- **无变更的前端保存不再重写配置**（#209）：httpserver 后端把 openapi 前端上报为 `path: "/"`，而管理界面提交的正是它显示的那条记录，因此一次无变更保存会把路径映射回 `None`，重写文件（丢失注释）并报告 `COMMENTS_WARNING`。现在更新会比较前后记录，当路径与启用标记都没有变化时跳过持久化，返回 `persisted: false, warning: null`；真正的变更仍会写回并仍会报告警告。`path` 的文档字符串说明上报的 `"/"` 表示「不改变路径」。
 
 ## [0.8.0] - 2026-11-08
 
