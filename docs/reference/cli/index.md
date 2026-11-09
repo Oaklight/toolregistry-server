@@ -76,10 +76,19 @@ toolregistry-server mcp [选项]
 | `--host HOST` | `127.0.0.1` | 绑定主机（SSE/HTTP 传输） |
 | `--port PORT` | `8000` | 绑定端口（SSE/HTTP 传输） |
 | `--tokens PATH` | - | Bearer 令牌文件，每行一个，用于 `streamable-http`/`http`。同时读取 `API_BEARER_TOKEN`（逗号分隔） |
+| `--keys-db PATH` | - | SQLite 密钥存储；限定作用域的客户端密钥在每个 MCP 入口上执行 |
+| `--allow-operator-token` | `false` | 即使配置了密钥存储，也接受 MCP 上的静态运维令牌 |
+| `--client-concurrency N` | `8` | `sse`/`streamable-http` 上单个客户端的在途调用上限；密钥只能调低，不能调高 |
+| `--concurrency-timeout SECONDS` | `30` | 调用等待空位的上限，超时返回 `-32000` |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 在 OAuth 受保护资源元数据中公布的公开 URL（反向代理后必需） |
 | `--tools-list-ttl-ms MS` | `300000` | `tools/list` 的 `ttlMs` 缓存提示；`0` 禁用缓存 |
 | `--tools-list-cache-scope {public,private}` | `private` | `tools/list` 的 `cacheScope` 提示 |
 | `--profile PROFILE` | - | 部署配置：`remote`、`local`，或配置文件 `profiles:` 中声明的名称 |
+
+!!! note
+    `--client-concurrency` 与 `--concurrency-timeout` 只作用于网络传输。`stdio`
+    会校验这两个值但不限流：它只有一个客户端且没有按客户端的凭据，配额只会让这个
+    客户端与自己竞争。
 
 **示例：**
 

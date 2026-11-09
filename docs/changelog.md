@@ -30,6 +30,8 @@
 
 - **共享 hub 上的客户端按密钥隔离**（#145、#223）：声称身份、工作目录或环境的请求头（`x-client-id`、`x-client-identity`、`x-client-cwd`、`x-client-env`、`x-client-environment`、`x-forwarded-user`、`x-remote-user`）会在认证之后以 `400` 拒绝，并连同调用方密钥记录日志，因此身份只能来自凭据。每次调用都按 principal 计数：`--client-concurrency`（默认 8）限制在途调用，`--concurrency-timeout`（默认 30 秒）限制等待时间；密钥上可空的 `max_concurrency`（用 `keys create --concurrency` 设置、`keys set-concurrency` 修改）只能收紧进程值；等待超过超时的调用返回 MCP `-32000`「too many concurrent calls」。每次调用都会记录 `key_id` 与 `client_id`，`/ext/gateway/clients`（面板的 Clients 页）按客户端报告实时计数。`hub-shim` 新增 `--key-file` / `TOOLREGISTRY_HUB_KEY` 与 `--keys-db`，用于拉起需要密钥的 hub。
 
+- **独立 MCP 服务器拥有同样的按客户端配额**（#223 后续）：`mcp` 在 `sse` 与 `streamable-http` 上接受 `--client-concurrency`（默认 8）与 `--concurrency-timeout`（默认 30 秒），按密钥收紧的规则与 gateway 相同，繁忙时同样返回 `-32000`。`stdio` 会校验这两个值但不限流，因为它只服务一个客户端且没有按客户端的凭据。管理面板的 Keys 表单也接受 `max_concurrency`，与 `keys create --concurrency` 一致。
+
 ### 变更
 
 - **独立 OpenAPI 服务器变为零依赖，FastAPI 移至 `gateway` extra**（epic #101）：`toolregistry-server openapi` 现在只运行在内联的 `httpserver` 上，因此 `pip install toolregistry-server` 即可提供完整的 OpenAPI 契约，无需任何第三方包。FastAPI 组装移至 gateway 私有的 `toolregistry_server.gateway.openapi_asgi`，只由 gateway 的 ASGI 后端使用；`create_openapi_app` 与 ETag/请求体上限中间件不再能从 `adapters.openapi` 导入。`pyproject.toml` 新增 `gateway = [fastapi, uvicorn]`，`openapi = []` 作为空别名保留；`all` 改为拉取 `[gateway]` 与 `[mcp]`。**破坏性变更**：`openapi` 命令移除 `--backend` 与 `--reload`（两者都只属于 uvicorn；gateway 保留 `--backend`），`OpenAPIAdapter(..., backend=...)` 被移除，`OpenAPIAdapter.app` 现在返回内联的 `httpserver.App` 而不是 ASGI 应用。未安装该 extra 时启动 gateway 会抛出指明 `toolregistry-server[gateway]` 的 `ImportError`。见[OpenAPI API](guides/openapi.md)与[安装](get-started/installation.md)。
@@ -46,6 +48,8 @@
 - **无变更的前端保存不再重写配置**（#209）：httpserver 后端把 openapi 前端上报为 `path: "/"`，而管理界面提交的正是它显示的那条记录，因此一次无变更保存会把路径映射回 `None`，重写文件（丢失注释）并报告 `COMMENTS_WARNING`。现在更新会比较前后记录，当路径与启用标记都没有变化时跳过持久化，返回 `persisted: false, warning: null`；真正的变更仍会写回并仍会报告警告。`path` 的文档字符串说明上报的 `"/"` 表示「不改变路径」。
 - **进程权限策略在对外的两个前端上被绕过**（#145、#223）：MCP 与 OpenAPI 的调用路径都直接执行路由处理器，配置好的 `PermissionPolicy` 在那里从未被评估——只有进程内 API 遵守规则。现在两种后端都通过同一个助手解析策略：`ASK` 由配置的处理器应答，否则落到回退结果（默认拒绝）；`call_deferred` 既按自身、也按它将要调用的工具判定。未配置策略的注册表行为不变。
 - **SDK v2 上限定作用域的 `tools/list` 返回空**（#145、#223）：v2 的列表处理器在请求上下文之外运行，principal 无法解析，因此作用域内的路由列表为空，而 `tools/call` 正常。处理器现在会在列出之前发布请求上下文。
+- **不是 `PermissionPolicy` 的策略此前被静默忽略**（#223 后续）：core 的 `set_permission_policy` 接受任意对象，其进程内路径会调用 `evaluate`，而服务器只执行 `PermissionPolicy` 实例。现在这类鸭子类型策略会按类型各记一次警告，而不是毫无痕迹地被忽略；类型契约本身见 Oaklight/ToolRegistry#467。
+- **shim 拉起的 hub 继承了客户端密钥**（#223 后续）：`TOOLREGISTRY_HUB_KEY` 曾被传给 shim 拉起的 hub，使 hub 启动的每个进程都带着它用不到的凭据。子进程环境现在会移除该变量。
 
 ## [0.8.0] - 2026-11-08
 
