@@ -88,6 +88,12 @@ def route_table(registry: ToolRegistry) -> RouteTable:
 class _Headers(dict):
     """Case-insensitive response headers, like ``httpx.Headers``."""
 
+    def __init__(self, headers=None):
+        super().__init__()
+        # ``dict(mapping)`` bypasses the override below, so copy explicitly.
+        for key, value in (headers or {}).items():
+            self[key] = value
+
     def __getitem__(self, key):
         return super().__getitem__(str(key).lower())
 
