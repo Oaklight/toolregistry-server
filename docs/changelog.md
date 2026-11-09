@@ -16,6 +16,8 @@
 - **gateway 前端支持限定作用域的密钥**（#200）：`toolregistry-server gateway` 接受 `--keys-db PATH`。每个进程只构建一个 `PrincipalResolver`，并传给 OpenAPI 应用、streamable-HTTP 服务器和 SSE 应用，因此 MCP `tools/list`、MCP `tools/call`、OpenAPI 文档和 OpenAPI 工具路由在每个前端都执行密钥作用域，httpserver 后端同样适用。静态 `--tokens` 令牌保持完整、不受限的访问权限；只要配置了任一凭据来源，就会提供 RFC 9728 元数据路由；不传 `--keys-db` 时行为不变，网关关闭时会关闭密钥存储。
 - **限定作用域的密钥保留发现代理，且两者都执行作用域**（#195）：`discover_tools` 与 `call_deferred` 不再对限定作用域的密钥移除。发现结果只保留密钥可调用的名称——MCP、FastAPI OpenAPI 应用与 httpserver 后端皆如此——`call_deferred` 在派发前校验 `_target_tool`，作用域外的目标会得到与直接调用完全相同的信息并被拒绝。目标在实时注册表中解析（先精确名，再按注册表顺序取第一个归一化匹配），因为那正是 core 实际调用的对象，因此在配置 diff 推迟路由重建期间注册的工具同样会被判定。无论密钥的命名空间是什么，这对代理都可见——它们注册在 default 命名空间并自行执行目标的作用域——而针对任一名称的显式单工具覆盖仍然生效，声明拒绝的密钥既看不到也无法调用。
 
+- **OpenAPI 源可就地刷新规范文档**（#182）：`SourceManager.refresh(ref)` 会带着 ETag 重新拉取来源保存的 `spec_url`，并把文档交给 core 的 `OpenAPIIntegration.refresh()`。`304` 不做任何改动——不更新 `last_refreshed_at`，不重建路由。文档变化时会对新增、移除与更新的工具做 diff，保持手动禁用的工具仍被禁用，并重新应用命名空间标签、部署 profile 与 `tool_metadata`；spec 正则无法编译的工具会被丢弃并在 diff 中报告。当保存的 base URL 本就来自文档时，移动后的 `servers[0]` 会被采纳，且只有该候选地址接受出站地址策略检查。每次拉取都在 I/O 前重新校验规范 URL；失败时注册表与上一份有效文档保持不变。通过 `POST /ext/gateway/sources/<id>/refresh` 与 OpenAPI 源行上的 **刷新规范** 动作暴露。见[OpenAPI API](guides/openapi.md)。
+
 ### 修复
 
 - **启动来源现在也会触发 `on_registered`**（#203）：`SourceManager.apply_initial()` 会注册配置中的来源，但从不调用 `on_registered`，因此依赖该钩子做注册后处理的下游——例如 Hub 的 `output_schema` 处理——在启动时不会执行，工具要等到后续一次 diff 才获得这些元数据。现在启动过程会在注册循环结束后以本次注册的全部名称调用一次钩子，位置与一次 diff 相同：在 `tool_metadata` 与部署配置过滤之前。没有任何名称注册时（空配置或全部来源被排除）不调用；钩子抛异常时记录日志，工具保持注册。

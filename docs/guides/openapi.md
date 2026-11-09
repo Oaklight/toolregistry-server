@@ -112,9 +112,28 @@ tools:
 
 ### 规范加载与刷新
 
-OpenAPI 源只在注册时读取一次规范文档。路由刷新——`RouteTable.refresh()`、`refresh_all()`，以及 `/tools` 上的 `last_refreshed_at` 字段——只根据注册表中已有的工具重建路由，不会重新下载规范。因此，远端文档新增的 path 在重新注册该源之前不会出现：重启服务器，或在 Hub 中于启用 `--config-reload` 时修改该源在 `tools.jsonc` 中的条目（声明未变化的源不会被重新注册）。
+OpenAPI 源在注册时读取规范文档。`SourceManager.refresh(ref)` 之后可以重新读取该
+文档而无需重新注册该源：源会带着保存的 ETag 拉取 `spec_url`，`304` 不做任何
+改动——不更新 `last_refreshed_at`，不重建路由，也不改名。文档变化时会与现有工具
+做 diff：新增的 path 出现，消失的 path 被移除，定义未变的工具保留其状态，运维
+手动禁用的工具仍保持禁用。从本地文件注册的源没有 ETag，每次刷新都会重新读取
+文件。刷新得到的工具会执行与配置重载相同的注册后步骤：应用命名空间标签、部署
+profile 与 `tool_metadata`，并且 schema `pattern` 无法通过正则守卫编译的工具会被
+丢弃并在 diff 中报告。
 
-该源的 `allow_private_hosts` 同时作用于两项检查：规范 URL 在拉取前校验，客户端在每次请求前校验实际使用的 base URL（`servers[0]` 或配置的 `base_url`）。重新注册该源时会重新下载文档，并同样经过出站地址策略；没有任何刷新路径会跳过该校验。
+base URL 在 core 允许的范围内跟随文档：只有保存的 base URL 本就来自文档时才采纳
+移动后的 `servers[0]`（配置的 `base_url` 保持不动），只有被采纳的候选地址会接受
+出站地址策略检查；采纳会重建全部工具包装器，diff 以 `base_url_changed` 而不是
+`updated` 表示。每次拉取都在 I/O 之前重新校验规范 URL，因此 URL 现在解析到被拒绝
+地址的源会失败，注册表与上一份有效文档保持不变。
+
+网关通过 `POST /ext/gateway/sources/<id>/refresh` 暴露该操作（返回 diff），并在
+OpenAPI 源所在行提供 **刷新规范**（Refresh spec）动作。路由刷新——
+`RouteTable.refresh()`、`refresh_all()`，以及 `/tools` 上的 `last_refreshed_at`
+字段——只根据注册表中已有的工具重建路由。
+
+该源的 `allow_private_hosts` 作用于每一项检查：规范 URL 在拉取前校验，客户端在
+每次请求前校验实际使用的 base URL（`servers[0]` 或配置的 `base_url`）。
 
 ### 请求格式
 
