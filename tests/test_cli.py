@@ -272,6 +272,7 @@ class TestMain:
             allow_operator_token=False,
             client_concurrency=8,
             concurrency_timeout=30.0,
+            execution_log=None,
             config_reload=False,
             write_config=True,
         )
@@ -357,6 +358,7 @@ class TestMain:
             allow_operator_token=False,
             client_concurrency=8,
             concurrency_timeout=30.0,
+            execution_log=None,
             config_reload=False,
             write_config=True,
         )
@@ -1176,6 +1178,7 @@ class TestGatewayCommand:
             client_concurrency=8,
             concurrency_timeout=30.0,
             allow_operator_token=False,
+            execution_log=None,
             config_reload=False,
             write_config=True,
         )
@@ -1502,3 +1505,31 @@ class TestMCPQuotaFlags:
             main(["mcp", "--config", "tools.yaml", *flags])
 
         assert exc.value.code == 2
+
+
+class TestExecutionLogFlag:
+    """--execution-log is forwarded by every serving command (#224)."""
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            ("gateway", "toolregistry_server.app.App.serve_gateway"),
+            ("mcp", "toolregistry_server.app.App.serve_mcp"),
+            ("openapi", "toolregistry_server.app.App.serve_openapi"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [("--execution-log", True), ("--no-execution-log", False)],
+    )
+    def test_the_flag_reaches_the_adapter(self, command, target, flag, expected):
+        with patch(target) as serve:
+            main([command, "--config", "tools.yaml", flag])
+
+        assert serve.call_args.kwargs["execution_log"] is expected
+
+    @pytest.mark.parametrize("command", ["gateway", "mcp", "openapi"])
+    def test_the_default_is_left_to_the_adapter(self, command):
+        args = CLI().create_parser().parse_args([command])
+
+        assert args.execution_log is None

@@ -40,6 +40,7 @@ import hashlib
 import html
 import json
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -55,7 +56,12 @@ from ..._vendor.httpserver import (
 )
 from ..._vendor.structlog import get_logger
 from ...auth import verify_token
-from ...isolation import identity_header, policy_refusal, principal_key
+from ...isolation import (
+    identity_header,
+    policy_refusal,
+    principal_key,
+    record_tool_call,
+)
 from ...regex_guard import (
     DEFAULT_REGEX_BUDGET,
     DEFAULT_REGEX_TIMEOUT,
@@ -242,6 +248,45 @@ def _filtered_result(
     return filter_discovery_result(result, principal_resolver, principal)
 
 
+async def _execute_and_record(
+    registry: Any,
+    tool_name: str,
+    handler: Callable[..., Any],
+    arguments: dict[str, Any],
+    principal: Any,
+) -> Any:
+    """Run one tool handler and record the call in the execution log.
+
+    A handler may be a coroutine function or a plain function returning a
+    coroutine; both are awaited here.  The exception is recorded before it is
+    re-raised, so the caller's 500 response and the log agree.
+    """
+    started = time.monotonic()
+    try:
+        result = handler(**arguments)
+        if asyncio.iscoroutine(result):
+            result = await result
+    except Exception as exc:
+        record_tool_call(
+            registry,
+            tool_name,
+            arguments,
+            principal=principal,
+            error=exc,
+            duration_ms=(time.monotonic() - started) * 1000,
+        )
+        raise
+    record_tool_call(
+        registry,
+        tool_name,
+        arguments,
+        principal=principal,
+        result=result,
+        duration_ms=(time.monotonic() - started) * 1000,
+    )
+    return result
+
+
 def _make_tool_handler(
     route_table: RouteTable,
     tool_name: str,
@@ -300,9 +345,13 @@ def _make_tool_handler(
             return refusal
 
         try:
-            result = current.handler(**arguments)
-            if asyncio.iscoroutine(result):
-                result = await result
+            result = await _execute_and_record(
+                route_table.registry,
+                tool_name,
+                current.handler,
+                arguments,
+                getattr(request.state, "principal", None),
+            )
         except Exception:
             # Keep the exception text in the log; it can carry connection
             # strings, paths and upstream URLs.  The client only needs the

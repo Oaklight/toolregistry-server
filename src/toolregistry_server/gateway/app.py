@@ -47,6 +47,7 @@ from ..isolation import (
     DEFAULT_CLIENT_CONCURRENCY,
     DEFAULT_CONCURRENCY_TIMEOUT,
     ClientLimiter,
+    configure_execution_log,
     identity_header,
     principal_key,
 )
@@ -639,6 +640,10 @@ class GatewayAdapter(Adapter):
             when a key store is configured.  Without it, a key-scoped MCP
             endpoint refuses them: every client holding the same operator
             token would be one principal.  OpenAPI and admin are unaffected.
+        execution_log: Record tool calls in the registry execution log.
+            ``None`` enables it when a key store is configured, ``True``
+            forces it on and ``False`` leaves it off.  The server calls route
+            handlers directly, so core writes nothing without this switch.
         backend: ``"fastapi"`` (ASGI) or ``"httpserver"``.  The httpserver
             backend can serve only the openapi frontend.
         config_path: Configuration file used to persist frontend settings.
@@ -687,6 +692,7 @@ class GatewayAdapter(Adapter):
         client_concurrency: int = DEFAULT_CLIENT_CONCURRENCY,
         concurrency_timeout: float = DEFAULT_CONCURRENCY_TIMEOUT,
         allow_operator_token: bool = False,
+        execution_log: bool | None = None,
         backend: str = "fastapi",
         config_path: str | None = None,
         write_config: bool = True,
@@ -731,10 +737,19 @@ class GatewayAdapter(Adapter):
         # only after the adapter is fully constructed.
         self._client_limiter = ClientLimiter(client_concurrency, concurrency_timeout)
         self._allow_operator_token = bool(allow_operator_token)
-        self._refuse_operator_token = bool(
-            not self._allow_operator_token
-            and self._principal_resolver is not None
+        self._has_key_store = bool(
+            self._principal_resolver is not None
             and getattr(self._principal_resolver, "has_keys", False)
+        )
+        self._refuse_operator_token = bool(
+            not self._allow_operator_token and self._has_key_store
+        )
+        # The frontends call route handlers directly, so core's log records
+        # nothing unless it is turned on here (#224).
+        configure_execution_log(
+            route_table.registry,
+            enabled=execution_log,
+            has_keys=self._has_key_store,
         )
         self._server_url = server_url
         self._host = host
@@ -1435,6 +1450,16 @@ class GatewayAdapter(Adapter):
             ),
         )
         parser.add_argument(
+            "--execution-log",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=(
+                "Record every tool call in the registry execution log "
+                "(default: on when --keys-db is set; the admin Logs page "
+                "shows the entries)"
+            ),
+        )
+        parser.add_argument(
             "--server-url",
             type=str,
             default=None,
@@ -1616,6 +1641,7 @@ class GatewayAdapter(Adapter):
                 "concurrency_timeout", DEFAULT_CONCURRENCY_TIMEOUT
             ),
             allow_operator_token=kwargs.get("allow_operator_token", False),
+            execution_log=kwargs.get("execution_log"),
             backend=kwargs.get("backend", "fastapi"),
             config_path=kwargs.get("config_path"),
             write_config=kwargs.get("write_config", True),

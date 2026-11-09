@@ -23,6 +23,7 @@ every decision is made from the authenticated connection.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import weakref
 from collections.abc import AsyncIterator, Mapping
@@ -534,6 +535,102 @@ def _policy_reason(policy: Any, tool: Any, parameters: dict[str, Any]) -> str:
     return str(getattr(outcome, "reason", "") or "")
 
 
+# ---------------------------------------------------------------------------
+# Durable attribution (#224)
+# ---------------------------------------------------------------------------
+
+
+def configure_execution_log(
+    registry: Any, *, enabled: bool | None, has_keys: bool
+) -> None:
+    """Turn the registry execution log on for a serving process.
+
+    The server calls a route handler directly instead of core's ``invoke``,
+    so core never writes an entry on its own.  Attribution below therefore
+    records nothing unless this switch turned the log on.
+
+    ``None`` means "on when a key store is configured": that is the
+    deployment where a call has a stable client identity worth retaining.  An
+    explicit ``True`` enables it without keys, and ``False`` leaves it off.
+    A log the operator already enabled keeps its own capacity and settings.
+
+    Args:
+        registry: The live ``ToolRegistry`` the frontends serve.
+        enabled: The configured switch, or ``None`` for the key-store default.
+        has_keys: Whether a key store is attached.
+    """
+    if enabled is None:
+        enabled = has_keys
+    if not enabled:
+        return
+    getter = getattr(registry, "get_execution_log", None)
+    if getter is not None and getter() is not None:
+        return
+    registry.enable_logging()
+
+
+def record_tool_call(
+    registry: Any,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    *,
+    principal: Any = None,
+    result: Any = None,
+    error: BaseException | None = None,
+    duration_ms: float = 0.0,
+) -> None:
+    """Append one attributed entry to the registry log, if it is enabled.
+
+    The entry keeps core's shape and adds ``key_id``/``client_id`` under
+    ``metadata``; the identity stays out of ``arguments``.  A disabled log is
+    a no-op, so a caller need not check first.
+
+    Args:
+        registry: The live ``ToolRegistry`` the frontends serve.
+        tool_name: The tool the client called.
+        arguments: The validated call arguments.
+        principal: The authenticated caller, or ``None`` when anonymous.
+        result: The handler's result, kept only for a successful call.
+        error: The exception that ended the call, if it failed.
+        duration_ms: Wall-clock duration of the handler call.
+    """
+    getter = getattr(registry, "get_execution_log", None)
+    log = getter() if getter is not None else None
+    if log is None:
+        return
+    from toolregistry.admin import ExecutionLogEntry, ExecutionStatus
+
+    log.add(
+        ExecutionLogEntry.create(
+            tool_name=tool_name,
+            status=(
+                ExecutionStatus.ERROR if error is not None else ExecutionStatus.SUCCESS
+            ),
+            duration_ms=duration_ms,
+            arguments=dict(arguments),
+            result=None if error is not None else _result_text(result),
+            error=None if error is None else str(error),
+            exception_type=None if error is None else type(error).__qualname__,
+            metadata={
+                "key_id": getattr(principal, "key_id", None),
+                "client_id": getattr(principal, "label", None),
+            },
+        )
+    )
+
+
+def _result_text(result: Any) -> str | None:
+    """Return a bounded, JSON-safe rendering of a handler result."""
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):  # pragma: no cover - default=str covers most
+        return repr(result)
+
+
 __all__ = [
     "BUSY_ERROR_CODE",
     "DEFAULT_CLIENT_CONCURRENCY",
@@ -541,12 +638,14 @@ __all__ = [
     "RESERVED_CLIENT_HEADERS",
     "ClientBusyTimeout",
     "ClientLimiter",
+    "configure_execution_log",
     "identity_header",
     "operator_refusal",
     "policy_refusal",
     "policy_refusal_sync",
     "principal_client_id",
     "principal_key",
+    "record_tool_call",
     "validate_concurrency",
     "validate_timeout",
 ]

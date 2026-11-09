@@ -370,3 +370,30 @@ def test_httpserver_gateway_is_scoped(table, key_store):
     assert "/tools/beta/echo" not in paths
     assert denied_status == 403
     assert "not permitted" in json.loads(denied_body)["detail"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_openapi_call_is_recorded_with_attribution(table, key_store):
+    from toolregistry.admin import ExecutionStatus
+
+    store, keys_db = key_store
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    gateway = _gateway(table, keys_db)
+    route = next(
+        entry
+        for entry in gateway._route_table.list_routes()  # noqa: SLF001
+        if entry.tool_name == "alpha-add"
+    )
+
+    async with _client(gateway) as client:
+        response = await client.post(
+            f"/openapi{route.path}",
+            json={"a": 1, "b": 2},
+            headers=_bearer(created.secret),
+        )
+
+    assert response.status_code == 200
+    [entry] = gateway._route_table.registry.get_execution_log().get_entries()  # noqa: SLF001
+    assert entry.tool_name == "alpha-add"
+    assert entry.status is ExecutionStatus.SUCCESS
+    assert entry.metadata == {"key_id": created.record.id, "client_id": "alpha-bot"}

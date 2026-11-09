@@ -399,6 +399,7 @@ class CLI:
                 ),
                 "regex_budget": getattr(parsed, "regex_budget", DEFAULT_REGEX_BUDGET),
                 "strict_spec_regex": getattr(parsed, "strict_spec_regex", False),
+                "execution_log": getattr(parsed, "execution_log", None),
                 "config_reload": getattr(parsed, "config_reload", False),
                 "write_config": getattr(parsed, "config_write", True),
             }
@@ -425,6 +426,7 @@ class CLI:
                 "concurrency_timeout": getattr(
                     parsed, "concurrency_timeout", DEFAULT_CONCURRENCY_TIMEOUT
                 ),
+                "execution_log": getattr(parsed, "execution_log", None),
                 "config_reload": getattr(parsed, "config_reload", False),
                 "write_config": getattr(parsed, "config_write", True),
             }
@@ -474,6 +476,7 @@ class CLI:
                 parsed, "concurrency_timeout", DEFAULT_CONCURRENCY_TIMEOUT
             ),
             "allow_operator_token": getattr(parsed, "allow_operator_token", False),
+            "execution_log": getattr(parsed, "execution_log", None),
             "config_reload": getattr(parsed, "config_reload", False),
             "write_config": getattr(parsed, "config_write", True),
         }

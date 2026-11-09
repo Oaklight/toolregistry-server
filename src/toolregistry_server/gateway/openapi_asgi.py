@@ -18,6 +18,7 @@ The assembly is not part of the public API.  Use
 
 import asyncio
 import hashlib
+import time
 import traceback
 from collections.abc import Callable, Sequence
 from enum import Enum
@@ -32,7 +33,7 @@ from ..adapters.openapi.adapter import (
     _validate_arguments,
 )
 from ..adapters.openapi.serialisation import encode_tool_result
-from ..isolation import policy_refusal, policy_refusal_sync
+from ..isolation import policy_refusal, policy_refusal_sync, record_tool_call
 from ..regex_guard import (
     DEFAULT_REGEX_BUDGET,
     DEFAULT_REGEX_TIMEOUT,
@@ -485,6 +486,77 @@ def _require_policy_sync(route: Any, arguments: Any, registry: Any) -> None:
         raise HTTPException(status_code=403, detail=message)
 
 
+async def _invoke_tool(
+    registry: Any,
+    tool_name: str,
+    handler: Any,
+    arguments: Any,
+    principal: Any,
+) -> Any:
+    """Run one async tool handler and record the call in the execution log.
+
+    An ``HTTPException`` the handler raises itself is re-raised untouched; it
+    is a deliberate response, not a tool failure.  Any other exception is
+    recorded and re-raised for the caller's error wrapper.
+    """
+    from fastapi import HTTPException
+
+    started = time.monotonic()
+    try:
+        result = await handler(**arguments)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _record(registry, tool_name, arguments, principal, started, error=exc)
+        raise
+    _record(registry, tool_name, arguments, principal, started, result=result)
+    return result
+
+
+def _invoke_tool_sync(
+    registry: Any,
+    tool_name: str,
+    handler: Any,
+    arguments: Any,
+    principal: Any,
+) -> Any:
+    """Run one synchronous tool handler and record the call."""
+    from fastapi import HTTPException
+
+    started = time.monotonic()
+    try:
+        result = handler(**arguments)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _record(registry, tool_name, arguments, principal, started, error=exc)
+        raise
+    _record(registry, tool_name, arguments, principal, started, result=result)
+    return result
+
+
+def _record(
+    registry: Any,
+    tool_name: str,
+    arguments: Any,
+    principal: Any,
+    started: float,
+    *,
+    result: Any = None,
+    error: BaseException | None = None,
+) -> None:
+    """Append the attributed entry for a call that reached the handler."""
+    record_tool_call(
+        registry,
+        tool_name,
+        arguments,
+        principal=principal,
+        result=result,
+        error=error,
+        duration_ms=(time.monotonic() - started) * 1000,
+    )
+
+
 def _require_proxy_target(
     tool_name: str,
     arguments: Any,
@@ -628,7 +700,9 @@ def _add_route_from_entry(
                 )
                 await _require_policy(current_route, arguments, rt.registry)
                 try:
-                    result = await h(**arguments)
+                    result = await _invoke_tool(
+                        rt.registry, tname, h, arguments, principal
+                    )
                 except HTTPException:
                     raise
                 except Exception as e:
@@ -676,7 +750,9 @@ def _add_route_from_entry(
                 )
                 _require_policy_sync(current_route, arguments, rt.registry)
                 try:
-                    result = h(**arguments)
+                    result = _invoke_tool_sync(
+                        rt.registry, tname, h, arguments, principal
+                    )
                 except HTTPException:
                     raise
                 except Exception as e:

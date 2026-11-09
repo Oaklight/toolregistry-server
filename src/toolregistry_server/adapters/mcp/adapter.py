@@ -27,6 +27,7 @@ from ...isolation import (
     ClientLimiter,
     operator_refusal,
     policy_refusal,
+    record_tool_call,
 )
 from ...scoped_discovery import (
     DISCOVERY_TOOL_NAME,
@@ -783,17 +784,26 @@ async def _mcp_call_tool(
 
     started = time.monotonic()
     outcome = "ok"
+    executed = False
+    call_started = started
+    call_result: Any = None
+    call_error: BaseException | None = None
     try:
         if client_limiter is None:
+            executed = True
+            call_started = time.monotonic()
             result = await _execute_tool(route, arguments, session_ctx, session_mgr)
         else:
             try:
                 async with client_limiter.slot(principal):
+                    executed = True
+                    call_started = time.monotonic()
                     result = await _execute_tool(
                         route, arguments, session_ctx, session_mgr
                     )
             except ClientBusyTimeout as exc:
                 raise make_mcp_error(BUSY_ERROR_CODE, str(exc)) from exc
+        call_result = result
         if tool_name == DISCOVERY_TOOL_NAME:
             result = filter_discovery_result(result, principal_resolver, principal)
         content = _result_to_mcp_content(result)
@@ -812,11 +822,13 @@ async def _mcp_call_tool(
         logger.debug(f"call_tool '{tool_name}': success")
         return content, structured
 
-    except McpErrorClass:
+    except McpErrorClass as exc:
         outcome = "error"
+        call_error = exc
         raise
     except Exception as e:
         outcome = "error"
+        call_error = e
         # Keep the exception text in the log; it can carry connection
         # strings, internal paths and upstream URLs.  The client only
         # needs to know which tool failed.
@@ -832,6 +844,16 @@ async def _mcp_call_tool(
         if token is not None:
             session_context_var.reset(token)
         _log_attributed_call(tool_name, principal, outcome, started)
+        if executed:
+            record_tool_call(
+                route_table.registry,
+                tool_name,
+                arguments,
+                principal=principal,
+                result=call_result,
+                error=call_error,
+                duration_ms=(time.monotonic() - call_started) * 1000,
+            )
 
 
 def _log_attributed_call(

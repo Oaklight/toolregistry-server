@@ -34,6 +34,7 @@ from ...isolation import (
     DEFAULT_CLIENT_CONCURRENCY,
     DEFAULT_CONCURRENCY_TIMEOUT,
     ClientLimiter,
+    configure_execution_log,
 )
 from .. import Adapter
 
@@ -262,6 +263,10 @@ class MCPAdapter(Adapter):
             refuses them, because every client would share one principal.
         client_limiter: Per-principal concurrency budget.  ``None`` runs
             calls without one; the CLI sets it for network transports.
+        execution_log: Record tool calls in the registry execution log.
+            ``None`` enables it when a key store is configured, ``True``
+            forces it on and ``False`` leaves it off.  The adapter calls
+            route handlers directly, so core writes nothing without this.
     """
 
     def __init__(
@@ -276,10 +281,18 @@ class MCPAdapter(Adapter):
         principal_resolver: "PrincipalResolver | None" = None,
         allow_operator_token: bool = False,
         client_limiter: ClientLimiter | None = None,
+        execution_log: bool | None = None,
     ) -> None:
         super().__init__(route_table)
         self._principal_resolver = principal_resolver
         self._client_limiter = client_limiter
+        has_keys = bool(
+            principal_resolver is not None
+            and getattr(principal_resolver, "has_keys", False)
+        )
+        configure_execution_log(
+            route_table.registry, enabled=execution_log, has_keys=has_keys
+        )
         self._server = route_table_to_mcp_server(
             route_table,
             name,
@@ -288,11 +301,7 @@ class MCPAdapter(Adapter):
             version=version,
             instructions=instructions,
             principal_resolver=principal_resolver,
-            refuse_operator_token=bool(
-                not allow_operator_token
-                and principal_resolver is not None
-                and getattr(principal_resolver, "has_keys", False)
-            ),
+            refuse_operator_token=bool(not allow_operator_token and has_keys),
             client_limiter=client_limiter,
         )
 
@@ -452,6 +461,16 @@ class MCPAdapter(Adapter):
             ),
         )
         parser.add_argument(
+            "--execution-log",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=(
+                "Record every tool call in the registry execution log "
+                "(default: on when --keys-db is set; the admin Logs page "
+                "shows the entries)"
+            ),
+        )
+        parser.add_argument(
             "--server-url",
             type=str,
             default=None,
@@ -532,6 +551,7 @@ class MCPAdapter(Adapter):
             principal_resolver=principal_resolver,
             allow_operator_token=kwargs.pop("allow_operator_token", False),
             client_limiter=None if transport == "stdio" else limiter,
+            execution_log=kwargs.pop("execution_log", None),
         )
         adapter.run(**kwargs)
 

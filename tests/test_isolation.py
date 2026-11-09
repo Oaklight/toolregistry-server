@@ -25,11 +25,13 @@ from toolregistry_server.isolation import (
     BUSY_ERROR_CODE,
     ClientBusyTimeout,
     ClientLimiter,
+    configure_execution_log,
     identity_header,
     operator_refusal,
     policy_refusal,
     policy_refusal_sync,
     principal_key,
+    record_tool_call,
     validate_concurrency,
     validate_timeout,
 )
@@ -359,3 +361,88 @@ class TestUntypedPolicy:
         output = stream.getvalue()
         assert output.count("not a PermissionPolicy") == 1
         assert "FakePolicy" in output
+
+
+# ---------------------------------------------------------------------------
+# Durable attribution (#224)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionLogWiring:
+    def test_off_by_default_without_a_key_store(self, table):
+        configure_execution_log(table.registry, enabled=None, has_keys=False)
+
+        assert table.registry.get_execution_log() is None
+
+    def test_on_by_default_with_a_key_store(self, table):
+        configure_execution_log(table.registry, enabled=None, has_keys=True)
+
+        assert table.registry.get_execution_log() is not None
+
+    def test_an_explicit_off_wins(self, table):
+        configure_execution_log(table.registry, enabled=False, has_keys=True)
+
+        assert table.registry.get_execution_log() is None
+
+    def test_an_explicit_on_does_not_need_keys(self, table):
+        configure_execution_log(table.registry, enabled=True, has_keys=False)
+
+        assert table.registry.get_execution_log() is not None
+
+    def test_an_existing_log_keeps_its_capacity(self, table):
+        existing = table.registry.enable_logging(max_entries=5)
+
+        configure_execution_log(table.registry, enabled=True, has_keys=True)
+
+        assert table.registry.get_execution_log() is existing
+
+    def test_a_disabled_log_records_nothing(self, table):
+        record_tool_call(table.registry, "alpha-add", {"a": 1, "b": 2}, result=3)
+
+        assert table.registry.get_execution_log() is None
+
+    def test_a_successful_call_keeps_the_identity_out_of_arguments(self, table):
+        from toolregistry.admin import ExecutionStatus
+
+        table.registry.enable_logging()
+        record_tool_call(
+            table.registry,
+            "alpha-add",
+            {"a": 1, "b": 2},
+            principal=Principal(key_id="key_1", label="build-bot"),
+            result=3,
+            duration_ms=1.5,
+        )
+
+        [entry] = table.registry.get_execution_log().get_entries()
+        assert entry.tool_name == "alpha-add"
+        assert entry.status is ExecutionStatus.SUCCESS
+        assert entry.arguments == {"a": 1, "b": 2}
+        assert entry.result == "3"
+        assert entry.metadata == {"key_id": "key_1", "client_id": "build-bot"}
+
+    def test_a_failed_call_records_the_error_and_a_null_identity(self, table):
+        from toolregistry.admin import ExecutionStatus
+
+        table.registry.enable_logging()
+        record_tool_call(
+            table.registry,
+            "beta-echo",
+            {"text": "hi"},
+            error=ValueError("boom"),
+            duration_ms=2.0,
+        )
+
+        [entry] = table.registry.get_execution_log().get_entries()
+        assert entry.status is ExecutionStatus.ERROR
+        assert entry.error == "boom"
+        assert entry.exception_type == "ValueError"
+        assert entry.result is None
+        assert entry.metadata == {"key_id": None, "client_id": None}
+
+    def test_a_structured_result_is_stored_as_json(self, table):
+        table.registry.enable_logging()
+        record_tool_call(table.registry, "alpha-add", {}, result={"sum": 3})
+
+        [entry] = table.registry.get_execution_log().get_entries()
+        assert entry.result == '{"sum": 3}'
