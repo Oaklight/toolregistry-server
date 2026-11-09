@@ -698,7 +698,9 @@ class SourceManager:
 
         A refreshed document passes the same spec-regex guard as a first
         registration: a tool whose ``pattern`` the ``regex`` extra cannot
-        compile is unregistered and removed from the returned result.  With
+        compile is unregistered, reported in the result's ``removed`` names,
+        and forgotten by the integration so a later fixed document registers
+        it again.  With
         ``strict_spec_regex`` the tools are still dropped — core has already
         applied the diff, so registration's all-or-nothing behaviour is not
         reachable — and :class:`SpecPatternError` is raised with the dropped
@@ -732,7 +734,9 @@ class SourceManager:
                 with scope:
                     result = self._refresh_integration(source, integration)
                     if not result.skipped:
-                        result, dropped = self._drop_invalid_patterns(source, result)
+                        result, dropped = self._drop_invalid_patterns(
+                            source, integration, result
+                        )
                         self._record_refresh(key, entry, result, dropped)
                         if dropped and self.strict_spec_regex:
                             raise SpecPatternError(
@@ -792,22 +796,39 @@ class SourceManager:
         return key, entry, source, integration
 
     def _drop_invalid_patterns(
-        self, source: OpenAPISource, result: RefreshResult
+        self,
+        source: OpenAPISource,
+        integration: Any,
+        result: RefreshResult,
     ) -> tuple[RefreshResult, Sequence[str]]:
         """Drop refreshed tools whose spec regex the guard cannot compile.
 
         Registration checks these patterns before a tool is served; a refresh
-        registers through core's diff, so the check runs here.  The returned
-        result no longer names a dropped tool: a caller must not see a tool
-        that is not registered.  The log lines match registration's.
+        registers through core's diff, so the check runs here.  The log lines
+        match registration's.
+
+        Two things keep the drop honest and recoverable:
+
+        * The returned result removes a dropped name from ``added``,
+          ``updated``, ``breaking`` and ``compatible`` — a caller must not see
+          a tool that is not registered — and adds it to ``removed``, because
+          the refresh did take it out of this registry.  Without that, a
+          drop-only refresh would report ``changed`` as false.
+        * The integration forgets the name.  Core sets its tracked set from
+          the new document before this check runs, so a forgotten name is
+          registered again on the next refresh when the document is fixed;
+          left tracked, core would count it as unchanged and never register
+          it again.
 
         Args:
             source: The OpenAPI source declaration.
+            integration: The core integration that owns the tracked set.
             result: The integration's refresh result.
 
         Returns:
             ``(result, dropped)``, with the dropped names removed from
-            ``added``, ``updated``, ``breaking`` and ``compatible``.
+            ``added``, ``updated``, ``breaking`` and ``compatible`` and
+            appended to ``removed``.
         """
         affected = set(result.added) | set(result.updated)
         failures = _invalid_patterns(self.registry, affected)
@@ -827,6 +848,7 @@ class SourceManager:
         )
         for name in dropped:
             self.registry._unregister(name)  # ty: ignore[unresolved-attribute]
+        self._forget_tracked(integration, dropped)
         gone = set(dropped)
 
         def keep(names: tuple[str, ...]) -> tuple[str, ...]:
@@ -838,8 +860,25 @@ class SourceManager:
             updated=keep(result.updated),
             breaking=keep(result.breaking),
             compatible=keep(result.compatible),
+            removed=tuple(result.removed) + tuple(dropped),
         )
         return adjusted, dropped
+
+    @staticmethod
+    def _forget_tracked(integration: Any, names: Sequence[str]) -> None:
+        """Remove *names* from the integration's tracked tool set.
+
+        ``forget_tracked_tools`` is the public core hook.  The matrix floor
+        is still core 0.20.1, which predates it, so fall back to the private
+        set until the floor is raised.
+        """
+        forget = getattr(integration, "forget_tracked_tools", None)
+        if forget is not None:
+            forget(names)
+            return
+        tracked = integration._registered_tool_names  # noqa: SLF001 - core floor
+        for name in names:
+            tracked.discard(name)
 
     def _record_refresh(
         self,
