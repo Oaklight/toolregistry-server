@@ -252,6 +252,20 @@ class TestEnsure:
         finally:
             lock.release()
 
+    def test_a_quiet_ensure_prints_no_endpoint(self, capsys):
+        """The stdio shim's stdout is its protocol channel."""
+        lock = HubLock("default")
+        assert lock.acquire() is True
+        try:
+            write_owner_pid("default", os.getpid())
+            write_endpoint(_tcp(port=4321))
+            assert local_hub.ensure_hub(None, {}, timeout=1.0, quiet=True) == 0
+        finally:
+            remove_owner_pid("default")
+            lock.release()
+
+        assert capsys.readouterr().out == ""
+
 
 class TestRunArguments:
     """The spawned child inherits the invoking command line."""
