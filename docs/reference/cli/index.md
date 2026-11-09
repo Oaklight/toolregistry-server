@@ -169,6 +169,58 @@ pages live under the panel mount (for example `/admin/ext/gateway/keys`). See
 the [Gateway Admin Panel guide](../../guides/gateway-admin.md) for the Keys,
 Frontends and Sources pages.
 
+### `local-hub` - Run one shared gateway for local MCP clients
+
+```bash
+toolregistry-server local-hub [run|ensure|stop|status] --config config.yaml --name default
+```
+
+Serves the gateway as one resident process per machine, so several MCP clients
+share one registry, one tool schema set and one set of caches. POSIX only; on
+Windows the actions refuse and point at `gateway`. See the
+[Local Hub guide](../../guides/local-hub.md).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `action` | `run` | `run` serves in the foreground; `ensure` adopts a live hub or starts a detached one and prints its endpoint; `stop` signals the owner; `status` reports it |
+| `--name NAME` | `default` | Hub name; differently named hubs coexist |
+| `--config PATH` | - | Tool sources. Required to serve; `stop` and `status` do not need it |
+| `--host HOST` | `127.0.0.1` | Bind host |
+| `--port PORT` | `0` | Bind port; `0` lets the OS choose, so several hubs coexist |
+| `--socket PATH` | - | Bind a Unix socket instead of TCP |
+| `--idle-timeout SECONDS` | `0` | Exit after that long without a request or an open MCP/SSE session; `0` stays resident |
+| `--timeout SECONDS` | - | Wait limit for `ensure` and `stop` |
+| `--json` | off | `status` prints the endpoint document |
+
+The hub publishes an endpoint document and takes an exclusive lock that makes
+ownership unambiguous. `status` exits `0` when the hub runs and `3` when it
+does not; `stop` exits `3` when nothing owns the name, and refuses to signal
+when nothing accepts on the published address, so a stale document cannot
+target an unrelated reused pid.
+
+### `hub-shim` - Expose a local hub to one stdio MCP client
+
+```bash
+toolregistry-server hub-shim --name default --config config.yaml
+```
+
+Speaks MCP over stdio to the client and forwards to the named hub over
+streamable HTTP. `initialize` is answered locally and `tools/list` is empty
+while the hub is down; a call then fails once with `-32000` and the shim
+reconnects in the background (0.25 s doubling to 5 s). When the hub's tool
+list differs from the one the client was last served, the shim sends
+`notifications/tools/list_changed`.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--name NAME` | `default` | Hub to attach to |
+| `--config PATH` | - | Config used when the shim has to start the hub; without it the shim waits instead of starting one |
+| `--socket PATH` | - | Unix socket for a hub the shim starts |
+| `--connect-timeout SECONDS` | `5` | Limit for one connect + initialize attempt |
+| `--no-spawn` | off | Never start a hub; report it as unavailable |
+
+POSIX only, like `local-hub`. One shim per client, all sharing one hub.
+
 ## Configuration File
 
 See the [Configuration Guide](../../guides/configuration.md) for details on the JSON, JSONC, or YAML configuration format.

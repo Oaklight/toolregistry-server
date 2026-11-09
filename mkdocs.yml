@@ -124,6 +124,7 @@ nav:
       - MCP Adapter: guides/mcp.md
       - Extending: guides/extending.md
       - Gateway Admin Panel: guides/gateway-admin.md
+      - Local Hub: guides/local-hub.md
   - Examples:
       - examples/index.md
   - Reference:
