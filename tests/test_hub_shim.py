@@ -327,6 +327,25 @@ class TestHubConnectionWithoutAHub:
         finally:
             await connection.close()
 
+    async def test_a_call_without_a_hub_is_an_error_result(self):
+        """The error reaches the client as a result, not as a crash."""
+        sessions: weakref.WeakSet = weakref.WeakSet()
+        connection = shim.HubConnection(_config())
+        server = shim.build_server(connection, sessions)
+        try:
+            async with create_test_client(server) as client:
+                try:
+                    result = await client.call_tool("add", {"a": 1, "b": 2})
+                except Exception as exc:  # a client may raise instead
+                    assert "unavailable" in str(exc)
+                else:
+                    assert result.is_error is True
+                    assert "unavailable" in "".join(
+                        block.text for block in result.content
+                    )
+        finally:
+            await connection.close()
+
 
 class TestReconnect:
     """Reconnect is bounded, and a changed fingerprint reaches the client."""
@@ -348,6 +367,31 @@ class TestReconnect:
 
         assert delays == [0.25, 0.5, 1.0, 2.0]
         assert shim.MAX_BACKOFF == 5.0
+
+    async def test_a_list_served_while_down_is_announced_after_connect(
+        self, monkeypatch
+    ):
+        """With no --config or --no-spawn, the first list must still be told."""
+        connection = shim.HubConnection(_config())
+        notified = asyncio.Event()
+
+        async def notifier() -> None:
+            notified.set()
+
+        connection.set_notifier(notifier)
+        assert await connection.list_tools() == []
+        assert connection._listed is True
+
+        async def open_one(_endpoint):
+            return contextlib.AsyncExitStack(), SimpleNamespace(), [_tool()]
+
+        monkeypatch.setattr(connection, "_open", open_one)
+        try:
+            assert await connection._connect(_tcp_endpoint()) is True
+            await asyncio.sleep(0.05)
+            assert notified.is_set()
+        finally:
+            await connection._drop()
 
     async def test_a_changed_tool_list_notifies_the_client(self, monkeypatch):
         connection = shim.HubConnection(_config())
