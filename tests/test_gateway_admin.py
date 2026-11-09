@@ -181,6 +181,20 @@ class FakeMutation:
     removed: bool = False
 
 
+class FakeRefresh:
+    """Stand-in for core's ``RefreshResult``."""
+
+    added: tuple[str, ...] = ("echo",)
+    removed: tuple[str, ...] = ()
+    updated: tuple[str, ...] = ()
+    unchanged: int = 0
+    skipped: bool = False
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed or self.updated)
+
+
 class FakeSources:
     """The #185 source surface, with add/remove/replace/retry."""
 
@@ -215,6 +229,10 @@ class FakeSources:
         entry = self._entries[ref]
         entry.status = "applied"
         return entry
+
+    def refresh(self, ref: str) -> FakeRefresh:
+        self._entries[ref]  # KeyError for an unknown source
+        return FakeRefresh()
 
 
 def _request(
@@ -454,6 +472,30 @@ class TestSources:
         )
         assert status == 200
         assert json.loads(body)["removed"] is True
+
+    def test_refresh_returns_the_diff(self, host) -> None:
+        _, body, _ = _request(
+            f"{host.url}/ext/gateway/sources",
+            method="POST",
+            data={"type": "openapi", "url": "https://example.test/spec.json"},
+        )
+        source_id = json.loads(body)["source"]["id"]
+
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/sources/{source_id}/refresh", method="POST"
+        )
+
+        assert status == 200
+        refresh = json.loads(body)["refresh"]
+        assert refresh["added"] == ["echo"]
+        assert refresh["changed"] is True
+        assert refresh["skipped"] is False
+
+    def test_refresh_of_an_unknown_source_is_a_404(self, host) -> None:
+        status, _, _ = _request(
+            f"{host.url}/ext/gateway/sources/nope/refresh", method="POST"
+        )
+        assert status == 404
 
     def test_unknown_source_is_a_404(self, host) -> None:
         status, _, _ = _request(f"{host.url}/ext/gateway/sources/nope", method="DELETE")

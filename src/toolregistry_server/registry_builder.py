@@ -29,6 +29,7 @@ One-shot usage (standalone server)::
 
 import importlib
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from ._vendor.structlog import get_logger
 from .regex_guard import SpecPatternError, find_invalid_patterns
@@ -213,6 +214,26 @@ def register_mcp_source(
     logger.info(f"Loaded MCP tools from {source.url or ' '.join(source.command or [])}")
 
 
+def openapi_spec_url(source: "OpenAPISource") -> str | None:
+    """Return *source.url* when it is an HTTP(S) specification URL.
+
+    The core integration re-fetches a spec from ``spec_url`` with a
+    conditional GET.  A local path is not such a URL, so the caller must
+    re-read the file itself; returning ``None`` keeps the integration from
+    trying to fetch a path over HTTP.
+
+    Args:
+        source: The OpenAPI source declaration.
+
+    Returns:
+        The URL to store on the integration, or ``None`` for a local path.
+    """
+    parsed = urlparse(source.url)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        return source.url
+    return None
+
+
 def register_openapi_source(
     registry: "ToolRegistry",
     source: "OpenAPISource",
@@ -220,6 +241,11 @@ def register_openapi_source(
     strict: bool = False,
 ) -> bool:
     """Register tools from an OpenAPI endpoint source.
+
+    The specification URL is stored on the integration when it is HTTP(S),
+    so :meth:`~toolregistry_server.source_manager.SourceManager.refresh` can
+    re-fetch the document with a conditional GET instead of registering the
+    source again.  A local path is re-read from disk by the manager.
 
     When the optional ``regex`` extra is installed, every ``pattern`` and
     ``patternProperties`` key in the registered tool schemas is compiled
@@ -288,6 +314,7 @@ def register_openapi_source(
         spec,
         namespace=ns,
         persistent=True,
+        spec_url=openapi_spec_url(source),
         **_source_filter_kwargs(source),
     )
     contributed = {

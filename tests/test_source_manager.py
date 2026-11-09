@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from toolregistry import ToolRegistry
+from toolregistry._netpolicy import UnsafeAddressError
 from toolregistry.config import MCPSource, PythonSource, load_config
 
 from toolregistry_server import PROFILE_DISABLE_REASON, RouteTable, apply_profile
@@ -838,3 +841,268 @@ class TestSourceKeys:
         keys = list(indexed)
         assert keys[0] == source_key(one)
         assert len(keys[1]) == len(keys[0]) + 1
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI refresh (#182)
+# ---------------------------------------------------------------------------
+
+
+def _openapi_doc(base_url: str, paths: dict) -> dict:
+    """Return a minimal OpenAPI document for the refresh tests."""
+    return {
+        "openapi": "3.0.0",
+        "info": {"title": "Pet API", "version": "1"},
+        "servers": [{"url": base_url}],
+        "paths": paths,
+    }
+
+
+def _operation(operation_id: str) -> dict:
+    """Return one path item with a single GET operation."""
+    return {
+        "get": {
+            "operationId": operation_id,
+            "responses": {"200": {"description": "ok"}},
+        }
+    }
+
+
+class _SpecHandler(BaseHTTPRequestHandler):
+    """Serve the mutable spec the fixture holds, with ETag support."""
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        server = self.server
+        server.requests += 1
+        if self.headers.get("If-None-Match") == server.etag:
+            self.send_response(304)
+            self.send_header("ETag", server.etag)
+            self.end_headers()
+            return
+        body = json.dumps(server.spec).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("ETag", server.etag)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args) -> None:
+        """Keep the test output quiet."""
+
+
+@pytest.fixture
+def spec_server():
+    """A local HTTP server whose spec and ETag a test can change."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SpecHandler)
+    server.spec = _openapi_doc(
+        f"http://127.0.0.1:{server.server_port}",
+        {"/pets": _operation("list_pets")},
+    )
+    server.etag = '"v1"'
+    server.requests = 0
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _spec_url(server) -> str:
+    return f"http://127.0.0.1:{server.server_port}/openapi.json"
+
+
+def _openapi_manager(tmp_path, url: str) -> SourceManager:
+    """Build a manager with one OpenAPI source pointing at *url*."""
+    path = tmp_path / "openapi.jsonc"
+    path.write_text(
+        json.dumps(
+            {
+                "tools": [
+                    {
+                        "type": "openapi",
+                        "url": url,
+                        "namespace": "pet",
+                        "allow_private_hosts": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = ToolRegistry()
+    manager = SourceManager(
+        registry,
+        load_config(str(path)),
+        config_path=str(path),
+        write_config=False,
+    )
+    manager.apply_initial()
+    return manager
+
+
+class TestOpenAPIRefresh:
+    def test_registration_stores_the_spec_url(self, spec_server, tmp_path):
+        """The integration owns the URL, so core can re-fetch the document."""
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+
+        integration = manager.registry._openapi_integrations[0]
+
+        assert integration._spec_url == _spec_url(spec_server)
+
+    def test_304_leaves_tools_and_last_refreshed_at_alone(self, spec_server, tmp_path):
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+
+        # The first conditional request has no ETag to send; it re-reads the
+        # document and records a refresh time on each unchanged tool.
+        first = manager.refresh(source_id)
+        assert first.skipped is False
+        stamp = manager.registry._tools["pet-list_pets"].metadata.last_refreshed_at
+        assert stamp is not None
+
+        second = manager.refresh(source_id)
+
+        assert second.skipped is True
+        assert second.changed is False
+        assert (
+            manager.registry._tools["pet-list_pets"].metadata.last_refreshed_at == stamp
+        )
+        assert manager.get(source_id).names == frozenset({"pet-list_pets"})
+
+    def test_304_does_not_rebuild_routes(self, spec_server, tmp_path, monkeypatch):
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+        manager.refresh(source_id)  # acquire the ETag
+
+        route_table = RouteTable(manager.registry)
+        manager.attach_route_table(route_table)
+        rebuilds: list[int] = []
+        original = route_table.refresh_all
+        monkeypatch.setattr(
+            route_table, "refresh_all", lambda: rebuilds.append(1) or original()
+        )
+
+        result = manager.refresh(source_id)
+
+        assert result.skipped is True
+        assert rebuilds == []
+
+    def test_refresh_adds_and_removes_paths(self, spec_server, tmp_path):
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+
+        spec_server.spec["paths"]["/pets/{id}"] = _operation("get_pet")
+        spec_server.etag = '"v2"'
+        added = manager.refresh(source_id)
+
+        assert added.added == ("pet-get_pet",)
+        assert "pet-get_pet" in manager.registry._tools
+        assert "pet-get_pet" in manager.get(source_id).names
+
+        del spec_server.spec["paths"]["/pets"]
+        spec_server.etag = '"v3"'
+        removed = manager.refresh(source_id)
+
+        assert removed.removed == ("pet-list_pets",)
+        assert "pet-list_pets" not in manager.registry._tools
+        assert "pet-list_pets" not in manager.get(source_id).names
+
+    def test_a_hand_disabled_tool_stays_disabled(self, spec_server, tmp_path):
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+        manager.registry.disable("pet-list_pets", "operator disabled")
+
+        spec_server.spec["paths"]["/owners"] = _operation("list_owners")
+        spec_server.etag = '"v2"'
+        result = manager.refresh(source_id)
+
+        assert result.added == ("pet-list_owners",)
+        assert manager.registry.is_enabled("pet-list_pets") is False
+        assert manager.registry.get_disable_reason("pet-list_pets") == (
+            "operator disabled"
+        )
+
+    def test_refresh_refuses_a_url_the_policy_no_longer_allows(
+        self, spec_server, tmp_path
+    ):
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        entry = manager.list()[0]
+        source_id = entry.to_dict()["id"]
+        integration = manager.registry._openapi_integrations[0]
+        requests_before = spec_server.requests
+
+        # The deployment policy tightened after registration: the same URL is
+        # now a loopback address the source may not fetch.
+        integration._client_config.allow_private_hosts = False
+        with pytest.raises(UnsafeAddressError):
+            manager.refresh(source_id)
+
+        assert spec_server.requests == requests_before
+        assert "pet-list_pets" in manager.registry._tools
+        assert manager.get(source_id).names == entry.names
+
+    def test_refresh_rereads_a_local_file(self, tmp_path):
+        spec_path = tmp_path / "openapi.json"
+        spec_path.write_text(
+            json.dumps(
+                _openapi_doc(
+                    "https://api.example.com",
+                    {"/pets": _operation("list_pets")},
+                )
+            ),
+            encoding="utf-8",
+        )
+        config_path = tmp_path / "local.jsonc"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": [
+                        {
+                            "type": "openapi",
+                            "url": str(spec_path),
+                            "namespace": "local",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        manager = SourceManager(
+            ToolRegistry(),
+            load_config(str(config_path)),
+            config_path=str(config_path),
+            write_config=False,
+        )
+        manager.apply_initial()
+        source_id = manager.list()[0].to_dict()["id"]
+
+        spec_path.write_text(
+            json.dumps(
+                _openapi_doc(
+                    "https://api.example.com",
+                    {
+                        "/pets": _operation("list_pets"),
+                        "/owners": _operation("list_owners"),
+                    },
+                )
+            ),
+            encoding="utf-8",
+        )
+        result = manager.refresh(source_id)
+
+        assert result.added == ("local-list_owners",)
+        assert "local-list_owners" in manager.registry._tools
+
+    def test_refresh_of_a_non_openapi_source_is_refused(self, manager):
+        entry = next(e for e in manager.list() if e.source.namespace == "alpha")
+
+        with pytest.raises(ValueError, match="not an OpenAPI source"):
+            manager.refresh(entry.to_dict()["id"])
+
+    def test_refresh_of_an_unknown_source_is_a_key_error(self, manager):
+        with pytest.raises(KeyError):
+            manager.refresh("src_0000000000000000")

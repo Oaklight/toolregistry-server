@@ -18,7 +18,8 @@ tests can supply fakes:
 * ``frontends`` — the frontend registry (#184), or any object with the same
   ``list_frontends`` / ``update_frontend`` methods.
 * ``sources`` — the runtime source manager (#185), or any object with the
-  same ``to_dicts`` / ``add`` / ``remove`` / ``replace`` / ``retry`` methods.
+  same ``to_dicts`` / ``add`` / ``remove`` / ``replace`` / ``retry`` /
+  ``refresh`` methods.
 * ``parse_source`` — converts a JSON declaration into the declaration type
   ``sources.add`` accepts.  Core owns the config schema, so the gateway
   supplies this rather than the extension guessing it.
@@ -119,6 +120,9 @@ class SourceControl(Protocol):
 
     def retry(self, ref: str) -> Any:
         """Re-apply a failed declaration."""
+
+    def refresh(self, ref: str) -> Any:
+        """Re-fetch an OpenAPI source's document and apply the diff."""
 
 
 class _BadRequest(Exception):
@@ -284,6 +288,27 @@ def _mutation_json(result: Any) -> dict[str, Any]:
     }
 
 
+def _refresh_json(result: Any) -> dict[str, Any]:
+    """Serialise a refresh result without assuming one concrete type.
+
+    The core result is a frozen dataclass with no ``to_dict``; every field is
+    read defensively so a stand-in with a subset of them still serialises.
+    """
+    return {
+        "source": getattr(result, "source", ""),
+        "source_detail": getattr(result, "source_detail", ""),
+        "added": list(getattr(result, "added", ()) or ()),
+        "removed": list(getattr(result, "removed", ()) or ()),
+        "updated": list(getattr(result, "updated", ()) or ()),
+        "breaking": list(getattr(result, "breaking", ()) or ()),
+        "compatible": list(getattr(result, "compatible", ()) or ()),
+        "unchanged": int(getattr(result, "unchanged", 0) or 0),
+        "skipped": bool(getattr(result, "skipped", False)),
+        "overridden": list(getattr(result, "overridden", ()) or ()),
+        "changed": bool(getattr(result, "changed", False)),
+    }
+
+
 class GatewayAdminExtension:
     """Admin extension for keys, frontends and runtime sources.
 
@@ -341,6 +366,7 @@ class GatewayAdminExtension:
         ctx.put("/sources/<source_id>", self.replace_source)
         ctx.delete("/sources/<source_id>", self.remove_source)
         ctx.post("/sources/<source_id>/retry", self.retry_source)
+        ctx.post("/sources/<source_id>/refresh", self.refresh_source)
 
     # ---- collaborators ---------------------------------------------------
 
@@ -448,6 +474,17 @@ class GatewayAdminExtension:
         """Re-apply a source whose last attempt failed."""
         sources = self._require(self._sources, "source manager")
         return {"source": _record_dict(sources.retry(source_id))}
+
+    @_guard
+    def refresh_source(self, request: Any, source_id: str) -> dict[str, Any]:
+        """Re-fetch an OpenAPI source's document and apply the diff.
+
+        A ``304`` is reported as ``skipped``; the source's tools and their
+        ``last_refreshed_at`` are left alone.  A refused or failed fetch is
+        reported as 400 and keeps the current tools.
+        """
+        sources = self._require(self._sources, "source manager")
+        return {"refresh": _refresh_json(sources.refresh(source_id))}
 
 
 __all__ = ["GATEWAY_EXTENSION_NAME", "GatewayAdminExtension", "REQUIRES_API"]
