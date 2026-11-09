@@ -77,10 +77,20 @@ toolregistry-server mcp [options]
 | `--host HOST` | `127.0.0.1` | Bind host (for SSE/HTTP transports) |
 | `--port PORT` | `8000` | Bind port (for SSE/HTTP transports) |
 | `--tokens PATH` | - | File of Bearer tokens, one per line, for `streamable-http`/`http`. `API_BEARER_TOKEN` (comma-separated) is read as well |
+| `--keys-db PATH` | - | SQLite key store; scoped client keys are enforced on every MCP surface |
+| `--allow-operator-token` | `false` | Accept a static operator token on MCP even when a key store is configured |
+| `--client-concurrency N` | `8` | In-flight calls one client may run at once on `sse`/`streamable-http`; a key can lower it but never raise it |
+| `--concurrency-timeout SECONDS` | `30` | How long a call waits for a slot before it returns `-32000` |
 | `--server-url URL` | derived from `--host`/`--port` | Public URL advertised in OAuth protected-resource metadata (required behind a reverse proxy) |
 | `--tools-list-ttl-ms MS` | `300000` | `ttlMs` cache hint for `tools/list`; `0` disables caching |
 | `--tools-list-cache-scope {public,private}` | `private` | `cacheScope` hint for `tools/list` |
 | `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
+
+!!! note
+    `--client-concurrency` and `--concurrency-timeout` apply to the network
+    transports. `stdio` validates both but runs unthrottled: it serves one
+    client with no per-client credential, so a quota would only throttle that
+    client against itself.
 
 **Examples:**
 

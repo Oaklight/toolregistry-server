@@ -84,6 +84,9 @@ Fill in the form under the table:
   outside it.
 - **Expires** — optional local time. The gateway sends it as an absolute
   timestamp and the store rejects a time in the past.
+- **Concurrency** — optional; the most calls this key may run at once. It can
+  only lower the server's `--client-concurrency`, never raise it. Leaving it
+  empty uses the server default.
 
 An empty namespace list with no overrides creates a key that can call
 nothing; that is the fail-closed default.
