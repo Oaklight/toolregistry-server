@@ -162,7 +162,7 @@ class CLI:
 
         sub = parser.add_subparsers(
             dest="command",
-            metavar="{openapi,mcp,gateway,local-hub,keys}",
+            metavar="{openapi,mcp,gateway,local-hub,hub-shim,keys}",
         )
 
         openapi_parser = sub.add_parser("openapi", help="Start OpenAPI server")
@@ -233,12 +233,51 @@ class CLI:
         )
         local_hub_parser.set_defaults(host="127.0.0.1", port=0)
 
+        hub_shim_parser = sub.add_parser(
+            "hub-shim",
+            help="Expose one local hub to a stdio MCP client (POSIX only)",
+        )
+        hub_shim_parser.add_argument(
+            "--name",
+            default=DEFAULT_NAME,
+            metavar="NAME",
+            help="Hub to attach to (default: default)",
+        )
+        hub_shim_parser.add_argument(
+            "--config",
+            default=None,
+            metavar="PATH",
+            help="Config file used when the shim has to start the hub",
+        )
+        hub_shim_parser.add_argument(
+            "--socket",
+            dest="socket_path",
+            default=None,
+            metavar="PATH",
+            help="Unix socket for a hub the shim starts",
+        )
+        hub_shim_parser.add_argument(
+            "--connect-timeout",
+            type=float,
+            default=5.0,
+            metavar="SECONDS",
+            help="Limit for one connection attempt (default: 5)",
+        )
+        hub_shim_parser.add_argument(
+            "--no-spawn",
+            dest="spawn",
+            action="store_false",
+            default=True,
+            help="Never start a hub; report it as unavailable instead",
+        )
+
         self.configure_subparsers(
             {
                 "openapi": openapi_parser,
                 "mcp": mcp_parser,
                 "gateway": gateway_parser,
                 "local-hub": local_hub_parser,
+                "hub-shim": hub_shim_parser,
             }
         )
 
@@ -312,6 +351,10 @@ class CLI:
 
         if parsed.command == "local-hub":
             self._dispatch_local_hub(parsed)
+            return
+
+        if parsed.command == "hub-shim":
+            self._dispatch_hub_shim(parsed)
             return
 
         config_path = getattr(parsed, "config", None)
@@ -433,6 +476,25 @@ class CLI:
                     argv=self._argv,
                 )
         except local_hub.LocalHubUnsupported as exc:
+            logger.error(str(exc))
+            sys.exit(1)
+        if code:
+            sys.exit(code)
+
+    def _dispatch_hub_shim(self, parsed: argparse.Namespace) -> None:
+        """Serve one stdio MCP client until it disconnects."""
+        from .gateway import local_hub, shim
+
+        config = shim.ShimConfig(
+            name=parsed.name,
+            config_path=parsed.config,
+            socket_path=parsed.socket_path,
+            connect_timeout=parsed.connect_timeout,
+            spawn=parsed.spawn,
+        )
+        try:
+            code = shim.run_stdio(config)
+        except (local_hub.LocalHubUnsupported, shim.ShimError) as exc:
             logger.error(str(exc))
             sys.exit(1)
         if code:
