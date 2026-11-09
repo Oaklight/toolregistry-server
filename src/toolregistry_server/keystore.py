@@ -502,6 +502,23 @@ class Principal:
             return True
         return self.scopes.allows(namespace, tool_name)
 
+    def tool_override(self, tool_name: str) -> bool | None:
+        """Return this principal's explicit per-tool override, if any.
+
+        ``True`` allows the tool whatever its namespace, ``False`` denies it
+        whatever its namespace, and ``None`` means the namespace patterns
+        decide.  An unrestricted principal has no overrides to honour.
+
+        Args:
+            tool_name: The tool the caller named.
+
+        Returns:
+            The override, or ``None`` when the scope does not name the tool.
+        """
+        if self.unrestricted:
+            return None
+        return self.scopes.tools.get(tool_name)
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable view without any secret material."""
         return {
@@ -932,8 +949,11 @@ class PrincipalResolver:
         :data:`SCOPED_DENIED_TOOLS` and keeps the ones in
         :data:`SCOPE_TRANSPARENT_TOOLS`.  The transparent pair enforce the
         scope on the tool they act on, so denying them by their own namespace
-        would only break discovery for keys scoped elsewhere (#195).  Static
-        operator tokens are unrestricted and meet neither rule.
+        would only break discovery for keys scoped elsewhere (#195).  Only the
+        namespace component is bypassed: an explicit per-tool override for a
+        transparent tool still decides, because an operator who denies the
+        proxy made a deliberate choice.  Static operator tokens are
+        unrestricted and meet neither rule.
         """
         if principal is None:
             return False
@@ -941,7 +961,10 @@ class PrincipalResolver:
             if tool_name in SCOPED_DENIED_TOOLS:
                 return False
             if tool_name in SCOPE_TRANSPARENT_TOOLS:
-                return True
+                # Only the namespace component is bypassed: an explicit
+                # per-tool override is a deliberate decision and still wins.
+                override = principal.tool_override(tool_name)
+                return True if override is None else override
         return principal.allows(namespace, tool_name)
 
     def allows_route(self, principal: Principal | None, route: Any) -> bool:
