@@ -708,6 +708,14 @@ class TestShutdown:
         assert status == 200
         assert json.loads(body) == "done"
 
-        # The listener is closed, so a new connection is refused.
-        with pytest.raises((urllib.error.URLError, ConnectionError)):
-            _call(url, "/tools")
+        # Shutdown is signalled from another thread, so give the loop a
+        # bounded window to close the listener before asserting it is gone.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                _call(url, "/tools")
+            except (urllib.error.URLError, ConnectionError):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("the listener stayed open after shutdown")
