@@ -946,6 +946,17 @@ class SourceManager:
                 _apply_profile_to_names(self.registry, touched, self.profile)
             if self.config.tool_metadata:
                 self.registry.apply_metadata_config(self.config.tool_metadata)
+        if self.route_table is not None and added:
+            # A tool this refresh added has no stored override yet: the
+            # route rebuild above reads the map, which never learned the
+            # config entry.  Existing tools need nothing here, because
+            # ``route_table.refresh(name)`` already re-reads their entry.
+            sync_parameter_overrides(
+                self.route_table,
+                self.config,
+                previous=self.config,
+                new_names=added,
+            )
 
     @staticmethod
     def _refresh_integration(source: OpenAPISource, integration: Any) -> RefreshResult:
