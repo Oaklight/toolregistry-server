@@ -313,6 +313,62 @@ async def test_mcp_scoped_key_keeps_the_proxy_tools(
 
 
 @pytest.mark.asyncio
+async def test_mcp_explicit_deny_removes_the_proxy_tools(
+    scoped_discovery_table, store, resolver, monkeypatch
+):
+    """A per-tool deny is a deliberate decision and beats transparency."""
+    created = store.create(
+        "alpha-denied",
+        ScopeSpec(("alpha",), {"discover_tools": False, "call_deferred": False}),
+    )
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
+
+    async with create_test_client(server) as client:
+        result = await client.list_tools()
+        names = {tool.name for tool in result.tools}
+        message = await _mcp_error_message(
+            client,
+            "call_deferred",
+            {"_target_tool": "alpha-search", "query": "hello"},
+        )
+
+    assert "discover_tools" not in names
+    assert "call_deferred" not in names
+    assert "not permitted" in message
+
+
+@pytest.mark.asyncio
+async def test_mcp_explicit_allow_keeps_the_proxy_tools(
+    scoped_discovery_table, store, resolver, monkeypatch
+):
+    """An explicit allow is honoured as well, even outside the namespace list."""
+    created = store.create(
+        "alpha-explicit",
+        ScopeSpec((), {"discover_tools": True, "call_deferred": True}),
+    )
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    server = route_table_to_mcp_server(
+        scoped_discovery_table, principal_resolver=resolver
+    )
+
+    async with create_test_client(server) as client:
+        result = await client.list_tools()
+        names = {tool.name for tool in result.tools}
+
+    assert {"discover_tools", "call_deferred"} <= names
+    assert "alpha-add" not in names
+
+
+@pytest.mark.asyncio
 async def test_mcp_discovery_returns_only_tools_in_scope(
     scoped_discovery_table, store, resolver, monkeypatch
 ):

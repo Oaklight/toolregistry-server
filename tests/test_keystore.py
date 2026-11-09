@@ -339,6 +339,31 @@ class TestPrincipalResolver:
         assert resolver.allows(operator, "default", "discover_tools")
         assert resolver.allows(operator, "default", "call_deferred")
 
+    def test_transparent_proxies_honour_per_tool_overrides(self, store):
+        """An explicit deny or allow wins over proxy transparency (#195)."""
+        resolver = PrincipalResolver(store)
+
+        denied = store.create(
+            "alpha-denied",
+            ScopeSpec(("alpha",), {"discover_tools": False, "call_deferred": False}),
+        )
+        denied_principal = resolver.resolve(denied.secret)
+        assert not resolver.allows(denied_principal, "default", "discover_tools")
+        assert not resolver.allows(denied_principal, "default", "call_deferred")
+
+        allowed = store.create("alpha-allowed", ScopeSpec(("alpha",)))
+        allowed_principal = resolver.resolve(allowed.secret)
+        assert resolver.allows(allowed_principal, "default", "discover_tools")
+        assert resolver.allows(allowed_principal, "default", "call_deferred")
+
+        explicit = store.create(
+            "alpha-explicit",
+            ScopeSpec((), {"discover_tools": True, "call_deferred": True}),
+        )
+        explicit_principal = resolver.resolve(explicit.secret)
+        assert resolver.allows(explicit_principal, "default", "discover_tools")
+        assert resolver.allows(explicit_principal, "default", "call_deferred")
+
 
 class _Route:
     def __init__(self, tool_name: str, namespace: str) -> None:
