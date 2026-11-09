@@ -161,7 +161,7 @@ class _FakeHttp:
     def Timeout(connect: float, *, read: float) -> SimpleNamespace:
         return SimpleNamespace(connect=connect, read=read)
 
-    def HTTPTransport(self, *, uds: str) -> SimpleNamespace:
+    def AsyncHTTPTransport(self, *, uds: str) -> SimpleNamespace:
         transport = SimpleNamespace(uds=uds)
         self.transports.append(transport)
         return transport
