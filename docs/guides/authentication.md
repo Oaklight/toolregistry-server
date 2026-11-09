@@ -104,9 +104,12 @@ toolregistry-server keys --db keys.db revoke key_...
 toolregistry-server openapi --config config.json --keys-db keys.db
 toolregistry-server mcp --config config.json --transport streamable-http \
   --keys-db keys.db
+toolregistry-server gateway --config config.json --keys-db keys.db
 ```
 
 密钥数据库可以与 `--tokens` 同时使用。静态 `--tokens` 令牌保持完整、不受限的访问权限，属于引导/兼容路径；作用域只适用于数据库中创建的密钥。MCP 的 `stdio` 传输不携带请求凭据，因此会忽略 `--keys-db`。
+
+`gateway` 命令为每个进程构建一个解析器，并传给 OpenAPI 应用、streamable-HTTP 服务器和 SSE 应用，因此三个前端共享同一密钥存储，并在四个入口执行相同的作用域检查。只要配置了密钥存储或静态令牌，就会提供 RFC 9728 元数据路由。
 
 ### 作用域规则
 
