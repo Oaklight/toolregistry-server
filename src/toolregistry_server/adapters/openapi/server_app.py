@@ -1,9 +1,10 @@
 """OpenAPI app served by the vendored ``httpserver``.
 
-This is the zero-dependency counterpart of
-:func:`toolregistry_server.adapters.openapi.create_openapi_app`: same routes,
-same payloads, no FastAPI. It is the base of epic #101's workstream 4 and is
-not yet wired into the CLI or the adapter class.
+This is the zero-dependency server behind the standalone
+``toolregistry-server openapi`` command and the httpserver gateway backend.
+It serves the same routes and payloads as
+:func:`toolregistry_server.gateway.openapi_asgi.create_openapi_app`, without
+FastAPI.
 
 Routes:
 
@@ -262,7 +263,7 @@ def _make_tool_handler(
             arguments = await asyncio.to_thread(
                 _validate_arguments, current, payload, pattern_matcher=matcher
             )
-        except Exception as exc:  # HTTPException carries the 422 detail
+        except Exception as exc:  # RequestValidationError carries them
             status = getattr(exc, "status_code", None)
             if status is not None:
                 return _error(status, getattr(exc, "detail", str(exc)))

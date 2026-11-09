@@ -176,7 +176,7 @@ def create_bearer_dependency(auth: BearerTokenAuth) -> "Callable[..., Any]":
     except ImportError as e:
         raise ImportError(
             "FastAPI is required for authentication dependencies. "
-            "Install with: pip install toolregistry-server[openapi]"
+            "Install with: pip install toolregistry-server[gateway]"
         ) from e
 
     security = HTTPBearer()
@@ -246,7 +246,7 @@ def create_scoped_bearer_dependency(
     except ImportError as e:
         raise ImportError(
             "FastAPI is required for authentication dependencies. "
-            "Install with: pip install toolregistry-server[openapi]"
+            "Install with: pip install toolregistry-server[gateway]"
         ) from e
 
     security = HTTPBearer()

@@ -38,8 +38,11 @@ toolregistry-hub (tool collection + server config)
 # Base (RouteTable, registry_builder, auth)
 pip install toolregistry-server
 
-# With OpenAPI support
-pip install toolregistry-server[openapi]
+# OpenAPI server (vendored httpserver, no extra needed)
+pip install toolregistry-server
+
+# With the ASGI gateway backend (FastAPI + uvicorn)
+pip install toolregistry-server[gateway]
 
 # With MCP support
 pip install toolregistry-server[mcp]

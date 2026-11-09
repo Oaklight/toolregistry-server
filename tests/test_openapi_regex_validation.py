@@ -26,8 +26,8 @@ from toolregistry_server._vendor.structlog import (
     TimeStamper,
     add_log_level,
 )
-from toolregistry_server.adapters.openapi import create_openapi_app
 from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
+from toolregistry_server.gateway.openapi_asgi import create_openapi_app
 from toolregistry_server.regex_guard import SpecPatternError
 from toolregistry_server.registry_builder import register_openapi_source
 

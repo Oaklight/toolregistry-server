@@ -337,7 +337,7 @@ class TestParityWithFastAPI:
         pytest.importorskip("fastapi")
         from fastapi.openapi.utils import get_openapi
 
-        from toolregistry_server.adapters.openapi import create_openapi_app
+        from toolregistry_server.gateway.openapi_asgi import create_openapi_app
 
         # The served document now comes from this builder, so compare it with
         # FastAPI's own generation over the same routes instead of the app's

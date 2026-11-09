@@ -12,7 +12,7 @@ from toolregistry.tool import Tool
 
 from toolregistry_server import RouteEntry, RouteTable
 from toolregistry_server.adapters.mcp._compat import get_field
-from toolregistry_server.adapters.openapi import create_openapi_app
+from toolregistry_server.gateway.openapi_asgi import create_openapi_app
 
 # ============== Fixtures ==============
 
