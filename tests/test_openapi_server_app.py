@@ -28,6 +28,8 @@ from toolregistry_server._vendor.structlog import (
     add_log_level,
 )
 from toolregistry_server.adapters.openapi.server_app import (
+    REDOC_BUNDLE_INTEGRITY,
+    REDOC_VERSION,
     SWAGGER_UI_BUNDLE_INTEGRITY,
     SWAGGER_UI_CSS_INTEGRITY,
     SWAGGER_UI_VERSION,
@@ -447,6 +449,17 @@ class TestMetaRoutes:
         assert "text/html" in headers["Content-Type"]
         assert b"swagger" in body.lower()
 
+    def test_redoc_serves_the_reference_page(self, server):
+        url, _, _ = server
+        status, headers, body = _call(url, "/redoc")
+        assert status == 200
+        assert "text/html" in headers["Content-Type"]
+        page = body.decode()
+        assert 'spec-url="/openapi.json"' in page
+        assert f"redoc@{REDOC_VERSION}/" in page
+        assert REDOC_BUNDLE_INTEGRITY in page
+        assert 'crossorigin="anonymous"' in page
+
     def test_docs_pins_swagger_ui_with_integrity(self, server):
         """The CDN assets are an exact release guarded by SRI (#149)."""
         url, _, _ = server
@@ -469,6 +482,41 @@ class TestMetaRoutes:
             app.shutdown()
         assert title.encode() not in body
         assert b"&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+    def test_redoc_escapes_the_configured_title(self, route_table):
+        """The ReDoc page takes the same title through the same escape."""
+        title = "<script>alert(1)</script>"
+        app = create_httpserver_app(route_table, title=title)
+        url = _serve(app)
+        try:
+            _, _, body = _call(url, "/redoc")
+        finally:
+            app.shutdown()
+        assert title.encode() not in body
+        assert b"&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+class TestDynamicRoutes:
+    def test_a_tool_registered_after_startup_is_callable(self, server):
+        url, _, table = server
+        table.registry.register(echo_len)
+
+        path = table.get_route("echo_len").path
+        status, _, body = _call(url, path, {"text": "abc"})
+        assert status == 200
+        assert json.loads(body) == 3
+
+    def test_a_removed_tool_keeps_its_route_as_a_503(self, server):
+        url, _, table = server
+        table.registry.register(echo_len)
+        path = table.get_route("echo_len").path
+        assert _call(url, path, {"text": "abc"})[0] == 200
+
+        table.registry.unregister("echo_len")
+        assert table.get_route("echo_len") is None
+        status, _, body = _call(url, path, {"text": "abc"})
+        assert status == 503
+        assert "disabled" in json.loads(body)["detail"]
 
 
 class TestAuth:
@@ -622,3 +670,44 @@ class TestBodyLimit:
             assert set(json.loads(body)) == {"detail"}
         finally:
             app.shutdown()
+
+
+class TestShutdown:
+    def test_shutdown_drains_an_in_flight_request(self, route_table):
+        """SIGTERM-equivalent shutdown completes the request already running."""
+        started = threading.Event()
+        release = threading.Event()
+
+        def hold() -> str:
+            """Block until the test releases it."""
+            started.set()
+            release.wait(timeout=10)
+            return "done"
+
+        route_table.registry.register(hold)
+        route_table.refresh_all()
+
+        app = create_httpserver_app(route_table)
+        url = _serve(app)
+        path = route_table.get_route("hold").path
+        response: dict[str, object] = {}
+
+        def call() -> None:
+            response["result"] = _call(url, path, {})
+
+        client = threading.Thread(target=call, daemon=True)
+        client.start()
+        assert started.wait(timeout=5), "the handler never started"
+        threading.Timer(0.2, release.set).start()
+
+        app.shutdown()
+        client.join(timeout=5)
+
+        assert not client.is_alive()
+        status, _, body = response["result"]  # type: ignore[misc]
+        assert status == 200
+        assert json.loads(body) == "done"
+
+        # The listener is closed, so a new connection is refused.
+        with pytest.raises((urllib.error.URLError, ConnectionError)):
+            _call(url, "/tools")
