@@ -29,6 +29,7 @@ import contextlib
 import json
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -45,7 +46,7 @@ HUB_PROTOCOL_MAJOR = 1
 DEFAULT_NAME = "default"
 
 #: Accepted ``--name`` values.  A name is a file stem, never a path.
-_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 #: Transport values the endpoint document may declare.
 TRANSPORTS = ("tcp", "unix")
@@ -261,7 +262,7 @@ def _require_int(payload: Mapping[str, Any], key: str) -> int:
 
 
 def _validate_name(name: str) -> None:
-    if not _NAME_PATTERN.match(name):
+    if _NAME_PATTERN.fullmatch(name) is None:
         raise EndpointError(f"hub name {name!r} must match {_NAME_PATTERN.pattern!r}")
 
 
@@ -305,8 +306,7 @@ def socket_path(name: str = DEFAULT_NAME) -> Path:
 
 def _ensure_hub_dir() -> Path:
     directory = hub_dir()
-    if not directory.exists():
-        directory.mkdir(mode=0o700, parents=True)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     return directory
 
 
@@ -370,6 +370,11 @@ def read_endpoint(name: str = DEFAULT_NAME) -> HubEndpoint | None:
 def read_endpoint_file(path: Path | str) -> HubEndpoint | None:
     """Read one endpoint document, or ``None`` when the file is absent.
 
+    On POSIX the file must be owned by the current user and must not be
+    accessible to group or other, because a client trusts the document to
+    choose where it connects.  The file is opened without following a
+    symlink, so a swapped path cannot redirect the read.
+
     Args:
         path: Endpoint file path.
 
@@ -377,14 +382,34 @@ def read_endpoint_file(path: Path | str) -> HubEndpoint | None:
         The record, or ``None``.
 
     Raises:
-        EndpointError: If the file exists but is not a valid document.
+        EndpointError: If the file is unreadable, unsafe, or not a valid
+            document.
     """
     source = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        raw = source.read_text(encoding="utf-8")
+        descriptor = os.open(source, flags)
     except FileNotFoundError:
         return None
     except OSError as exc:
+        raise EndpointError(f"cannot read hub endpoint {source}: {exc}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if os.name != "nt":
+            if info.st_uid != os.getuid():
+                raise EndpointError(f"hub endpoint {source} is owned by another user")
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                raise EndpointError(
+                    f"hub endpoint {source} is accessible to other users"
+                )
+        handle = os.fdopen(descriptor, "r", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    try:
+        with handle:
+            raw = handle.read()
+    except (OSError, UnicodeDecodeError) as exc:
         raise EndpointError(f"cannot read hub endpoint {source}: {exc}") from exc
     try:
         payload = json.loads(raw)
@@ -438,12 +463,25 @@ def _windows_pid_is_alive(pid: int) -> bool:
     import ctypes
 
     process_query_limited_information = 0x1000
+    error_access_denied = 5
     windll = getattr(ctypes, "windll", None)
     if windll is None:
         return True
     kernel32 = windll.kernel32
+    # Handle as pointer-sized: the default c_int restype truncates a 64-bit
+    # handle and makes a live process look dead.
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [
+        ctypes.c_ulong,
+        ctypes.c_int,
+        ctypes.c_ulong,
+    ]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
     if not handle:
-        return False
+        # Another user's process is alive, matching the POSIX PermissionError
+        # branch in :func:`pid_is_alive`.
+        return kernel32.GetLastError() == error_access_denied
     kernel32.CloseHandle(handle)
     return True

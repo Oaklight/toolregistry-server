@@ -79,26 +79,50 @@ def test_missing_endpoint_returns_none():
     assert read_live_endpoint() is None
 
 
+def _write_raw(path, text):
+    """Write an endpoint file the way the writer does: mode 0600."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 def test_malformed_json_raises():
     path = endpoint_path()
-    hub_dir().mkdir(parents=True)
-    path.write_text("{not json", encoding="utf-8")
+    _write_raw(path, "{not json")
 
     with pytest.raises(EndpointError, match="not valid JSON"):
         read_endpoint()
 
 
 def test_a_document_for_another_name_is_refused():
-    hub_dir().mkdir(parents=True)
-    endpoint_path().write_text(
-        json.dumps(_tcp(name="other").to_dict()), encoding="utf-8"
-    )
+    _write_raw(endpoint_path(), json.dumps(_tcp(name="other").to_dict()))
 
     with pytest.raises(EndpointError, match="declares hub 'other'"):
         read_endpoint()
 
 
-@pytest.mark.parametrize("name", ["", "../escape", "a/b", ".hidden", "x" * 65])
+def test_a_readable_endpoint_is_refused():
+    path = endpoint_path()
+    _write_raw(path, json.dumps(_tcp().to_dict()))
+    os.chmod(path, 0o644)
+
+    with pytest.raises(EndpointError, match="accessible to other users"):
+        read_endpoint()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_a_symlinked_endpoint_is_refused():
+    isolated_target = hub_dir().parent / "elsewhere.json"
+    _write_raw(isolated_target, json.dumps(_tcp().to_dict()))
+    hub_dir().mkdir(parents=True, exist_ok=True)
+    os.symlink(isolated_target, endpoint_path())
+
+    with pytest.raises(EndpointError, match="cannot read"):
+        read_endpoint()
+
+
+@pytest.mark.parametrize("name", ["", "../escape", "a/b", ".hidden", "x" * 65, "ok\n"])
 def test_invalid_names_are_refused(name):
     with pytest.raises(EndpointError, match="must match"):
         endpoint_path(name)
