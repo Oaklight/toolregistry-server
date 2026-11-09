@@ -47,6 +47,7 @@ toolregistry-server openapi [选项]
 | `--host HOST` | `0.0.0.0` | 绑定主机 |
 | `--port PORT` | `8000` | 绑定端口 |
 | `--tokens PATH` | - | Bearer 令牌文件，每行一个（`#` 开始注释）。令牌以恒定时间比较；同时读取 `API_BEARER_TOKEN`（逗号分隔） |
+| `--execution-log` / `--no-execution-log` | 配置 `--keys-db` 时开启 | 在注册表执行日志中记录每次工具调用。见[认证](../guides/authentication.md#执行日志) |
 | `--max-body-size BYTES` | `1048576`（1 MiB） | 接受的最大请求体。必须为正数；超限返回带 JSON 错误的 `413` |
 | `--profile PROFILE` | - | 部署配置：`remote`、`local`，或配置文件 `profiles:` 中声明的名称 |
 | `--regex-timeout SECONDS` | `0.05` | 来自 spec 的正则单次匹配上限（需要 `regex` extra）。`0` 禁用执行 |
@@ -80,6 +81,7 @@ toolregistry-server mcp [选项]
 | `--allow-operator-token` | `false` | 即使配置了密钥存储，也接受 MCP 上的静态运维令牌 |
 | `--client-concurrency N` | `8` | `sse`/`streamable-http` 上单个客户端的在途调用上限；密钥只能调低，不能调高 |
 | `--concurrency-timeout SECONDS` | `30` | 调用等待空位的上限，超时返回 `-32000` |
+| `--execution-log` / `--no-execution-log` | 配置 `--keys-db` 时开启 | 在注册表执行日志中记录每次工具调用。见[认证](../guides/authentication.md#执行日志) |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 在 OAuth 受保护资源元数据中公布的公开 URL（反向代理后必需） |
 | `--tools-list-ttl-ms MS` | `300000` | `tools/list` 的 `ttlMs` 缓存提示；`0` 禁用缓存 |
 | `--tools-list-cache-scope {public,private}` | `private` | `tools/list` 的 `cacheScope` 提示 |
@@ -145,6 +147,10 @@ toolregistry-server gateway [选项]
 | `--admin-token TOKEN` | - | 管理面板接受的运维令牌；推荐改用 `--admin-token-file` |
 | `--admin-token-file PATH` | - | 从文件读取运维令牌 |
 | `--keys-db PATH` | - | 支撑面板 Keys 页的 SQLite 存储 |
+| `--allow-operator-token` | `false` | 即使配置了密钥存储，也接受 MCP 上的静态运维令牌 |
+| `--client-concurrency N` | `8` | 单个客户端的在途调用上限；密钥只能调低，不能调高 |
+| `--concurrency-timeout SECONDS` | `30` | 调用等待空位的上限，超时返回 `-32000` |
+| `--execution-log` / `--no-execution-log` | 配置 `--keys-db` 时开启 | 在注册表执行日志中记录每次工具调用。见[认证](../guides/authentication.md#执行日志) |
 | `--admin-allow-private-hosts` | `false` | 允许面板拉取解析到私有地址的来源 URL |
 | `--no-config-write` | `false` | 运行期前端变更不写回配置文件 |
 | `--max-body-size BYTES` | `1048576`（1 MiB） | OpenAPI 前端接受的最大请求体 |

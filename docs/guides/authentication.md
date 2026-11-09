@@ -163,6 +163,27 @@ toolregistry-server gateway --config config.json --keys-db keys.db
 进程的 `PermissionPolicy` 也会在每次对外调用上评估，MCP 与 OpenAPI 两个前端都如此；
 密钥作用域只能在此基础上进一步收紧。
 
+### 执行日志
+
+配置了 `--keys-db` 的部署同时开启注册表的执行日志：有密钥的部署正是调用具有稳定身份、
+值得保留的场景。每个到达工具处理器的调用——MCP，以及两个后端上的 OpenAPI——写入一条
+记录，包含工具名、参数、结果或错误、耗时，以及
+`metadata={"key_id": ..., "client_id": ...}`。被密钥作用域、代理目标检查或进程权限策略
+拒绝的调用从未到达处理器，不会进入执行日志；MCP 的拒绝仍会在结构化日志中归属，而
+OpenAPI 的拒绝不在服务端留下记录。
+
+结构化归属行对通过认证后的每次尝试写入，`outcome` 为四种之一：`ok`、`error`、
+`busy`（并发限制器）或 `denied`（作用域、代理目标或策略）。它的 `duration_ms`
+从鉴权之前开始计时；日志行的 `duration_ms` 只计处理器调用。
+
+日志是每进程 1000 条的内存环形缓冲，由管理面板的 Logs 页读取。它不持久化，重启即清空。
+除非日志此前已以 `full_record` 开启，条目遵循 core 的脱敏规则：凭据类键名被掩码，参数
+与结果超过 2000 个 JSON 字符时替换为预览，traceback 被丢弃。除此之外参数按原样保存，
+因此在普通参数中携带密钥的工具会让它出现在日志里。
+
+`--execution-log` 可在没有密钥库时开启日志，`--no-execution-log` 关闭它；`gateway`、
+`mcp` 和 `openapi` 都接受这两个参数。
+
 ### Python API
 
 管理扩展（#187）在进程内导入同一个存储：
