@@ -196,6 +196,34 @@ The process `PermissionPolicy` is evaluated on every served call as well, on
 both the MCP and the OpenAPI frontends; a key's scope can only narrow what the
 policy allows.
 
+### Execution log
+
+A deployment that configures `--keys-db` also enables the registry execution
+log: a keyed deployment is where a call has a stable identity worth keeping.
+Every call that reaches a tool handler — MCP, and OpenAPI on both backends —
+writes one entry with the tool, its arguments, the result or the error, the
+duration, and `metadata={"key_id": ..., "client_id": ...}`. A call refused by
+key scope, the proxy-target check or the process permission policy never
+reaches a handler and is not logged; an MCP refusal is still attributed in the
+structured log, while an OpenAPI refusal is not recorded server-side.
+
+The structured attribution line is written for every attempt past
+authentication, with one of four outcomes: `ok`, `error`, `busy` (the
+concurrency limiter) or `denied` (scope, proxy target or policy). Its
+`duration_ms` runs from before authorisation; the log row measures only the
+handler call.
+
+The log is an in-memory ring buffer of the last 1000 entries per process, read
+by the admin panel's Logs page. It is not persisted and resets on restart.
+Unless the log was already enabled with `full_record`, entries follow core's
+redaction rules: credential-named keys are masked, arguments and results
+longer than 2000 JSON characters are replaced by a preview, and tracebacks are
+dropped. Arguments are otherwise stored as received, so a tool that takes a
+secret in an ordinary argument will have it in the log.
+
+`--execution-log` enables the log without a key store and `--no-execution-log`
+disables it; `gateway`, `mcp` and `openapi` all accept both.
+
 ### Python API
 
 The admin extension (#187) imports the same store in-process:

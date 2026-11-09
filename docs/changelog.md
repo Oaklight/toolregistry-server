@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Every served call is recorded with its client identity** (#224): a deployment that sets `--keys-db` also enables the registry execution log, and each call that reaches a handler — MCP, and OpenAPI on both backends — writes one entry with its result or error plus `metadata={"key_id": ..., "client_id": ...}` naming the caller. A call refused by key scope, the proxy-target check or the process policy never reaches a handler and is not logged; an MCP refusal still writes an attributed structured-log line, while an OpenAPI refusal is not recorded server-side. `--execution-log` / `--no-execution-log` override the default on `gateway`, `mcp` and `openapi`. The log is an in-memory ring of 1000 entries per process, read by the admin Logs page, and follows core's redaction rules unless it was already enabled with `full_record`.
+
 - Gateway admin frontend: `gateway` can host the core admin panel at a
   configurable path (`/admin` by default, disabled by default). The panel is
   reverse-proxied from a loopback `AdminServer` through the single public

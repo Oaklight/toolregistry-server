@@ -48,6 +48,7 @@ The gateway command keeps its `--backend` choice.
 | `--host HOST` | `0.0.0.0` | Bind host |
 | `--port PORT` | `8000` | Bind port |
 | `--tokens PATH` | - | File of Bearer tokens, one per line (`#` starts a comment). Tokens are compared in constant time; `API_BEARER_TOKEN` (comma-separated) is read as well |
+| `--execution-log` / `--no-execution-log` | on with `--keys-db` | Record every tool call in the registry execution log. See [Authentication](../guides/authentication.md#execution-log) |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest accepted request body. Must be positive; a larger body returns `413` with a JSON error |
 | `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
 | `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes (requires the `regex` extra). `0` disables execution |
@@ -81,6 +82,7 @@ toolregistry-server mcp [options]
 | `--allow-operator-token` | `false` | Accept a static operator token on MCP even when a key store is configured |
 | `--client-concurrency N` | `8` | In-flight calls one client may run at once on `sse`/`streamable-http`; a key can lower it but never raise it |
 | `--concurrency-timeout SECONDS` | `30` | How long a call waits for a slot before it returns `-32000` |
+| `--execution-log` / `--no-execution-log` | on with `--keys-db` | Record every tool call in the registry execution log. See [Authentication](../guides/authentication.md#execution-log) |
 | `--server-url URL` | derived from `--host`/`--port` | Public URL advertised in OAuth protected-resource metadata (required behind a reverse proxy) |
 | `--tools-list-ttl-ms MS` | `300000` | `ttlMs` cache hint for `tools/list`; `0` disables caching |
 | `--tools-list-cache-scope {public,private}` | `private` | `cacheScope` hint for `tools/list` |
@@ -148,6 +150,10 @@ every request. The admin panel is disabled by default.
 | `--admin-token TOKEN` | - | Operator token accepted by the admin panel. Prefer `--admin-token-file` |
 | `--admin-token-file PATH` | - | Read the admin operator token from a file |
 | `--keys-db PATH` | - | SQLite store backing the panel's Keys page |
+| `--allow-operator-token` | `false` | Accept a static operator token on MCP even when a key store is configured |
+| `--client-concurrency N` | `8` | In-flight calls one client may run at once; a key can lower it but never raise it |
+| `--concurrency-timeout SECONDS` | `30` | How long a call waits for a slot before it returns `-32000` |
+| `--execution-log` / `--no-execution-log` | on with `--keys-db` | Record every tool call in the registry execution log. See [Authentication](../guides/authentication.md#execution-log) |
 | `--admin-allow-private-hosts` | `false` | Let the panel fetch a source URL that resolves to a private address |
 | `--no-config-write` | `false` | Do not persist runtime frontend changes to the config file |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest request body accepted by the OpenAPI frontend |
