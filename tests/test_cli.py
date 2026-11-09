@@ -269,6 +269,7 @@ class TestMain:
             server_url=None,
             tools_list_ttl_ms=None,
             tools_list_cache_scope=None,
+            allow_operator_token=False,
             config_reload=False,
             write_config=True,
         )
@@ -351,6 +352,7 @@ class TestMain:
             server_url=None,
             tools_list_ttl_ms=None,
             tools_list_cache_scope=None,
+            allow_operator_token=False,
             config_reload=False,
             write_config=True,
         )

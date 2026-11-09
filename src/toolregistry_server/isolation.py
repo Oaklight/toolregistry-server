@@ -460,8 +460,19 @@ def _denial(
 
 
 def _permission_policy(registry: Any) -> Any:
+    """Return the registry's policy, or ``None`` when it has none.
+
+    The type check matters: a test double for the registry answers every
+    attribute with a fresh mock, and a mock policy would turn every call
+    into a decision it never made.  Core's policy type is the contract.
+    """
+    from toolregistry.permissions import PermissionPolicy
+
     getter = getattr(registry, "get_permission_policy", None)
-    return getter() if getter is not None else None
+    if not callable(getter):
+        return None
+    policy = getter()
+    return policy if isinstance(policy, PermissionPolicy) else None
 
 
 def _is_allow(result: Any) -> bool:

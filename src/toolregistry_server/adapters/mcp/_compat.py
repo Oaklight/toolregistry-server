@@ -442,7 +442,14 @@ def _create_server_v2(
         # The per-request session dies with this request (#107); modern
         # connections cannot receive the notification at all (#111).
         track_session(session_tracker, ctx)
-        tools = await list_tools_handler()
+        # Publish the request like on_call_tool does: the authorization
+        # header lives on it, and without it a key-scoped tools/list is
+        # judged as an anonymous caller and returns nothing.
+        token = _v2_request_ctx.set(ctx)
+        try:
+            tools = await list_tools_handler()
+        finally:
+            _v2_request_ctx.reset(token)
         extra: dict[str, Any] = {}
         if list_tools_ttl_ms is not None and _cache_supported:
             extra["ttl_ms"] = list_tools_ttl_ms
