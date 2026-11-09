@@ -30,6 +30,7 @@ from toolregistry_server.gateway.endpoint import (
     HubEndpoint,
     endpoint_path,
     lock_path,
+    pid_path,
     read_endpoint,
     read_live_endpoint,
     read_owner_pid,
@@ -60,6 +61,16 @@ def _tcp(name: str = "default", port: int = 4321) -> HubEndpoint:
         host="127.0.0.1",
         port=port,
         frontends={"openapi": "/openapi"},
+    )
+
+
+def _unix(socket: str, name: str = "default") -> HubEndpoint:
+    return HubEndpoint.create(
+        name=name,
+        pid=os.getpid(),
+        version="0.9.0",
+        transport="unix",
+        socket=socket,
     )
 
 
@@ -136,8 +147,45 @@ class TestStatusAndStopAuthority:
             holder.wait(timeout=10)
         assert "starting" in capsys.readouterr().out
 
+    def test_stop_does_not_signal_when_the_listener_is_gone(
+        self, monkeypatch, tmp_path
+    ):
+        """A stale document plus a stale pid file must not signal anything.
 
-def _hold_lock_in_child(name: str) -> subprocess.Popen:
+        A starting hub holds the lock before it rewrites the pid file, so the
+        three checks can agree with a reused pid; only a listener on the
+        published address makes the pid safe to signal.
+        """
+        write_owner_pid("default", os.getpid())
+        write_endpoint(_unix(str(tmp_path / "missing.sock")))
+        holder = _hold_lock_in_child("default", write_pid=False)
+        signals = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+        try:
+            assert local_hub.stop_hub() == 1
+        finally:
+            holder.terminate()
+            holder.wait(timeout=10)
+        assert signals == []
+
+    def test_stop_removes_both_documents_when_no_hub_owns_the_name(self):
+        write_owner_pid("default", 4242)
+        write_endpoint(_tcp())
+
+        assert local_hub.stop_hub() == local_hub.EXIT_NOT_RUNNING
+        assert not endpoint_path().exists()
+        assert not pid_path().exists()
+
+    def test_status_removes_both_documents_when_no_hub_owns_the_name(self):
+        write_owner_pid("default", 4242)
+        write_endpoint(_tcp())
+
+        assert local_hub.status_hub() == local_hub.EXIT_NOT_RUNNING
+        assert not endpoint_path().exists()
+        assert not pid_path().exists()
+
+
+def _hold_lock_in_child(name: str, *, write_pid: bool = True) -> subprocess.Popen:
     """Hold *name*'s lock from another process until it is terminated."""
     script = (
         "import os, sys, time\n"
@@ -145,8 +193,8 @@ def _hold_lock_in_child(name: str) -> subprocess.Popen:
         "from toolregistry_server.gateway.local_hub import HubLock\n"
         "lock = HubLock(sys.argv[1])\n"
         "assert lock.acquire()\n"
-        "write_owner_pid(sys.argv[1], os.getpid())\n"
-        "sys.stdout.write('locked\\n')\n"
+        + ("write_owner_pid(sys.argv[1], os.getpid())\n" if write_pid else "")
+        + "sys.stdout.write('locked\\n')\n"
         "sys.stdout.flush()\n"
         "time.sleep(120)\n"
     )

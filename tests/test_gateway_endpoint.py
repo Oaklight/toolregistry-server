@@ -240,6 +240,26 @@ def test_owner_pid_is_private_and_round_trips():
     assert read_owner_pid("work") is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_a_widened_pid_file_is_refused():
+    write_owner_pid("work", 4242)
+    os.chmod(pid_path("work"), 0o644)
+
+    with pytest.raises(EndpointError, match="accessible to other users"):
+        read_owner_pid("work")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_a_symlinked_pid_file_is_refused():
+    target = hub_dir().parent / "pid-target"
+    _write_raw(target, "4242\n")
+    hub_dir().mkdir(parents=True, exist_ok=True)
+    os.symlink(target, pid_path("work"))
+
+    with pytest.raises(EndpointError, match="cannot read"):
+        read_owner_pid("work")
+
+
 def test_remove_endpoint_is_idempotent():
     write_endpoint(_tcp())
 
