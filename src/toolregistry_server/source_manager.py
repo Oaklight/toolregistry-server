@@ -892,22 +892,31 @@ class SourceManager:
         The steps mirror a registration pass, so a tool a refresh adds or
         changes ends in the same state a config reload would produce:
         namespace tags first, then ``on_registered``, the profile filter and
-        ``tool_metadata`` for the added names.  *dropped* names leave the
-        entry even when the refresh had updated them, because the regex
+        ``tool_metadata``.  A refresh that moved the base URL rebuilt every
+        wrapper, so every tool of the source is treated as touched even
+        though core reports no added or updated names.  *dropped* names leave
+        the entry even when the refresh had updated them, because the regex
         guard unregistered them.
         """
         touched = set(result.added) | set(result.updated)
+        if getattr(result, "base_url_changed", False):
+            # Core rebuilt every wrapper from the new document, so the tools
+            # are not reported as added or updated, but their
+            # post-registration state is gone.  Treat every tool of the
+            # source as touched.
+            touched |= set(entry.names)
         if touched:
             ns_tags = _build_ns_tags(
                 dataclasses.replace(self.config, tools=(entry.source,))
             )
             if ns_tags:
                 _apply_ns_tags(self.registry, ns_tags)
-                if self.route_table is not None:
-                    # Core's per-tool REFRESH event fired before the tags were
-                    # applied, so the route still holds the untagged tool.
-                    for name in result.updated:
-                        self.route_table.refresh(name)
+            if self.route_table is not None:
+                # Core's rebuild and its per-tool REFRESH event replace the
+                # Tool object without the tags, so the route is refreshed
+                # once the tags have landed.
+                for name in touched:
+                    self.route_table.refresh(name)
         names = (
             entry.names - frozenset(result.removed) - frozenset(dropped)
         ) | frozenset(result.added)
@@ -918,13 +927,13 @@ class SourceManager:
             error=None,
         )
         added = set(result.added)
-        if not added:
-            return
-        self._notify_registered(added)
-        if self.profile:
-            _apply_profile_to_names(self.registry, added, self.profile)
-        if self.config.tool_metadata:
-            self.registry.apply_metadata_config(self.config.tool_metadata)
+        if added:
+            self._notify_registered(added)
+        if touched:
+            if self.profile:
+                _apply_profile_to_names(self.registry, touched, self.profile)
+            if self.config.tool_metadata:
+                self.registry.apply_metadata_config(self.config.tool_metadata)
 
     @staticmethod
     def _refresh_integration(source: OpenAPISource, integration: Any) -> RefreshResult:

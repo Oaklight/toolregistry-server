@@ -306,6 +306,7 @@ def _refresh_json(result: Any) -> dict[str, Any]:
         "skipped": bool(getattr(result, "skipped", False)),
         "overridden": list(getattr(result, "overridden", ()) or ()),
         "changed": bool(getattr(result, "changed", False)),
+        "base_url_changed": bool(getattr(result, "base_url_changed", False)),
     }
 
 

@@ -1218,6 +1218,37 @@ class TestOpenAPIRefresh:
         assert second.removed == ("pet-bad_get",)
         assert "pet-bad_get" not in manager.registry._tools
 
+    def test_a_moved_base_url_keeps_namespace_tags(self, spec_server, tmp_path):
+        from toolregistry.events import RefreshResult
+
+        if "base_url_changed" not in {
+            field.name for field in dataclasses.fields(RefreshResult)
+        }:
+            pytest.skip("core does not report base_url_changed")
+
+        manager = _openapi_manager(
+            tmp_path, _spec_url(spec_server), tags=["file_system"]
+        )
+        source_id = manager.list()[0].to_dict()["id"]
+        name = "pet-list_pets"
+        table = RouteTable(manager.registry)
+        manager.attach_route_table(table)
+
+        # The paths are unchanged; only servers[0] moves.  Core rebuilds
+        # every wrapper, which drops the namespace tags unless the manager
+        # re-applies them.
+        spec_server.spec["servers"] = [{"url": "http://127.0.0.1:1"}]
+        spec_server.etag = '"v2"'
+        result = manager.refresh(source_id)
+
+        assert result.base_url_changed is True
+        assert result.added == ()
+        assert result.updated == ()
+        assert "file_system" in manager.registry._tools[name].metadata.all_tags
+        route = table.get_route(name)
+        assert route is not None
+        assert "file_system" in route.tool.metadata.all_tags
+
     def test_a_dropped_tool_comes_back_when_the_pattern_is_fixed(
         self, spec_server, tmp_path, monkeypatch
     ):

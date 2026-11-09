@@ -473,6 +473,19 @@ class TestSources:
         assert status == 200
         assert json.loads(body)["removed"] is True
 
+    def test_refresh_json_includes_base_url_changed(self) -> None:
+        from toolregistry_server.ext.gateway.extension import _refresh_json
+
+        class Result:
+            base_url_changed = True
+            unchanged = 2
+
+        payload = _refresh_json(Result())
+
+        assert payload["base_url_changed"] is True
+        assert payload["changed"] is False
+        assert _refresh_json(object())["base_url_changed"] is False
+
     def test_refresh_returns_the_diff(self, host) -> None:
         _, body, _ = _request(
             f"{host.url}/ext/gateway/sources",
