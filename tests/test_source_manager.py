@@ -884,19 +884,25 @@ class _BadRegex:
         return re.search(pattern, text)
 
 
-_BAD_PARAM_PATH = {
-    "get": {
-        "operationId": "bad_get",
-        "parameters": [
-            {
-                "name": "q",
-                "in": "query",
-                "schema": {"type": "string", "pattern": "("},
-            }
-        ],
-        "responses": {"200": {"description": "ok"}},
+def _bad_param_path() -> dict:
+    """Return a path item whose query parameter has an uncompilable pattern.
+
+    A fresh dict per call: the recovery test rewrites the pattern in place,
+    and a shared literal would leak the fixed version into later tests.
+    """
+    return {
+        "get": {
+            "operationId": "bad_get",
+            "parameters": [
+                {
+                    "name": "q",
+                    "in": "query",
+                    "schema": {"type": "string", "pattern": "("},
+                }
+            ],
+            "responses": {"200": {"description": "ok"}},
+        }
     }
-}
 
 
 class _SpecHandler(BaseHTTPRequestHandler):
@@ -1176,7 +1182,7 @@ class TestOpenAPIRefresh:
         monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
         monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
 
-        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.spec["paths"]["/bad"] = _bad_param_path()
         spec_server.etag = '"v2"'
         result = manager.refresh(source_id)
 
@@ -1199,7 +1205,7 @@ class TestOpenAPIRefresh:
         monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
         monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
 
-        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.spec["paths"]["/bad"] = _bad_param_path()
         spec_server.etag = '"v2"'
         assert manager.refresh(source_id).removed == ("pet-bad_get",)
 
@@ -1222,7 +1228,7 @@ class TestOpenAPIRefresh:
         monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
         monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
 
-        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.spec["paths"]["/bad"] = _bad_param_path()
         spec_server.etag = '"v2"'
         first = manager.refresh(source_id)
         assert first.removed == ("pet-bad_get",)
@@ -1256,7 +1262,7 @@ class TestOpenAPIRefresh:
         monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
         monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
 
-        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.spec["paths"]["/bad"] = _bad_param_path()
         spec_server.etag = '"v2"'
         with pytest.raises(SpecPatternError, match="pet-bad_get"):
             manager.refresh(source_id)
