@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import weakref
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -33,6 +34,10 @@ from ._vendor.structlog import get_logger
 from .scoped_discovery import CALL_DEFERRED_TOOL_NAME, TARGET_ARGUMENT, find_tool
 
 logger = get_logger()
+
+#: Policy types already reported as unenforceable.  A type object stays
+#: alive while the policy class does, so a second call is silent.
+_untyped_policy_types: weakref.WeakSet[type] = weakref.WeakSet()
 
 #: In-flight calls one principal may have when its key sets no override.
 DEFAULT_CLIENT_CONCURRENCY = 8
@@ -464,7 +469,9 @@ def _permission_policy(registry: Any) -> Any:
 
     The type check matters: a test double for the registry answers every
     attribute with a fresh mock, and a mock policy would turn every call
-    into a decision it never made.  Core's policy type is the contract.
+    into a decision it never made.  Core's policy type is the contract.  A
+    policy of any other type is ignored with one warning, so an operator who
+    installed a duck-typed policy learns that it is not enforced.
     """
     from toolregistry.permissions import PermissionPolicy
 
@@ -472,7 +479,28 @@ def _permission_policy(registry: Any) -> Any:
     if not callable(getter):
         return None
     policy = getter()
-    return policy if isinstance(policy, PermissionPolicy) else None
+    if policy is None:
+        return None
+    if not isinstance(policy, PermissionPolicy):
+        _warn_untyped_policy(policy)
+        return None
+    return policy
+
+
+def _warn_untyped_policy(policy: Any) -> None:
+    """Warn once per type about a policy this server will not enforce."""
+    policy_type = type(policy)
+    try:
+        if policy_type in _untyped_policy_types:
+            return
+        _untyped_policy_types.add(policy_type)
+    except TypeError:  # pragma: no cover - every type object is weakrefable
+        pass
+    logger.warning(
+        "ignoring a permission policy that is not a PermissionPolicy; "
+        "tool calls are not checked",
+        policy_type=policy_type.__name__,
+    )
 
 
 def _is_allow(result: Any) -> bool:

@@ -80,6 +80,7 @@ class KeyStore(Protocol):
         scopes: Sequence[str] | Mapping[str, Any] | None = None,
         *,
         expires_at: str | None = None,
+        max_concurrency: int | None = None,
     ) -> Any:
         """Create a key and return its record together with the secret."""
 
@@ -189,6 +190,25 @@ def _json_body(request: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise _BadRequest("Body must be a JSON object")
     return data
+
+
+def _validated_concurrency(value: Any) -> int | None:
+    """Validate the ``max_concurrency`` field of a create request.
+
+    Args:
+        value: The decoded JSON value, usually absent (``None``).
+
+    Returns:
+        The positive limit, or ``None`` for the server default.
+
+    Raises:
+        _BadRequest: If the value is not a positive integer or ``None``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise _BadRequest("'max_concurrency' must be a positive integer or null")
+    return value
 
 
 def _validated_scopes(value: Any) -> Any:
@@ -414,9 +434,15 @@ class GatewayAdminExtension:
         expires_at = data.get("expires_at")
         if expires_at is not None and not isinstance(expires_at, str):
             raise _BadRequest("'expires_at' must be an ISO 8601 string or null")
+        max_concurrency = _validated_concurrency(data.get("max_concurrency"))
 
         secret, record = _created_parts(
-            store.create(label.strip(), scopes, expires_at=expires_at)
+            store.create(
+                label.strip(),
+                scopes,
+                expires_at=expires_at,
+                max_concurrency=max_concurrency,
+            )
         )
         # A secret in a response body must not be stored by a cache.
         return ({**record, "secret": secret}, 201, {"Cache-Control": "no-store"})

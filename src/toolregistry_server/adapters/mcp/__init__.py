@@ -25,10 +25,16 @@ Note:
     pip install toolregistry-server[mcp]
 """
 
+import argparse
 import asyncio
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..._vendor.structlog import get_logger
+from ...isolation import (
+    DEFAULT_CLIENT_CONCURRENCY,
+    DEFAULT_CONCURRENCY_TIMEOUT,
+    ClientLimiter,
+)
 from .. import Adapter
 
 logger = get_logger()
@@ -211,6 +217,30 @@ def _build_principal_resolver(
     return PrincipalResolver(store, operator_tokens=load_tokens(tokens_path))
 
 
+def _positive_count(text: str) -> int:
+    """Parse an integer that must be at least one."""
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid int value: {text!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
+def _positive_seconds(text: str) -> float:
+    """Parse a finite number of seconds that must be greater than zero."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid float value: {text!r}") from exc
+    if value != value or value in (float("inf"), float("-inf")):
+        raise argparse.ArgumentTypeError("must be a finite number of seconds")
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return value
+
+
 class MCPAdapter(Adapter):
     """Serve tools via the Model Context Protocol.
 
@@ -230,6 +260,8 @@ class MCPAdapter(Adapter):
         allow_operator_token: Accept static ``--tokens`` credentials when a
             key store is configured.  Without it a key-scoped MCP endpoint
             refuses them, because every client would share one principal.
+        client_limiter: Per-principal concurrency budget.  ``None`` runs
+            calls without one; the CLI sets it for network transports.
     """
 
     def __init__(
@@ -243,9 +275,11 @@ class MCPAdapter(Adapter):
         instructions: str | None = None,
         principal_resolver: "PrincipalResolver | None" = None,
         allow_operator_token: bool = False,
+        client_limiter: ClientLimiter | None = None,
     ) -> None:
         super().__init__(route_table)
         self._principal_resolver = principal_resolver
+        self._client_limiter = client_limiter
         self._server = route_table_to_mcp_server(
             route_table,
             name,
@@ -259,6 +293,7 @@ class MCPAdapter(Adapter):
                 and principal_resolver is not None
                 and getattr(principal_resolver, "has_keys", False)
             ),
+            client_limiter=client_limiter,
         )
 
     @property
@@ -396,6 +431,27 @@ class MCPAdapter(Adapter):
             ),
         )
         parser.add_argument(
+            "--client-concurrency",
+            type=_positive_count,
+            default=DEFAULT_CLIENT_CONCURRENCY,
+            metavar="N",
+            help=(
+                "In-flight calls one client may run at once on a network "
+                "transport, unless its key sets a lower concurrency "
+                f"(default: {DEFAULT_CLIENT_CONCURRENCY})"
+            ),
+        )
+        parser.add_argument(
+            "--concurrency-timeout",
+            type=_positive_seconds,
+            default=DEFAULT_CONCURRENCY_TIMEOUT,
+            metavar="SECONDS",
+            help=(
+                "How long a call waits for its client's slot before it is "
+                f"refused (default: {DEFAULT_CONCURRENCY_TIMEOUT:g})"
+            ),
+        )
+        parser.add_argument(
             "--server-url",
             type=str,
             default=None,
@@ -443,16 +499,28 @@ class MCPAdapter(Adapter):
         Static ``tokens_path`` credentials are passed to the resolver as
         unscoped operator tokens, so they keep full access.  ``keys_db`` is
         ignored on the stdio transport, which carries no request credential.
+
+        A network transport also gets a per-principal concurrency limiter
+        built from ``client_concurrency`` and ``concurrency_timeout``; stdio
+        validates them but runs unthrottled, since it has one client.
         """
         from ...identity import ServerIdentity
 
         identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         name = kwargs.pop("name", identity.name)
         keys_db = kwargs.pop("keys_db", None)
+        transport = kwargs.get("transport", "stdio")
         principal_resolver = _build_principal_resolver(
             keys_db,
             kwargs.get("tokens_path"),
-            transport=kwargs.get("transport", "stdio"),
+            transport=transport,
+        )
+        # Build the limiter even for stdio so an invalid knob fails at
+        # startup; a single stdio client has no per-client identity to
+        # throttle, so it runs without one.
+        limiter = ClientLimiter(
+            kwargs.pop("client_concurrency", DEFAULT_CLIENT_CONCURRENCY),
+            kwargs.pop("concurrency_timeout", DEFAULT_CONCURRENCY_TIMEOUT),
         )
         adapter = cls(
             route_table,
@@ -463,6 +531,7 @@ class MCPAdapter(Adapter):
             instructions=kwargs.pop("instructions", None),
             principal_resolver=principal_resolver,
             allow_operator_token=kwargs.pop("allow_operator_token", False),
+            client_limiter=None if transport == "stdio" else limiter,
         )
         adapter.run(**kwargs)
 

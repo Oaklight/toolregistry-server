@@ -645,3 +645,19 @@ class TestHubIsolation:
             {"keys_db": "keys.db", "allow_operator_token": True}
         )
         assert options["allow_operator_token"] is False
+
+
+class TestChildEnvironment:
+    """A hub the shim starts must not inherit the shim's credential."""
+
+    def test_the_shim_key_is_removed(self, monkeypatch):
+        monkeypatch.setenv(local_hub.HUB_KEY_ENV, "trk_secret")
+
+        environment = local_hub._child_environment()
+
+        assert local_hub.HUB_KEY_ENV not in environment
+
+    def test_everything_else_is_inherited(self, monkeypatch):
+        monkeypatch.setenv("TOOLREGISTRY_TEST_KEEP", "kept")
+
+        assert local_hub._child_environment()["TOOLREGISTRY_TEST_KEEP"] == "kept"
