@@ -186,7 +186,8 @@ class CLI:
         from .gateway.endpoint import DEFAULT_NAME
 
         local_hub_parser = sub.add_parser(
-            "local-hub", help="Run a resident gateway shared by local clients"
+            "local-hub",
+            help="Run a resident gateway shared by local clients (POSIX only)",
         )
         GatewayAdapter.add_cli_arguments(local_hub_parser)
         self._add_source_runtime_arguments(local_hub_parser)
@@ -410,26 +411,30 @@ class CLI:
 
         action = parsed.action
         name = parsed.name
-        if action == "status":
-            sys.exit(local_hub.status_hub(name, as_json=parsed.json_output))
-        if action == "stop":
-            timeout = parsed.timeout or local_hub.DEFAULT_STOP_TIMEOUT
-            sys.exit(local_hub.stop_hub(name, timeout=timeout))
+        try:
+            if action == "status":
+                sys.exit(local_hub.status_hub(name, as_json=parsed.json_output))
+            if action == "stop":
+                timeout = parsed.timeout or local_hub.DEFAULT_STOP_TIMEOUT
+                sys.exit(local_hub.stop_hub(name, timeout=timeout))
 
-        options = self._gateway_options(getattr(parsed, "config", None), parsed)
-        if action == "run":
-            code = local_hub.run_hub(
-                self.app, options, name=name, idle_timeout=parsed.idle_timeout
-            )
-        else:
-            code = local_hub.ensure_hub(
-                self.app,
-                options,
-                name=name,
-                idle_timeout=parsed.idle_timeout,
-                timeout=parsed.timeout or local_hub.DEFAULT_ENSURE_TIMEOUT,
-                argv=self._argv,
-            )
+            options = self._gateway_options(getattr(parsed, "config", None), parsed)
+            if action == "run":
+                code = local_hub.run_hub(
+                    self.app, options, name=name, idle_timeout=parsed.idle_timeout
+                )
+            else:
+                code = local_hub.ensure_hub(
+                    self.app,
+                    options,
+                    name=name,
+                    idle_timeout=parsed.idle_timeout,
+                    timeout=parsed.timeout or local_hub.DEFAULT_ENSURE_TIMEOUT,
+                    argv=self._argv,
+                )
+        except local_hub.LocalHubUnsupported as exc:
+            logger.error(str(exc))
+            sys.exit(1)
         if code:
             sys.exit(code)
 

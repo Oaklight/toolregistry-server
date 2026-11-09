@@ -46,8 +46,11 @@ from .endpoint import (
     pid_is_alive,
     read_endpoint,
     read_live_endpoint,
+    read_owner_pid,
     remove_endpoint,
+    remove_owner_pid,
     write_endpoint,
+    write_owner_pid,
 )
 
 logger = get_logger()
@@ -62,11 +65,31 @@ DEFAULT_STOP_TIMEOUT = 15.0
 ACTIONS = ("run", "ensure", "stop", "status")
 
 
+class LocalHubUnsupported(RuntimeError):
+    """The local hub cannot run on this platform yet."""
+
+
+def _require_posix(action: str) -> None:
+    """Refuse the local-hub actions on Windows until they are tested there.
+
+    Raises:
+        LocalHubUnsupported: On Windows.
+    """
+    if os.name == "nt":
+        raise LocalHubUnsupported(
+            f"local-hub {action} is not supported on Windows yet: byte-range "
+            "locks are mandatory there and a terminated hub cannot retire "
+            "its endpoint, and no Windows CI verifies the lifecycle. Use "
+            "`toolregistry-server gateway` on Windows."
+        )
+
+
 class HubLock:
     """Exclusive ownership of one hub name.
 
-    The file is created ``0600`` and never unlinked: removing it while it is
-    held would let two processes lock different inodes at the same path.
+    The file is created ``0600``, never unlinked, and holds no data: the
+    owner pid lives in ``hub/<name>.pid``, because a mandatory byte-range
+    lock (Windows) would make the locked byte unreadable.
 
     Args:
         name: Hub name.
@@ -93,9 +116,6 @@ class HubLock:
             os.close(descriptor)
             return False
         self._descriptor = descriptor
-        with contextlib.suppress(OSError):
-            os.ftruncate(descriptor, 0)
-            os.write(descriptor, f"{os.getpid()}\n".encode())
         return True
 
     def release(self) -> None:
@@ -111,6 +131,7 @@ class HubLock:
         if os.name == "nt":
             import msvcrt
 
+            # msvcrt locks a byte range, so the file needs one byte to lock.
             if os.fstat(descriptor).st_size == 0:
                 os.write(descriptor, b"\n")
             os.lseek(descriptor, 0, os.SEEK_SET)
@@ -124,6 +145,8 @@ class HubLock:
 def lock_is_held(name: str = DEFAULT_NAME) -> bool:
     """Return whether another process holds *name*'s lock.
 
+    A probe leaves the lock file untouched: it never records a pid.
+
     Args:
         name: Hub name.
 
@@ -135,31 +158,6 @@ def lock_is_held(name: str = DEFAULT_NAME) -> bool:
         probe.release()
         return False
     return True
-
-
-def lock_owner_pid(name: str = DEFAULT_NAME) -> int | None:
-    """Return the pid the lock holder recorded, if it has written one.
-
-    The hub writes its pid after taking the lock.  Comparing it with the
-    endpoint pid is what makes a signal safe: after a reboot a stale document
-    can name a reused pid, while the lock file names the process that is
-    actually serving now.
-
-    Args:
-        name: Hub name.
-
-    Returns:
-        The recorded pid, or ``None`` when the file is missing or incomplete.
-    """
-    try:
-        text = lock_path(name).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    try:
-        pid = int(text)
-    except ValueError:
-        return None
-    return pid if pid > 0 else None
 
 
 class ActivityClock:
@@ -197,9 +195,11 @@ def run_hub(
     Returns:
         The process exit code.
     """
+    _require_posix("run")
     if idle_timeout < 0:
         raise ValueError("--idle-timeout must be zero or positive")
     lock = HubLock(name)
+    owned = False
     try:
         if not lock.acquire():
             existing = read_live_endpoint(name)
@@ -211,11 +211,15 @@ def run_hub(
             else:
                 print(f"hub {name!r} is starting in another process", file=sys.stderr)
             return 1
+        write_owner_pid(name, os.getpid())
+        owned = True
         return _serve_hub(app, options, name=name, idle_timeout=idle_timeout)
-    except (EndpointError, OSError) as exc:
+    except (EndpointError, OSError, ValueError) as exc:
         print(f"cannot start hub {name!r}: {exc}", file=sys.stderr)
         return 1
     finally:
+        if owned:
+            remove_owner_pid(name)
         lock.release()
 
 
@@ -245,6 +249,7 @@ def ensure_hub(
     Returns:
         ``0`` when a hub is available, ``1`` when it could not be started.
     """
+    _require_posix("ensure")
     running = _running_endpoint(name)
     if running is not None:
         _print_endpoint(running)
@@ -268,6 +273,7 @@ def stop_hub(name: str = DEFAULT_NAME, *, timeout: float = DEFAULT_STOP_TIMEOUT)
         ``0`` when the hub exited, ``EXIT_NOT_RUNNING`` when none was
         running, ``1`` on a failed stop.
     """
+    _require_posix("stop")
     try:
         endpoint = read_endpoint(name)
     except EndpointError as exc:
@@ -286,7 +292,7 @@ def stop_hub(name: str = DEFAULT_NAME, *, timeout: float = DEFAULT_STOP_TIMEOUT)
     except EndpointError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    owner = lock_owner_pid(name)
+    owner = read_owner_pid(name)
     if owner is None:
         print(f"hub {name!r} has not recorded its pid yet", file=sys.stderr)
         return 1
@@ -334,13 +340,14 @@ def status_hub(name: str = DEFAULT_NAME, *, as_json: bool = False) -> int:
         ``0`` when a hub is running, ``EXIT_NOT_RUNNING`` otherwise, ``1``
         when the endpoint document is malformed.
     """
+    _require_posix("status")
     try:
         endpoint = read_endpoint(name)
     except EndpointError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     held = lock_is_held(name)
-    owner = lock_owner_pid(name) if held else None
+    owner = read_owner_pid(name) if held else None
     if not held:
         if endpoint is not None:
             remove_endpoint(name)
@@ -389,11 +396,12 @@ def _serve_hub(
 
     def on_started(server: Any, bound: tuple[str, int] | None) -> None:
         transport = "unix" if options.get("socket_path") else "tcp"
+        configured_host = str(options.get("host", "127.0.0.1"))
         endpoint = HubEndpoint.create(
             name=name,
             version=__version__,
             transport=transport,
-            host=str(options.get("host", "127.0.0.1")),
+            host=_advertised_host(bound, configured_host),
             port=bound[1] if bound is not None else None,
             socket=options.get("socket_path"),
             frontends=_frontend_paths(gateway),
@@ -451,6 +459,19 @@ def _frontend_paths(gateway: Any) -> dict[str, str]:
     }
 
 
+_WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::", "::0"})
+
+
+def _advertised_host(bound: tuple[str, int] | None, configured: str) -> str:
+    """Return a host a local client can connect to.
+
+    A wildcard bind is not a connectable address, so it is advertised as
+    loopback; a concrete bound address wins over the configured one.
+    """
+    host = bound[0] if bound is not None else configured
+    return "127.0.0.1" if host in _WILDCARD_HOSTS else host
+
+
 def _retire_endpoint(name: str, endpoint: HubEndpoint | None) -> None:
     """Remove this process's endpoint and socket, if it still owns them."""
     if endpoint is None:
@@ -474,7 +495,7 @@ def _running_endpoint(name: str) -> HubEndpoint | None:
     if not lock_is_held(name):
         return None
     endpoint = read_live_endpoint(name)
-    if endpoint is None or endpoint.pid != lock_owner_pid(name):
+    if endpoint is None or endpoint.pid != read_owner_pid(name):
         return None
     return endpoint
 
@@ -618,9 +639,9 @@ __all__ = [
     "EXIT_NOT_RUNNING",
     "ActivityClock",
     "HubLock",
+    "LocalHubUnsupported",
     "ensure_hub",
     "lock_is_held",
-    "lock_owner_pid",
     "run_hub",
     "status_hub",
     "stop_hub",

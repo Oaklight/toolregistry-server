@@ -12,14 +12,18 @@ import asyncio
 import contextlib
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from toolregistry import ToolRegistry
 
+from toolregistry_server import App
 from toolregistry_server.gateway import local_hub
 from toolregistry_server.gateway.app import _SseSessionCounter
 from toolregistry_server.gateway.endpoint import (
@@ -28,13 +32,15 @@ from toolregistry_server.gateway.endpoint import (
     lock_path,
     read_endpoint,
     read_live_endpoint,
+    read_owner_pid,
+    remove_owner_pid,
     write_endpoint,
+    write_owner_pid,
 )
 from toolregistry_server.gateway.local_hub import (
     ActivityClock,
     HubLock,
     lock_is_held,
-    lock_owner_pid,
 )
 
 
@@ -67,7 +73,9 @@ class TestHubLock:
         try:
             assert second.acquire() is False
             assert lock_is_held("work") is True
-            assert lock_owner_pid("work") == os.getpid()
+            # The lock itself holds no data; the owner pid is a separate file.
+            assert read_owner_pid("work") is None
+            assert lock_path("work").read_bytes() == b""
         finally:
             first.release()
         assert lock_is_held("work") is False
@@ -106,9 +114,11 @@ class TestStatusAndStopAuthority:
         lock = HubLock("default")
         assert lock.acquire() is True
         try:
+            write_owner_pid("default", os.getpid())
             write_endpoint(_tcp(port=4321))
             assert local_hub.status_hub(as_json=True) == 0
         finally:
+            remove_owner_pid("default")
             lock.release()
 
         payload = json.loads(capsys.readouterr().out)
@@ -130,10 +140,12 @@ class TestStatusAndStopAuthority:
 def _hold_lock_in_child(name: str) -> subprocess.Popen:
     """Hold *name*'s lock from another process until it is terminated."""
     script = (
-        "import sys, time\n"
+        "import os, sys, time\n"
+        "from toolregistry_server.gateway.endpoint import write_owner_pid\n"
         "from toolregistry_server.gateway.local_hub import HubLock\n"
         "lock = HubLock(sys.argv[1])\n"
         "assert lock.acquire()\n"
+        "write_owner_pid(sys.argv[1], os.getpid())\n"
         "sys.stdout.write('locked\\n')\n"
         "sys.stdout.flush()\n"
         "time.sleep(120)\n"
@@ -155,9 +167,11 @@ class TestEnsure:
         lock = HubLock("default")
         assert lock.acquire() is True
         try:
+            write_owner_pid("default", os.getpid())
             write_endpoint(_tcp(port=4321))
             assert local_hub.ensure_hub(None, {}, timeout=1.0) == 0
         finally:
+            remove_owner_pid("default")
             lock.release()
 
         payload = json.loads(capsys.readouterr().out)
@@ -194,6 +208,37 @@ class TestRunArguments:
             "--idle-timeout",
             "30",
         ]
+
+
+class TestPlatformAndAddress:
+    """The CLI refuses Windows and advertises a connectable host."""
+
+    def test_windows_refuses_every_action(self, monkeypatch):
+        monkeypatch.setattr(local_hub, "os", SimpleNamespace(name="nt"))
+        calls = (
+            lambda: local_hub.run_hub(None, {}),
+            lambda: local_hub.ensure_hub(None, {}),
+            lambda: local_hub.stop_hub(),
+            lambda: local_hub.status_hub(),
+        )
+        for call in calls:
+            with pytest.raises(local_hub.LocalHubUnsupported, match="Windows"):
+                call()
+
+    @pytest.mark.parametrize(
+        ("bound", "configured", "expected"),
+        [
+            (("127.0.0.1", 5000), "0.0.0.0", "127.0.0.1"),
+            (("0.0.0.0", 5000), "localhost", "127.0.0.1"),
+            (("::1", 5000), "::1", "::1"),
+            (None, "0.0.0.0", "127.0.0.1"),
+            (None, "127.0.0.1", "127.0.0.1"),
+        ],
+    )
+    def test_a_wildcard_bind_is_advertised_as_loopback(
+        self, bound, configured, expected
+    ):
+        assert local_hub._advertised_host(bound, configured) == expected
 
 
 @pytest.mark.asyncio
@@ -291,7 +336,11 @@ def _wait_for_endpoint(
             output = process.stdout.read() if process.stdout else ""
             raise AssertionError(f"hub exited before publishing: {output!r}")
         endpoint = read_live_endpoint(name)
-        if endpoint is not None and lock_is_held(name):
+        if (
+            endpoint is not None
+            and lock_is_held(name)
+            and read_owner_pid(name) == endpoint.pid
+        ):
             return endpoint
         time.sleep(0.05)
     raise AssertionError(f"hub {name!r} did not publish an endpoint")
@@ -322,6 +371,7 @@ class TestRunningHub:
             assert endpoint.pid == process.pid
             assert endpoint.frontends == {"openapi": "/openapi"}
             assert endpoint.url == f"http://127.0.0.1:{endpoint.port}"
+            assert read_owner_pid("default") == process.pid
             assert read_endpoint() == endpoint
         finally:
             _terminate(process)
@@ -335,6 +385,7 @@ class TestRunningHub:
             process.wait(timeout=10)
 
             assert not endpoint_path("work").exists()
+            assert read_owner_pid("work") is None
             assert lock_is_held("work") is False
             assert local_hub.status_hub("work") == local_hub.EXIT_NOT_RUNNING
         finally:
@@ -425,3 +476,49 @@ def test_ensure_starts_a_hub_and_stop_ends_it(isolated_home, tmp_path):
         )
     assert stopped.returncode == 0, stopped.stderr
     assert not endpoint_path(name).exists()
+
+
+@pytest.mark.asyncio
+async def test_open_session_count_sees_a_streamable_http_session():
+    """A real MCP session is counted while the client holds it open."""
+    streamable_http = pytest.importorskip("mcp.client.streamable_http")
+    session_module = pytest.importorskip("mcp.client.session")
+    streamablehttp_client = streamable_http.streamablehttp_client
+    client_session = session_module.ClientSession
+
+    def add(a: int, b: int) -> int:
+        """Add two integers."""
+        return a + b
+
+    registry = ToolRegistry()
+    registry.register(add)
+    gateway = App().create_gateway(registry=registry, host="127.0.0.1", port=0)
+
+    started: queue.Queue = queue.Queue()
+    thread = threading.Thread(
+        target=asyncio.run,
+        args=(
+            gateway.run_async(
+                host="127.0.0.1",
+                port=0,
+                on_started=lambda server, bound: started.put((server, bound)),
+            ),
+        ),
+        daemon=True,
+    )
+    thread.start()
+    server, bound = await asyncio.to_thread(started.get, True, 60)
+    try:
+        url = f"http://{bound[0]}:{bound[1]}/mcp"
+        async with (
+            streamablehttp_client(url) as (read, write, _),
+            client_session(read, write) as session,
+        ):
+            await session.initialize()
+
+            assert gateway.open_session_count() >= 1
+    finally:
+        server.should_exit = True
+        await asyncio.to_thread(thread.join, 30)
+
+    assert gateway.open_session_count() == 0

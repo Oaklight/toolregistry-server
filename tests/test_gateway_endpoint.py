@@ -25,11 +25,15 @@ from toolregistry_server.gateway.endpoint import (
     ensure_hub_dir,
     hub_dir,
     lock_path,
+    pid_path,
     read_endpoint,
     read_live_endpoint,
+    read_owner_pid,
     remove_endpoint,
+    remove_owner_pid,
     socket_path,
     write_endpoint,
+    write_owner_pid,
 )
 
 
@@ -223,6 +227,17 @@ def test_unix_has_no_url():
 
     assert written.url is None
     assert written.socket == "/tmp/hub.sock"
+
+
+def test_owner_pid_is_private_and_round_trips():
+    write_owner_pid("work", 4242)
+
+    assert read_owner_pid("work") == 4242
+    assert stat.S_IMODE(pid_path("work").stat().st_mode) == 0o600
+    assert list(hub_dir().glob(".*.tmp")) == []
+
+    remove_owner_pid("work")
+    assert read_owner_pid("work") is None
 
 
 def test_remove_endpoint_is_idempotent():
