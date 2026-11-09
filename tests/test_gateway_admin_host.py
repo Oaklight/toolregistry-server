@@ -5,6 +5,10 @@ master ahead of the 0.21.0 release.  On a released core that predates it
 these tests skip, and the ``test-core-master`` CI job runs them against core
 master.
 
+The forward-throttle tests additionally need the panel's ``trusted_proxies``
+support (core#431), which also reached core master ahead of the release; on a
+core without it the whole module skips.
+
 The panel runs for real on a loopback port and is reached through the
 gateway ASGI application, so these tests cover the proxy, the operator
 authentication split and the extension wiring end to end.
@@ -13,6 +17,7 @@ authentication split and the extension wiring end to end.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -23,6 +28,11 @@ pytest.importorskip("toolregistry.admin.extensions")
 
 import httpx  # noqa: E402
 from toolregistry import ToolRegistry  # noqa: E402
+from toolregistry.admin.auth import (  # noqa: E402
+    AUTH_FAILURE_LIMIT,
+    address_in_networks,
+)
+from toolregistry.admin.server import AdminServer  # noqa: E402
 
 from toolregistry_server import RouteTable  # noqa: E402
 from toolregistry_server.gateway import GatewayAdapter  # noqa: E402
@@ -30,6 +40,12 @@ from toolregistry_server.gateway.admin import (  # noqa: E402
     SourceManagerHook,
     parse_source_payload,
 )
+
+if "trusted_proxies" not in inspect.signature(AdminServer.__init__).parameters:
+    pytest.skip(
+        "installed core lacks trusted_proxies (core master has it)",
+        allow_module_level=True,
+    )
 
 
 def _route_table() -> RouteTable:
@@ -537,3 +553,128 @@ class TestSourceManagerHook:
         assert hook.statuses() == ({"id": "src_1", "status": "applied"},)
         manager.write_config = False
         assert hook.writable() is False
+
+
+class TestTrustedProxyWiring:
+    """The panel trusts the gateway's loopback peer, and only that peer."""
+
+    def test_the_gateway_trusts_the_loopback_panel_peer(self):
+        gateway = _gateway()
+        try:
+            server = gateway._admin_host._build_server()
+        finally:
+            gateway.close()
+
+        assert address_in_networks("127.0.0.1", server.trusted_proxies)
+
+    def test_a_non_loopback_bind_trusts_nobody(self, monkeypatch):
+        import toolregistry_server.gateway.admin as gateway_admin
+
+        monkeypatch.setattr(gateway_admin, "_PANEL_BIND_HOST", "192.0.2.10")
+        gateway = _gateway()
+        try:
+            server = gateway._admin_host._build_server()
+        finally:
+            gateway.close()
+
+        # Without the loopback gate the bind address itself would be
+        # trusted.  Assert the whole tuple, and the bind address in
+        # particular, so deleting the gate fails this test.
+        assert server.trusted_proxies == ()
+        assert not address_in_networks("192.0.2.10", server.trusted_proxies)
+
+
+class TestForwardedThrottleKey:
+    """The panel keys the auth throttle on the client the gateway saw."""
+
+    async def test_another_forwarded_client_is_not_locked_out(self):
+        gateway = _gateway()
+        try:
+
+            async def attempt(source: str, token: str) -> int:
+                transport = httpx.ASGITransport(app=gateway.app, client=(source, 50000))
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as client:
+                    response = await client.get(
+                        "/admin/api/info",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    return response.status_code
+
+            for _ in range(AUTH_FAILURE_LIMIT):
+                assert await attempt("203.0.113.10", "wrong") == 401
+            # The forged source is exhausted; the gateway forwarded the
+            # socket peer, so this is the same key.
+            assert await attempt("203.0.113.10", "operator-token") == 429
+            # A different client behind the same proxy has its own bucket.
+            assert await attempt("203.0.113.11", "operator-token") == 200
+        finally:
+            await gateway.shutdown()
+
+
+class TestUntrustedPeer:
+    """Without a trusted peer, a claimed forwarded address moves nothing."""
+
+    @staticmethod
+    def _server() -> AdminServer:
+        return AdminServer(
+            ToolRegistry(),
+            port=0,
+            auth_token="correct-token",
+            # 127.0.0.1 is deliberately not trusted: it is the peer these
+            # tests connect from.
+            trusted_proxies=["10.0.0.0/8"],
+        )
+
+    async def test_an_untrusted_peer_ignores_the_forwarded_address(self):
+        server = self._server()
+        info = server.start()
+        try:
+            async with httpx.AsyncClient(base_url=info.url) as client:
+                for _ in range(AUTH_FAILURE_LIMIT):
+                    response = await client.get(
+                        "/api/tools",
+                        headers={
+                            "Authorization": "Bearer wrong",
+                            "X-Forwarded-For": "203.0.113.1",
+                        },
+                    )
+                    assert response.status_code == 401
+                blocked = await client.get(
+                    "/api/tools",
+                    headers={
+                        "Authorization": "Bearer correct-token",
+                        "X-Forwarded-For": "203.0.113.200",
+                    },
+                )
+        finally:
+            server.stop()
+
+        # The failures were keyed on the loopback peer, not on the claimed
+        # address, so a different claim is still blocked.
+        assert blocked.status_code == 429
+
+    async def test_a_spoofed_header_cannot_rotate_the_key(self):
+        server = self._server()
+        info = server.start()
+        try:
+            async with httpx.AsyncClient(base_url=info.url) as client:
+                for index in range(AUTH_FAILURE_LIMIT):
+                    response = await client.get(
+                        "/api/tools",
+                        headers={
+                            "Authorization": "Bearer wrong",
+                            "X-Forwarded-For": f"203.0.113.{index}",
+                        },
+                    )
+                    assert response.status_code == 401
+                blocked = await client.get(
+                    "/api/tools",
+                    headers={"Authorization": "Bearer correct-token"},
+                )
+        finally:
+            server.stop()
+
+        # Rotating the claim never starts a fresh bucket.
+        assert blocked.status_code == 429
