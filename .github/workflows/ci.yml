@@ -117,6 +117,12 @@ jobs:
       - name: Run source manager tests
         run: python -m pytest tests/test_source_manager.py -q
 
+      # Route parameter overrides read ToolConfig.tool_parameters, which
+      # is on core master ahead of the 0.21.0 floor.  On the released core
+      # the module skips, so this job is where it runs for real (#165).
+      - name: Run route parameter override tests
+        run: python -m pytest tests/test_tool_parameters.py -q
+
   # The `regex` extra is optional and deliberately not part of `all`, so the
   # default matrix covers the "spec patterns are not executed" fallback. This
   # job installs it and re-runs the OpenAPI suites, because installing it
