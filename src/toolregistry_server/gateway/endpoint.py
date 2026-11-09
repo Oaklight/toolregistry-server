@@ -373,7 +373,8 @@ def read_endpoint_file(path: Path | str) -> HubEndpoint | None:
     On POSIX the file must be owned by the current user and must not be
     accessible to group or other, because a client trusts the document to
     choose where it connects.  The file is opened without following a
-    symlink, so a swapped path cannot redirect the read.
+    symlink, and it must be a regular file: a planted FIFO or directory is
+    refused instead of opened.
 
     Args:
         path: Endpoint file path.
@@ -386,7 +387,9 @@ def read_endpoint_file(path: Path | str) -> HubEndpoint | None:
             document.
     """
     source = Path(path)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps a planted FIFO from blocking the open; the type check
+    # below then refuses it.  Regular files ignore the flag.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(source, flags)
     except FileNotFoundError:
@@ -395,6 +398,8 @@ def read_endpoint_file(path: Path | str) -> HubEndpoint | None:
         raise EndpointError(f"cannot read hub endpoint {source}: {exc}") from exc
     try:
         info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise EndpointError(f"hub endpoint {source} is not a regular file")
         if os.name != "nt":
             if info.st_uid != os.getuid():
                 raise EndpointError(f"hub endpoint {source} is owned by another user")
