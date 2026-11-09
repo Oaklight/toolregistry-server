@@ -219,6 +219,42 @@ tools:
     enabled: false  # skip until API key is configured
 ```
 
+## Route Parameter Overrides
+
+`tool_parameters` replaces the parameter schema a route publishes and
+validates against, without touching the registered tool. It is a top-level
+block keyed by the exact registered tool name, the same keying as
+`tool_metadata`:
+
+```yaml
+tool_parameters:
+  calculator-evaluate:
+    type: object
+    properties:
+      expression:
+        type: string
+      precision:
+        type: integer
+    required: [expression]
+```
+
+Every value must be a JSON Schema object. `type` may be omitted, be `"object"`,
+or be a list containing `"object"`; `properties`, when present, must be a
+mapping.
+
+The server applies the block after registration, where the route table is
+built, and again whenever the registry changes: a config reload applies,
+changes or clears entries; a successful source retry applies the entry for the
+tool it brings back; an OpenAPI refresh applies the entry for a tool it adds.
+Compatibility is judged against the tool's own model, so an override that is
+stricter than the model is logged and skipped, one that is looser is applied
+with a warning, and an entry for a tool that is not registered is logged and
+skipped. Startup never fails because of one entry.
+
+!!! note
+    The block requires `toolregistry` 0.21.0 or newer. An older core does not
+    model the key, so the block has no effect there.
+
 ## Deployment Profiles
 
 `--profile` applies a named filter after all sources are registered. A config file can override the built-in defaults under `profiles:`:
