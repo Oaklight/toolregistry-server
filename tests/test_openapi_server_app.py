@@ -512,7 +512,7 @@ class TestDynamicRoutes:
         path = table.get_route("echo_len").path
         assert _call(url, path, {"text": "abc"})[0] == 200
 
-        table.registry.unregister("echo_len")
+        table.registry._unregister("echo_len")  # noqa: SLF001 - test fixture
         assert table.get_route("echo_len") is None
         status, _, body = _call(url, path, {"text": "abc"})
         assert status == 503
