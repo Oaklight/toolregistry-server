@@ -48,7 +48,7 @@ import os
 import re
 import shutil
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
@@ -71,6 +71,7 @@ from .registry_builder import (
     PROFILE_DISABLE_TAGS,
     _apply_ns_tags,
     _build_ns_tags,
+    _invalid_patterns,
     _should_load_source,
     openapi_spec_url,
     register_mcp_source,
@@ -695,6 +696,14 @@ class SourceManager:
         untouched, so a source that cannot be re-read keeps its tools and the
         last good document.  The reason is logged and re-raised.
 
+        A refreshed document passes the same spec-regex guard as a first
+        registration: a tool whose ``pattern`` the ``regex`` extra cannot
+        compile is unregistered and removed from the returned result.  With
+        ``strict_spec_regex`` the tools are still dropped — core has already
+        applied the diff, so registration's all-or-nothing behaviour is not
+        reachable — and :class:`SpecPatternError` is raised with the dropped
+        names after the source entry is updated.
+
         Args:
             ref: The opaque id or the internal key of the source.
 
@@ -708,6 +717,9 @@ class SourceManager:
                 by the current config, has no registered integration, or the
                 document cannot be fetched or is refused by the outbound
                 policy.
+            SpecPatternError: If ``strict_spec_regex`` is set and the
+                refreshed document contains an invalid regex.  The affected
+                tools are dropped first.
         """
         with self._lock:
             key, entry, source, integration = self._refresh_target(ref)
@@ -720,8 +732,18 @@ class SourceManager:
                 with scope:
                     result = self._refresh_integration(source, integration)
                     if not result.skipped:
-                        self._record_refresh(key, entry, result)
+                        result, dropped = self._drop_invalid_patterns(source, result)
+                        self._record_refresh(key, entry, result, dropped)
+                        if dropped and self.strict_spec_regex:
+                            raise SpecPatternError(
+                                f"OpenAPI source "
+                                f"{_redact_url_userinfo(source.url)!r} has "
+                                f"{len(dropped)} tool(s) with an invalid regex; "
+                                f"dropped {dropped}"
+                            )
                     return result
+            except SpecPatternError:
+                raise
             except Exception as exc:
                 # Core has not applied a diff, so the registry and the entry
                 # still hold the last good state.  Re-raise for the caller.
@@ -769,11 +791,82 @@ class SourceManager:
             )
         return key, entry, source, integration
 
+    def _drop_invalid_patterns(
+        self, source: OpenAPISource, result: RefreshResult
+    ) -> tuple[RefreshResult, Sequence[str]]:
+        """Drop refreshed tools whose spec regex the guard cannot compile.
+
+        Registration checks these patterns before a tool is served; a refresh
+        registers through core's diff, so the check runs here.  The returned
+        result no longer names a dropped tool: a caller must not see a tool
+        that is not registered.  The log lines match registration's.
+
+        Args:
+            source: The OpenAPI source declaration.
+            result: The integration's refresh result.
+
+        Returns:
+            ``(result, dropped)``, with the dropped names removed from
+            ``added``, ``updated``, ``breaking`` and ``compatible``.
+        """
+        affected = set(result.added) | set(result.updated)
+        failures = _invalid_patterns(self.registry, affected)
+        if not failures:
+            return result, []
+        for tool_name, schema_path, pattern, error_name in failures:
+            logger.error(
+                f"Dropping tool {tool_name!r} from OpenAPI source "
+                f"{source.url!r}: invalid regex at {schema_path} "
+                f"({error_name}): {pattern!r}"
+            )
+        dropped = sorted({name for name, *_ in failures})
+        for name in dropped:
+            self.registry._unregister(name)  # ty: ignore[unresolved-attribute]
+        gone = set(dropped)
+
+        def keep(names: tuple[str, ...]) -> tuple[str, ...]:
+            return tuple(name for name in names if name not in gone)
+
+        adjusted = dataclasses.replace(
+            result,
+            added=keep(result.added),
+            updated=keep(result.updated),
+            breaking=keep(result.breaking),
+            compatible=keep(result.compatible),
+        )
+        return adjusted, dropped
+
     def _record_refresh(
-        self, key: SourceKey, entry: SourceEntry, result: RefreshResult
+        self,
+        key: SourceKey,
+        entry: SourceEntry,
+        result: RefreshResult,
+        dropped: Sequence[str],
     ) -> None:
-        """Store a refresh's names and run the post-registration steps."""
-        names = (entry.names - frozenset(result.removed)) | frozenset(result.added)
+        """Store a refresh's names and run the post-registration steps.
+
+        The steps mirror a registration pass, so a tool a refresh adds or
+        changes ends in the same state a config reload would produce:
+        namespace tags first, then ``on_registered``, the profile filter and
+        ``tool_metadata`` for the added names.  *dropped* names leave the
+        entry even when the refresh had updated them, because the regex
+        guard unregistered them.
+        """
+        touched = set(result.added) | set(result.updated)
+        if touched:
+            ns_tags = _build_ns_tags(
+                dataclasses.replace(self.config, tools=(entry.source,))
+            )
+            if ns_tags:
+                _apply_ns_tags(self.registry, ns_tags)
+                if self.route_table is not None:
+                    # Core's per-tool REFRESH event fired before the tags were
+                    # applied, so the route still holds the untagged tool.
+                    for name in result.updated:
+                        self.route_table.refresh(name)
+        names = (
+            entry.names - frozenset(result.removed) - frozenset(dropped)
+        ) | frozenset(result.added)
         self._entries[key] = dataclasses.replace(
             entry,
             names=frozenset(names),
