@@ -53,6 +53,8 @@ MAX_BACKOFF = 5.0
 HUB_ERROR_CODE = -32000
 #: Minimum seconds between two spawned hubs from one shim.
 SPAWN_COOLDOWN = 60.0
+#: Seconds a session cleanup may take before its task is abandoned.
+CLEANUP_TIMEOUT = 10.0
 
 Notifier = Callable[[], Awaitable[None]]
 
@@ -322,12 +324,31 @@ class HubConnection:
             raise _unavailable(self._config)
         session = self._session
         try:
-            return await session.call_tool(name, dict(arguments or {}))
+            return await self._call(session, name, dict(arguments or {}))
         except Exception as exc:
             logger.warning(f"hub call {name!r} failed: {_describe_exception(exc)}")
             await self._drop()
             self._schedule_reconnect()
             raise _unavailable(self._config, str(exc)) from exc
+
+    async def _call(self, session: Any, name: str, arguments: dict[str, Any]) -> Any:
+        """Run one call, failing as soon as the owning task dies.
+
+        SDK v1 leaves a request waiting when the transport closes without
+        waking it, so the owner task is the signal that the hub is gone.
+        """
+        task = asyncio.ensure_future(session.call_tool(name, arguments))
+        try:
+            owner = self._owner
+            if owner is not None:
+                await asyncio.wait({task, owner}, return_when=asyncio.FIRST_COMPLETED)
+                if not task.done():
+                    raise ShimError("the connection to the hub closed")
+            return task.result()
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def call_tool_pair(
         self, name: str, arguments: Mapping[str, Any] | None
@@ -409,7 +430,7 @@ class HubConnection:
         except Exception as exc:
             stop.set()
             owner.cancel()
-            await asyncio.gather(owner, return_exceptions=True)
+            await self._settle(owner)
             self._consume_ready(ready)
             logger.warning(f"hub connect failed: {_describe_exception(exc)}")
             return False
@@ -509,7 +530,15 @@ class HubConnection:
             stop.set()
         # The owner closes the transport stack in its own task; wait for it
         # so a reconnect starts from a clean state.
-        await asyncio.gather(owner, return_exceptions=True)
+        await self._settle(owner)
+
+    @staticmethod
+    async def _settle(task: asyncio.Task) -> None:
+        """Wait for *task*, abandoning it after :data:`CLEANUP_TIMEOUT`."""
+        done, _ = await asyncio.wait({task}, timeout=CLEANUP_TIMEOUT)
+        if not done:
+            task.cancel()
+            await asyncio.wait({task}, timeout=CLEANUP_TIMEOUT)
 
     def _schedule_reconnect(self) -> None:
         if self._closed:

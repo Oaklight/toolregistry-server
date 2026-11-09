@@ -406,6 +406,37 @@ class TestReconnect:
         await connection._drop()
 
 
+class TestALostConnection:
+    """A call in flight ends when the session owner does."""
+
+    async def test_the_call_fails_when_the_owner_task_dies(self):
+        connection = shim.HubConnection(_config())
+
+        async def never_returns(_name, _arguments):
+            await asyncio.sleep(3600)
+
+        session = SimpleNamespace(call_tool=never_returns)
+        stop = asyncio.Event()
+        connection._owner = asyncio.get_running_loop().create_task(stop.wait())
+        try:
+            stop.set()
+            with pytest.raises(shim.ShimError, match="closed"):
+                await connection._call(session, "add", {})
+        finally:
+            await connection._drop()
+
+    async def test_a_call_without_an_owner_is_awaited(self):
+        connection = shim.HubConnection(_config())
+
+        async def returns(name, arguments):
+            return ("done", name, arguments)
+
+        session = SimpleNamespace(call_tool=returns)
+        result = await connection._call(session, "add", {"a": 1})
+
+        assert result == ("done", "add", {"a": 1})
+
+
 _HUB_SCRIPT = """
 import sys
 
