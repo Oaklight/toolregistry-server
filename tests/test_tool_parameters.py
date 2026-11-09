@@ -32,6 +32,7 @@ from toolregistry_server.adapters.openapi.adapter import (
 )
 from toolregistry_server.app import App
 from toolregistry_server.registry_builder import apply_parameter_overrides
+from toolregistry_server.source_manager import SourceStatus
 
 pytestmark = pytest.mark.skipif(
     "tool_parameters" not in {field.name for field in dataclasses.fields(ToolConfig)},
@@ -272,6 +273,50 @@ def _boolean_override() -> dict:
     }
 
 
+#: A python source module written into the test's temporary directory.
+_LATE_MODULE = '''
+class Late:
+    def one(self, q: str = "x") -> str:
+        """Only late tool."""
+        return "late-one"
+'''
+
+_LATE_SOURCE = [{"class": "late.Late", "namespace": "late"}]
+
+
+def _write_late_module(tmp_path, monkeypatch) -> None:
+    (tmp_path / "late.py").write_text(_LATE_MODULE, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+
+def _late_override() -> dict:
+    """An override that changes an annotation, not a constraint."""
+    return {
+        "late-one": {
+            "type": "object",
+            "properties": {"q": {"type": "string", "description": "overridden"}},
+        }
+    }
+
+
+def _write_source_config(path, sources, block) -> None:
+    payload: dict = {"mode": "denylist", "tools": sources}
+    if block is not None:
+        payload["tool_parameters"] = block
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _source_app(tmp_path, sources, block):
+    """Build an app whose config declares *sources* and carries *block*."""
+    path = tmp_path / "tools.json"
+    _write_source_config(path, sources, block)
+    app = App()
+    registry = app.prepare_registry(config_path=str(path))
+    table = app._make_route_table(registry)  # noqa: SLF001 - test fixture
+    app._attach_source_manager(table)  # noqa: SLF001 - test fixture
+    return app, table, path
+
+
 def _reloading_app(tmp_path, block):
     """Build an app, a live table and the manager that can reload the file."""
     path = tmp_path / "tools.json"
@@ -381,3 +426,68 @@ class TestReloadReappliesParameterOverrides:
 
         served = table.get_route("proxy").served_parameters_schema
         assert served["properties"]["q"]["type"] == "integer"
+
+    def test_removing_and_readding_a_source_drops_the_stale_override(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        _write_late_module(tmp_path, monkeypatch)
+        app, table, path = _source_app(tmp_path, _LATE_SOURCE, _late_override())
+        route = table.get_route("late-one")
+        assert route is not None
+        assert (
+            route.served_parameters_schema["properties"]["q"].get("description")
+            == "overridden"
+        )
+
+        # The source and its entry leave together, so the route is gone when
+        # the entry is dropped.
+        _write_source_config(path, [], None)
+        assert self._reload(app) is True
+        assert table.get_route("late-one") is None
+
+        # The same name comes back with no entry.  A stored override left
+        # behind would be re-attached to the new tool by ``_tool_to_route``.
+        _write_source_config(path, _LATE_SOURCE, None)
+        assert self._reload(app) is True
+
+        route = table.get_route("late-one")
+        assert route is not None
+        assert route.parameter_schema_override is None
+        assert (
+            route.served_parameters_schema["properties"]["q"].get("description")
+            != "overridden"
+        )
+
+    def test_a_successful_retry_applies_the_entry(self, tmp_path, monkeypatch) -> None:
+        import toolregistry_server.source_manager as source_manager
+
+        _write_late_module(tmp_path, monkeypatch)
+        real = source_manager.register_python_source
+        attempts = 0
+
+        def flaky(registry, source):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("transient failure")
+            return real(registry, source)
+
+        monkeypatch.setattr(source_manager, "register_python_source", flaky)
+        app, table, _ = _source_app(tmp_path, _LATE_SOURCE, _late_override())
+
+        manager = app.source_manager
+        assert manager is not None
+        entry = next(e for e in manager.list() if e.source.namespace == "late")
+        assert entry.status is SourceStatus.FAILED
+        assert table.get_route("late-one") is None
+
+        entry = manager.retry(entry.key)
+
+        assert entry.status is SourceStatus.APPLIED
+        route = table.get_route("late-one")
+        assert route is not None
+        assert route.parameter_schema_override is not None
+        assert (
+            route.served_parameters_schema["properties"]["q"].get("description")
+            == "overridden"
+        )
