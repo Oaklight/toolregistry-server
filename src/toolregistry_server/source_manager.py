@@ -16,6 +16,11 @@ Diff semantics match the Hub's historical hot-reload implementation:
 - a source whose declaration changed is unregistered and registered again;
 - reordering the ``tools`` list is not a change.
 
+An OpenAPI source can also be refreshed without changing its declaration:
+:meth:`SourceManager.refresh` asks the core integration to re-read the
+document, which sends the stored ETag and diffs the result against the live
+tools.  A ``304`` changes nothing; a failed fetch keeps the current tools.
+
 A source whose registration raises is recorded as ``failed`` with its error and
 retried on the next diff.  A source that registered successfully but produced
 no tools stays ``applied`` and is not registered again on every unrelated
@@ -67,6 +72,7 @@ from .registry_builder import (
     _apply_ns_tags,
     _build_ns_tags,
     _should_load_source,
+    openapi_spec_url,
     register_mcp_source,
     register_openapi_source,
     register_python_source,
@@ -75,6 +81,7 @@ from .registry_builder import (
 if TYPE_CHECKING:
     from toolregistry import ToolRegistry
     from toolregistry.config import ToolSource
+    from toolregistry.events import RefreshResult
 
     from .route_table import RouteTable
 
@@ -467,6 +474,11 @@ class SourceManager:
 
         self._lock = threading.RLock()
         self._entries: dict[SourceKey, SourceEntry] = {}
+        #: The core integration that owns each OpenAPI source's spec, keyed
+        #: like :attr:`_entries`.  A refresh calls the integration rather
+        #: than registering the source again, so the ETag and the tool-level
+        #: state core tracks survive.
+        self._openapi_integrations: dict[SourceKey, Any] = {}
         self._last_written_hash: str | None = None
         #: Error from the most recent watcher reload, cleared on success.
         self.last_reload_error: str | None = None
@@ -497,6 +509,7 @@ class SourceManager:
         with self._lock:
             entries: dict[SourceKey, SourceEntry] = {}
             registered: set[str] = set()
+            self._openapi_integrations.clear()
             for key, source in index_sources(self.config.tools).items():
                 entry = self._apply_source(key, source, self.config)
                 entries[key] = entry
@@ -668,6 +681,141 @@ class SourceManager:
                 self._entries[key] = entry
             return entry
 
+    def refresh(self, ref: SourceRef) -> RefreshResult:
+        """Re-fetch an OpenAPI source's document and apply the diff.
+
+        The source is not registered again.  The core integration keeps the
+        ETag and the names it tracks, so a conditional GET that returns
+        ``304`` changes nothing, and a document that changed is diffed
+        against the live tools: names keep their registry state (a tool
+        disabled by hand stays disabled), and a path that disappeared is
+        unregistered.
+
+        A failed or refused fetch leaves the registry and the source entry
+        untouched, so a source that cannot be re-read keeps its tools and the
+        last good document.  The reason is logged and re-raised.
+
+        Args:
+            ref: The opaque id or the internal key of the source.
+
+        Returns:
+            The core :class:`~toolregistry.events.RefreshResult`, with the
+            names that were added, removed and updated.
+
+        Raises:
+            KeyError: If *ref* is not a currently declared source.
+            ValueError: If the source is not an OpenAPI source, is excluded
+                by the current config, has no registered integration, or the
+                document cannot be fetched or is refused by the outbound
+                policy.
+        """
+        with self._lock:
+            key, entry, source, integration = self._refresh_target(ref)
+            scope = (
+                self.route_table.batch_changes()
+                if self.route_table is not None
+                else nullcontext()
+            )
+            try:
+                with scope:
+                    result = self._refresh_integration(source, integration)
+                    if not result.skipped:
+                        self._record_refresh(key, entry, result)
+                    return result
+            except Exception as exc:
+                # Core has not applied a diff, so the registry and the entry
+                # still hold the last good state.  Re-raise for the caller.
+                logger.warning(
+                    f"Refresh of {_describe_source(source)} failed; "
+                    f"keeping the current tools: {_safe_error(exc)}"
+                )
+                raise
+
+    def _refresh_target(
+        self, ref: SourceRef
+    ) -> tuple[SourceKey, SourceEntry, OpenAPISource, Any]:
+        """Resolve *ref* to a refreshable source and its integration.
+
+        Args:
+            ref: The opaque id or the internal key of the source.
+
+        Returns:
+            ``(key, entry, source, integration)``.
+
+        Raises:
+            KeyError: If *ref* is not a currently declared source.
+            ValueError: If the source cannot be refreshed: it is not an
+                OpenAPI source, the config excludes it, or no integration is
+                stored for it.
+        """
+        key = self.resolve_key(ref)
+        entry = self._entries[key]
+        source = entry.source
+        if not isinstance(source, OpenAPISource):
+            raise ValueError(
+                f"source {ref!r} is not an OpenAPI source; "
+                "only an OpenAPI source re-reads its document"
+            )
+        if not _in_scope(source, self.config):
+            raise ValueError(
+                f"source {ref!r} is excluded by the current config; "
+                "enable it before refreshing"
+            )
+        integration = self._openapi_integrations.get(key)
+        if integration is None:
+            raise ValueError(
+                f"source {ref!r} has no registered OpenAPI integration; "
+                "retry or re-add the source"
+            )
+        return key, entry, source, integration
+
+    def _record_refresh(
+        self, key: SourceKey, entry: SourceEntry, result: RefreshResult
+    ) -> None:
+        """Store a refresh's names and run the post-registration steps."""
+        names = (entry.names - frozenset(result.removed)) | frozenset(result.added)
+        self._entries[key] = dataclasses.replace(
+            entry,
+            names=frozenset(names),
+            status=SourceStatus.APPLIED,
+            error=None,
+        )
+        added = set(result.added)
+        if not added:
+            return
+        self._notify_registered(added)
+        if self.profile:
+            _apply_profile_to_names(self.registry, added, self.profile)
+        if self.config.tool_metadata:
+            self.registry.apply_metadata_config(self.config.tool_metadata)
+
+    @staticmethod
+    def _refresh_integration(source: OpenAPISource, integration: Any) -> RefreshResult:
+        """Fetch and apply one source's document through its integration.
+
+        An HTTP(S) source refreshes through the integration, which sends the
+        stored ETag and re-validates the URL against the outbound policy.  A
+        local path has no ETag, so the file is read again and handed to the
+        integration.
+
+        Args:
+            source: The OpenAPI source declaration.
+            integration: The core integration that registered the source.
+
+        Returns:
+            The integration's refresh result.
+        """
+        if openapi_spec_url(source) is not None:
+            return integration.refresh()
+        from toolregistry.integrations.openapi import load_openapi_spec
+
+        spec = load_openapi_spec(
+            source.url,
+            allow_local_files=True,
+            allow_private_hosts=source.allow_private_hosts,
+        )
+        return integration.refresh(openapi_spec=spec)
+
     # ---- Watcher driver --------------------------------------------------
 
     def reload_from_path(self, path: str | os.PathLike[str] | None = None) -> bool:
@@ -719,6 +867,7 @@ class SourceManager:
         """Register one source and return its entry, recording failures."""
         if not _in_scope(source, config):
             return SourceEntry(key, source, frozenset(), SourceStatus.EXCLUDED)
+        before_integrations = len(self.registry._openapi_integrations)
         try:
             names = _register_source(
                 self.registry,
@@ -729,6 +878,7 @@ class SourceManager:
         except Exception as exc:  # noqa: BLE001 - one bad source must not abort
             # Only the strict regex switch is fatal; every other failure is
             # recorded so a later diff can retry it.
+            self._openapi_integrations.pop(key, None)
             if self.strict_spec_regex and isinstance(exc, SpecPatternError):
                 raise
             logger.warning(
@@ -738,7 +888,27 @@ class SourceManager:
             return SourceEntry(
                 key, source, frozenset(), SourceStatus.FAILED, _safe_error(exc)
             )
+        self._remember_integration(key, source, before_integrations)
         return SourceEntry(key, source, names, SourceStatus.APPLIED)
+
+    def _remember_integration(
+        self, key: SourceKey, source: ToolSource, before: int
+    ) -> None:
+        """Record the OpenAPI integration a registration pass appended.
+
+        ``_openapi_integrations`` is the registry's own list; a registration
+        appends exactly one integration per source, so the entries after
+        *before* belong to this pass.  A non-OpenAPI source has no
+        integration; an OpenAPI pass that appended nothing clears a stale
+        entry for *key*.
+        """
+        if not isinstance(source, OpenAPISource):
+            return
+        appended = self.registry._openapi_integrations[before:]
+        if appended:
+            self._openapi_integrations[key] = appended[-1]
+        else:
+            self._openapi_integrations.pop(key, None)
 
     def _apply_diff(self, new_config: ToolConfig) -> dict[str, int]:
         """Apply *new_config* source by source and update the entries."""
@@ -756,6 +926,7 @@ class SourceManager:
         with scope:
             # Sources no longer declared: their tools leave the registry.
             for key in set(old_sources) - set(new_sources):
+                self._openapi_integrations.pop(key, None)
                 entry = self._entries.get(key)
                 if entry is not None:
                     _remove_names(self.registry, entry.names, counts)

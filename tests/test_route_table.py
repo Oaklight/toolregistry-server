@@ -1126,3 +1126,29 @@ class TestLiveDerivedHintFlag:
 
         table.set_emit_derived_execution_hints(True)
         assert len(events) == 1
+
+
+class TestRefreshEvent:
+    """A per-tool REFRESH must replace the route's Tool reference."""
+
+    def test_refresh_event_replaces_the_route(self) -> None:
+        registry = ToolRegistry()
+
+        def add(a: int) -> int:
+            """Add one."""
+            return a
+
+        registry.register(add, namespace="calc")
+        table = RouteTable(registry)
+        assert table.get_route("calc-add") is not None
+
+        refreshed = replace(registry._tools["calc-add"], description="Changed")
+        registry._tools["calc-add"] = refreshed
+        registry._emit_change(
+            ChangeEvent(event_type=ChangeEventType.REFRESH, tool_name="calc-add")
+        )
+
+        route = table.get_route("calc-add")
+        assert route is not None
+        assert route.tool is refreshed
+        assert route.description == "Changed"

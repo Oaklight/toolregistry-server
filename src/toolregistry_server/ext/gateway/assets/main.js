@@ -70,6 +70,9 @@ const STRINGS = {
         'gw.sources.url': 'Spec or server URL',
         'gw.sources.module': 'Module or class',
         'gw.sources.retry': 'Retry',
+        'gw.sources.refreshSpec': 'Refresh spec',
+        'gw.sources.refreshSkipped': 'Spec unchanged; no tools were touched.',
+        'gw.sources.refreshed': 'Spec refreshed: {added} added, {removed} removed, {updated} updated, {unchanged} unchanged.',
         'gw.sources.remove': 'Remove',
         'gw.sources.statusApplied': 'Applied',
         'gw.sources.statusExcluded': 'Excluded',
@@ -139,6 +142,9 @@ const STRINGS = {
         'gw.sources.url': '规范或服务地址',
         'gw.sources.module': '模块或类',
         'gw.sources.retry': '重试',
+        'gw.sources.refreshSpec': '刷新规范',
+        'gw.sources.refreshSkipped': '规范未变化，未改动任何工具。',
+        'gw.sources.refreshed': '规范已刷新：新增 {added}，移除 {removed}，更新 {updated}，未变 {unchanged}。',
         'gw.sources.remove': '移除',
         'gw.sources.statusApplied': '已应用',
         'gw.sources.statusExcluded': '已排除',
@@ -580,6 +586,14 @@ function renderSources() {
     const rows = state.sources.map((record) => {
         const status = sourceStatus(record);
         const actions = [];
+        if (record.kind === 'openapi') {
+            actions.push(el('button', {
+                class: 'gw-btn',
+                type: 'button',
+                text: T('gw.sources.refreshSpec'),
+                onclick: () => refreshSource(record.id),
+            }));
+        }
         if (status.kind === 'failed') {
             actions.push(el('button', {
                 class: 'gw-btn',
@@ -709,6 +723,26 @@ async function retrySource(sourceId) {
     try {
         await call('post', '/sources/' + encodeURIComponent(sourceId) + '/retry');
         await loadSources();
+    } catch (error) {
+        host.appendChild(message(error.message, 'error'));
+    }
+}
+
+async function refreshSource(sourceId) {
+    const host = root.querySelector('#gw-sources');
+    try {
+        const data = await call('post', '/sources/' + encodeURIComponent(sourceId) + '/refresh');
+        await loadSources();
+        const result = data.refresh || {};
+        const note = result.skipped
+            ? message(T('gw.sources.refreshSkipped'))
+            : message(T('gw.sources.refreshed', {
+                added: (result.added || []).length,
+                removed: (result.removed || []).length,
+                updated: (result.updated || []).length,
+                unchanged: result.unchanged || 0,
+            }));
+        host.appendChild(note);
     } catch (error) {
         host.appendChild(message(error.message, 'error'));
     }
