@@ -72,7 +72,9 @@ jobs:
           python -c "import importlib.metadata as m; print('mcp', m.version('mcp'))"
 
       - name: Run MCP adapter tests
-        run: python -m pytest tests/test_mcp_adapter.py tests/test_mcp_session.py -q
+        run: >-
+          python -m pytest tests/test_mcp_adapter.py tests/test_mcp_session.py
+          tests/test_hub_shim.py -q
 
   # Forward-compatibility canary: run the OpenAPI suites against core's
   # master branch, which is ahead of the released floor pinned in

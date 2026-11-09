@@ -100,7 +100,13 @@ def _sdk_http_module(transport_module: Any) -> Any:
 
 def _uds_client(transport_module: Any, socket_path: str) -> Any:
     http = _sdk_http_module(transport_module)
-    return http.AsyncClient(transport=http.HTTPTransport(uds=socket_path))
+    # The streamable-HTTP transport keeps a GET stream open, so the client
+    # needs the SDK's read timeout (300 s); the library default (5 s) would
+    # tear the transport down while the hub is simply quiet.
+    timeout = http.Timeout(30.0, read=300.0)
+    return http.AsyncClient(
+        transport=http.HTTPTransport(uds=socket_path), timeout=timeout
+    )
 
 
 def open_hub_transport(url: str, socket_path: str | None = None) -> Any:
@@ -175,6 +181,30 @@ def _unavailable(config: ShimConfig, detail: str | None = None) -> Exception:
     if detail:
         message = f"{message}: {detail}"
     return make_mcp_error(HUB_ERROR_CODE, message)
+
+
+def _task_cancelling() -> bool:
+    """Whether this task was asked to stop, rather than an inner scope.
+
+    A hub that dies mid-request cancels the SDK's transport task group, and
+    the cancellation surfaces as ``CancelledError``.  That is a lost
+    connection, not a cancellation of the shim's own task; only the latter
+    may propagate.  ``Task.cancelling`` exists from 3.11, so on 3.10 the
+    transport case wins by default.
+    """
+    task = asyncio.current_task()
+    probe = getattr(task, "cancelling", None)
+    return bool(probe()) if probe is not None else False
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """Return *exc* and the exceptions nested inside it, in one line."""
+    children = getattr(exc, "exceptions", None)
+    text = _as_exception_text(exc)
+    if not children:
+        return text
+    detail = "; ".join(_describe_exception(child) for child in children)
+    return f"{text}: {detail}" if text else detail
 
 
 class HubConnection:
@@ -273,8 +303,15 @@ class HubConnection:
             result = await asyncio.wait_for(
                 session.list_tools(), self._config.connect_timeout
             )
+        except asyncio.CancelledError:
+            if _task_cancelling():
+                raise
+            logger.warning("hub tools/list was cancelled by a closed connection")
+            await self._drop()
+            self._schedule_reconnect()
+            return []
         except Exception as exc:
-            logger.warning(f"hub tools/list failed: {exc}")
+            logger.warning(f"hub tools/list failed: {_describe_exception(exc)}")
             await self._drop()
             self._schedule_reconnect()
             return []
@@ -303,8 +340,19 @@ class HubConnection:
         session = self._session
         try:
             return await session.call_tool(name, dict(arguments or {}))
+        except asyncio.CancelledError:
+            if _task_cancelling():
+                raise
+            # The hub's transport cancelled the call because the connection
+            # closed.  Report it like any other lost connection.
+            logger.warning(f"hub call {name!r} was cancelled by a closed connection")
+            await self._drop()
+            self._schedule_reconnect()
+            raise _unavailable(
+                self._config, "the connection to the hub closed"
+            ) from None
         except Exception as exc:
-            logger.warning(f"hub call {name!r} failed: {exc}")
+            logger.warning(f"hub call {name!r} failed: {_describe_exception(exc)}")
             await self._drop()
             self._schedule_reconnect()
             raise _unavailable(self._config, str(exc)) from exc
@@ -372,8 +420,13 @@ class HubConnection:
             stack, session, tools = await asyncio.wait_for(
                 self._open(endpoint), self._config.connect_timeout
             )
+        except asyncio.CancelledError:
+            if _task_cancelling():
+                raise
+            logger.warning("hub connect was cancelled by the transport")
+            return False
         except Exception as exc:
-            logger.warning(f"hub connect failed: {exc}")
+            logger.warning(f"hub connect failed: {_describe_exception(exc)}")
             return False
         previous = self._fingerprint
         self._stack = stack
@@ -415,9 +468,17 @@ class HubConnection:
     async def _drop(self) -> None:
         stack, self._stack = self._stack, None
         self._session = None
-        if stack is not None:
-            with contextlib.suppress(Exception):
-                await stack.aclose()
+        if stack is None:
+            return
+        try:
+            await stack.aclose()
+        except asyncio.CancelledError:
+            # The transport's task group was cancelled by the closed
+            # connection; only a cancellation of this task may propagate.
+            if _task_cancelling():
+                raise
+        except Exception:
+            pass
 
     def _schedule_reconnect(self) -> None:
         if self._closed:
