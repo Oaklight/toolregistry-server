@@ -14,6 +14,7 @@ hide:
 
 <p class="tr-badges">
   <a href="https://pypi.org/project/toolregistry-server/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/toolregistry-server?labelColor=475569&color=166534"></a>
+  <a href="https://test.pypi.org/project/toolregistry-server/"><img alt="TestPyPI version" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftest.pypi.org%2Fpypi%2Ftoolregistry-server%2Fjson&query=%24.info.version&label=TestPyPI&labelColor=475569&color=c2410c"></a>
   <a href="https://github.com/Oaklight/toolregistry-server/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Oaklight/toolregistry-server/ci.yml?branch=master&label=CI&labelColor=475569&color=14532d"></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-14532d?labelColor=475569"></a>
 </p>
