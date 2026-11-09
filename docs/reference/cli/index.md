@@ -162,7 +162,9 @@ A disabled frontend answers `404` without touching the registry. Frontend
 paths and flags can also be stored under `gateway.frontends` in the config
 file; see the [Configuration Guide](../../guides/configuration.md#gateway-frontends).
 The admin panel uses its own operator token, not the `--tokens` set; extension
-pages live under the panel mount (for example `/admin/ext/gateway/keys`).
+pages live under the panel mount (for example `/admin/ext/gateway/keys`). See
+the [Gateway Admin Panel guide](../../guides/gateway-admin.md) for the Keys,
+Frontends and Sources pages.
 
 ## Configuration File
 

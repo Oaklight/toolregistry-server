@@ -415,6 +415,9 @@ documented under [Authentication](authentication.md#scoped-api-keys). The
 panel shares that store, so a key created or revoked there applies on the next
 tool request.
 
+The three pages and their actions are described in the
+[Gateway Admin Panel guide](gateway-admin.md).
+
 ### Runtime frontend API
 
 The gateway object is available in-process as `App.gateway` after
