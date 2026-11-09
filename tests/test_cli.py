@@ -205,6 +205,7 @@ class TestMain:
             regex_timeout=0.05,
             regex_budget=0.25,
             strict_spec_regex=False,
+            execution_log=None,
             config_reload=False,
             write_config=True,
         )
@@ -235,6 +236,7 @@ class TestMain:
             regex_timeout=0.05,
             regex_budget=0.25,
             strict_spec_regex=False,
+            execution_log=None,
             config_reload=False,
             write_config=True,
         )
