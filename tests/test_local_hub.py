@@ -483,7 +483,11 @@ async def test_open_session_count_sees_a_streamable_http_session():
     """A real MCP session is counted while the client holds it open."""
     streamable_http = pytest.importorskip("mcp.client.streamable_http")
     session_module = pytest.importorskip("mcp.client.session")
-    streamablehttp_client = streamable_http.streamablehttp_client
+    # The SDK renamed the factory: 1.22..1.2x use streamablehttp_client,
+    # later releases use streamable_http_client.
+    streamablehttp_client = getattr(streamable_http, "streamablehttp_client", None)
+    if streamablehttp_client is None:
+        streamablehttp_client = streamable_http.streamable_http_client
     client_session = session_module.ClientSession
 
     def add(a: int, b: int) -> int:
