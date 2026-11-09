@@ -121,6 +121,7 @@ toolregistry-server gateway [选项]
 | `--config PATH` | - | JSONC 或 YAML 配置文件路径（必需） |
 | `--host HOST` | `0.0.0.0` | 绑定主机 |
 | `--port PORT` | `8000` | 绑定端口 |
+| `--socket PATH` | - | 改为绑定 Unix 域套接字而不是 `--host`/`--port`（仅 POSIX；优先级更高）。客户端需要支持 UDS 的 HTTP 传输 |
 | `--tokens PATH` | - | Bearer 令牌文件，作用于所有前端；同时读取 `API_BEARER_TOKEN` |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 受保护资源元数据中使用的公开 MCP URL |
 | `--backend {fastapi,httpserver}` | `fastapi` | 多个前端必须使用 `fastapi`；`httpserver` 只能提供 openapi 前端 |
