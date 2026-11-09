@@ -29,6 +29,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -67,6 +68,32 @@ ACTIONS = ("run", "ensure", "stop", "status")
 
 class LocalHubUnsupported(RuntimeError):
     """The local hub cannot run on this platform yet."""
+
+
+class _Termination:
+    """Absorb uvicorn's SIGTERM re-raise and forward the request to the server.
+
+    uvicorn restores the previous handler and re-raises a captured signal at
+    the end of ``serve()``.  With the default handler the process would die
+    before the hub retires its endpoint and pid file, so this handler is
+    installed first.  A signal that arrives before the server exists is
+    remembered and applied by :meth:`attach`.
+    """
+
+    def __init__(self) -> None:
+        self.requested = False
+        self._server: Any = None
+
+    def __call__(self, signum: int, frame: Any) -> None:
+        self.requested = True
+        if self._server is not None:
+            self._server.should_exit = True
+
+    def attach(self, server: Any) -> None:
+        """Remember *server* and obey a signal that arrived earlier."""
+        self._server = server
+        if self.requested:
+            server.should_exit = True
 
 
 def _require_posix(action: str) -> None:
@@ -198,6 +225,10 @@ def run_hub(
     _require_posix("run")
     if idle_timeout < 0:
         raise ValueError("--idle-timeout must be zero or positive")
+    previous_sigterm: Any = None
+    termination = _Termination()
+    if threading.current_thread() is threading.main_thread():
+        previous_sigterm = signal.signal(signal.SIGTERM, termination)
     lock = HubLock(name)
     owned = False
     try:
@@ -213,7 +244,13 @@ def run_hub(
             return 1
         write_owner_pid(name, os.getpid())
         owned = True
-        return _serve_hub(app, options, name=name, idle_timeout=idle_timeout)
+        return _serve_hub(
+            app,
+            options,
+            name=name,
+            idle_timeout=idle_timeout,
+            termination=termination,
+        )
     except (EndpointError, OSError, ValueError) as exc:
         print(f"cannot start hub {name!r}: {exc}", file=sys.stderr)
         return 1
@@ -221,6 +258,8 @@ def run_hub(
         if owned:
             remove_owner_pid(name)
         lock.release()
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def ensure_hub(
@@ -381,6 +420,7 @@ def _serve_hub(
     *,
     name: str,
     idle_timeout: float,
+    termination: _Termination | None = None,
 ) -> int:
     """Build and serve the gateway, publishing the endpoint once bound."""
     backend = options.get("backend", "fastapi")
@@ -409,6 +449,10 @@ def _serve_hub(
         write_endpoint(endpoint)
         state["endpoint"] = endpoint
         clock.touch()
+        if termination is not None:
+            # A SIGTERM that arrived before the listener existed stops the
+            # server now, before it accepts a single request.
+            termination.attach(server)
         if idle_timeout > 0:
             state["watchdog"] = asyncio.create_task(
                 _idle_watchdog(server, gateway, clock, idle_timeout)
