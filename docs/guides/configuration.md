@@ -449,7 +449,10 @@ preserved. The runtime change still applies when the write fails.
 in `warning`.
 
 On `--backend httpserver` the OpenAPI frontend has no mount prefix: it is
-served at the listener root (`/tools`, `/openapi.json`, `/docs`, `/events`).
+served at the listener root (`/tools`, `/openapi.json`, `/docs`, `/redoc`,
+`/events`). A tool registered after the app is built is callable immediately,
+and a removed tool keeps its route and answers 503, the same as the FastAPI
+backend.
 `list_frontends()` therefore reports its `path` as `"/"` together with a
 `note` that says so, and passing `"/"` back to `update_frontend` is accepted
 as a no-op instead of an error, so saving the unchanged record succeeds.
