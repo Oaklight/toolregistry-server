@@ -340,10 +340,11 @@ class HubConnection:
         task = asyncio.ensure_future(session.call_tool(name, arguments))
         try:
             owner = self._owner
-            if owner is not None:
-                await asyncio.wait({task, owner}, return_when=asyncio.FIRST_COMPLETED)
-                if not task.done():
-                    raise ShimError("the connection to the hub closed")
+            if owner is None:
+                return await task
+            await asyncio.wait({task, owner}, return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                raise ShimError("the connection to the hub closed")
             return task.result()
         finally:
             if not task.done():
