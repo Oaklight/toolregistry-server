@@ -87,6 +87,14 @@ _HOP_BY_HOP = frozenset(
 
 _MCP_TRANSPORT_ALIASES = {"http": "streamable-http"}
 
+#: Headers that state where a request came from.  The gateway is the edge,
+#: so it replaces a client-supplied value with what the ASGI scope saw
+#: instead of forwarding the client's claim.  RFC 7239 ``Forwarded`` is
+#: stripped too, but not replaced: the panel does not read it.
+_FORWARDED_HEADERS = frozenset(
+    {b"forwarded", b"x-forwarded-for", b"x-forwarded-proto", b"x-forwarded-host"}
+)
+
 
 def _as_mapping(value: Any, name: str) -> dict[str, Any]:
     """Return *value* as a plain mapping.
@@ -735,16 +743,44 @@ def _request_target(scope: Any) -> bytes:
 
 
 def _request_headers(scope: Any, body: bytes) -> list[tuple[bytes, bytes]]:
-    """Return the headers to send to the panel."""
+    """Return the headers to send to the panel.
+
+    Any inbound ``Forwarded``, ``X-Forwarded-For``, ``X-Forwarded-Proto``
+    or ``X-Forwarded-Host`` is dropped: only this proxy may say where the
+    request came from, and what it says is what the ASGI scope saw.  The
+    value is replaced, never appended to, so a client cannot choose its own
+    place in the chain; RFC 7239 ``Forwarded`` is not replaced because the
+    panel does not read it.  A scope without a client (for example a test
+    harness) forwards no ``X-Forwarded-For`` at all rather than trusting
+    what the client wrote.
+    """
+    incoming = scope.get("headers", [])
     headers = [
         (name, value)
-        for name, value in scope.get("headers", [])
-        if name.lower() not in _HOP_BY_HOP
+        for name, value in incoming
+        if name.lower() not in _HOP_BY_HOP and name.lower() not in _FORWARDED_HEADERS
     ]
+    client = scope.get("client")
+    if client and client[0]:
+        headers.append((b"x-forwarded-for", str(client[0]).encode("latin-1")))
+    scheme = scope.get("scheme")
+    if scheme:
+        headers.append((b"x-forwarded-proto", scheme.encode("latin-1")))
+    host = _incoming_host(incoming)
+    if host is not None:
+        headers.append((b"x-forwarded-host", host))
     headers.append((b"connection", b"close"))
     if body:
         headers.append((b"content-length", str(len(body)).encode("latin-1")))
     return headers
+
+
+def _incoming_host(headers: Sequence[tuple[bytes, bytes]]) -> bytes | None:
+    """Return the first ``Host`` header value, or ``None``."""
+    for name, value in headers:
+        if name.lower() == b"host":
+            return value
+    return None
 
 
 async def _forward(
