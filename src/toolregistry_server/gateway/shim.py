@@ -203,7 +203,8 @@ class HubConnection:
     def __init__(self, config: ShimConfig) -> None:
         self._config = config
         self._session: Any = None
-        self._stack: AsyncExitStack | None = None
+        self._owner: asyncio.Task | None = None
+        self._stop: asyncio.Event | None = None
         self._tools: list[Any] = []
         self._fingerprint: str | None = None
         self._closed = False
@@ -265,7 +266,10 @@ class HubConnection:
         """
         async with self._lock:
             if self._session is not None:
-                return True
+                if self._owner is not None and not self._owner.done():
+                    return True
+                # The hub session ended while idle; reconnect before the call.
+                await self._drop()
             try:
                 endpoint = await asyncio.to_thread(self._discover)
             except EndpointError as exc:
@@ -289,13 +293,6 @@ class HubConnection:
             result = await asyncio.wait_for(
                 session.list_tools(), self._config.connect_timeout
             )
-        except asyncio.CancelledError:
-            if self._closed:
-                raise
-            logger.warning("hub tools/list was cancelled by a closed connection")
-            await self._drop()
-            self._schedule_reconnect()
-            return []
         except Exception as exc:
             logger.warning(f"hub tools/list failed: {_describe_exception(exc)}")
             await self._drop()
@@ -326,18 +323,6 @@ class HubConnection:
         session = self._session
         try:
             return await session.call_tool(name, dict(arguments or {}))
-        except asyncio.CancelledError:
-            if self._closed:
-                raise
-            # The streamable-HTTP transport binds its task group to the
-            # caller's task, so a dead connection surfaces here as a
-            # cancellation.  Report it like any other lost connection.
-            logger.warning(f"hub call {name!r} was cancelled by a closed connection")
-            await self._drop()
-            self._schedule_reconnect()
-            raise _unavailable(
-                self._config, "the connection to the hub closed"
-            ) from None
         except Exception as exc:
             logger.warning(f"hub call {name!r} failed: {_describe_exception(exc)}")
             await self._drop()
@@ -402,22 +387,36 @@ class HubConnection:
             )
 
     async def _connect(self, endpoint: HubEndpoint) -> bool:
-        """Open and initialize one hub session, bounded by the timeout."""
+        """Open and initialize one hub session, bounded by the timeout.
+
+        The transport and session are entered in their own long-lived task:
+        the streamable-HTTP transport binds its task group to the task that
+        entered it, so a hub dying would otherwise cancel the caller -- at
+        startup, the whole stdio server.
+        """
+        loop = asyncio.get_running_loop()
+        stop = asyncio.Event()
+        ready: asyncio.Future = loop.create_future()
+        owner = loop.create_task(self._own_session(endpoint, ready, stop))
         try:
-            stack, session, tools = await asyncio.wait_for(
-                self._open(endpoint), self._config.connect_timeout
+            session, tools = await asyncio.wait_for(
+                self._owner_ready(owner, ready), self._config.connect_timeout
             )
         except asyncio.CancelledError:
-            if self._closed:
-                raise
-            logger.warning("hub connect was cancelled by the transport")
-            return False
+            stop.set()
+            owner.cancel()
+            raise
         except Exception as exc:
+            stop.set()
+            owner.cancel()
+            await asyncio.gather(owner, return_exceptions=True)
+            self._consume_ready(ready)
             logger.warning(f"hub connect failed: {_describe_exception(exc)}")
             return False
-        previous = self._fingerprint
-        self._stack = stack
+        self._owner = owner
+        self._stop = stop
         self._session = session
+        previous = self._fingerprint
         self._update_tools(tools)
         if (
             previous is not None
@@ -426,6 +425,54 @@ class HubConnection:
         ):
             self._schedule_notify()
         return True
+
+    @staticmethod
+    async def _owner_ready(
+        owner: asyncio.Task, ready: asyncio.Future
+    ) -> tuple[Any, list[Any]]:
+        """Wait for the owning task to publish its session, or to fail."""
+        done, _ = await asyncio.wait(
+            {owner, ready}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if ready in done:
+            return ready.result()
+        if owner.cancelled():
+            raise ShimError("the hub session was cancelled")
+        error = owner.exception()
+        if error is not None:
+            raise error
+        raise ShimError("the hub session ended before it was ready")
+
+    @staticmethod
+    def _consume_ready(ready: asyncio.Future) -> None:
+        """Retrieve a result nobody will read, so no warning is logged."""
+        if ready.done() and not ready.cancelled():
+            ready.exception()
+
+    async def _own_session(
+        self, endpoint: HubEndpoint, ready: asyncio.Future, stop: asyncio.Event
+    ) -> None:
+        """Own the transport and session until *stop* is set.
+
+        Entering and leaving the stack happens in this task, as the SDK's
+        context managers require.
+        """
+        try:
+            stack, session, tools = await self._open(endpoint)
+        except BaseException as exc:
+            if not ready.done():
+                if isinstance(exc, asyncio.CancelledError):
+                    ready.set_exception(ShimError("the hub session was cancelled"))
+                else:
+                    ready.set_exception(exc)
+            return
+        if not ready.done():
+            ready.set_result((session, tools))
+        try:
+            await stop.wait()
+        finally:
+            with contextlib.suppress(BaseException):
+                await stack.aclose()
 
     async def _open(
         self, endpoint: HubEndpoint
@@ -453,18 +500,16 @@ class HubConnection:
         self._fingerprint = tool_fingerprint(tools)
 
     async def _drop(self) -> None:
-        stack, self._stack = self._stack, None
+        owner, self._owner = self._owner, None
+        stop, self._stop = self._stop, None
         self._session = None
-        if stack is None:
+        if owner is None:
             return
-        try:
-            await stack.aclose()
-        except asyncio.CancelledError:
-            # The transport also raises on the cancel scope it shared with
-            # us; the stack is discarded either way.
-            pass
-        except Exception:
-            pass
+        if stop is not None:
+            stop.set()
+        # The owner closes the transport stack in its own task; wait for it
+        # so a reconnect starts from a clean state.
+        await asyncio.gather(owner, return_exceptions=True)
 
     def _schedule_reconnect(self) -> None:
         if self._closed:
