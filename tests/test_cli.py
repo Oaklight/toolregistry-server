@@ -1255,3 +1255,18 @@ class TestLocalHubCommand:
 
         assert exc.value.code == 0
         assert mock_stop.call_args.kwargs["timeout"] == 15.0
+
+    def test_a_platform_refusal_exits_one(self):
+        from toolregistry_server.gateway import local_hub
+
+        with (
+            patch.object(
+                local_hub,
+                "run_hub",
+                side_effect=local_hub.LocalHubUnsupported("no Windows hub"),
+            ),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main(["local-hub", "run", "--config", "tools.yaml"])
+
+        assert exc.value.code == 1

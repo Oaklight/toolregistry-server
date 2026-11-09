@@ -304,6 +304,12 @@ def socket_path(name: str = DEFAULT_NAME) -> Path:
     return hub_dir() / f"{name}.sock"
 
 
+def pid_path(name: str = DEFAULT_NAME) -> Path:
+    """Return the owner-pid file path for *name*."""
+    _validate_name(name)
+    return hub_dir() / f"{name}.pid"
+
+
 def ensure_hub_dir() -> Path:
     """Create the hub directory ``0700`` and tighten an existing one.
 
@@ -457,6 +463,62 @@ def remove_endpoint(name: str = DEFAULT_NAME) -> None:
     """Remove *name*'s endpoint document, if present."""
     with contextlib.suppress(FileNotFoundError):
         endpoint_path(name).unlink()
+
+
+def write_owner_pid(name: str, pid: int) -> Path:
+    """Atomically publish the pid of the process that owns *name*.
+
+    The pid lives outside the lock file on purpose: on Windows
+    ``msvcrt.locking`` is a mandatory byte-range lock, so a reader of the
+    locked byte gets ``ERROR_LOCK_VIOLATION``.  A separate document can be
+    read while the lock is held.
+
+    Args:
+        name: Hub name.
+        pid: The owning process id.
+
+    Returns:
+        The pid file path.
+
+    Raises:
+        OSError: If the directory or file cannot be written.
+    """
+    directory = ensure_hub_dir()
+    destination = pid_path(name)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{name}.pid.", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"{pid}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
+    return destination
+
+
+def read_owner_pid(name: str = DEFAULT_NAME) -> int | None:
+    """Return the published owner pid, or ``None`` when absent or malformed."""
+    try:
+        text = pid_path(name).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(text)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def remove_owner_pid(name: str = DEFAULT_NAME) -> None:
+    """Remove *name*'s owner-pid file, if present."""
+    with contextlib.suppress(FileNotFoundError):
+        pid_path(name).unlink()
 
 
 def pid_is_alive(pid: int) -> bool:
