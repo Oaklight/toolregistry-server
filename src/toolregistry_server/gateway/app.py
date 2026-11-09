@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import os
 import threading
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -59,32 +60,56 @@ from .unix import prepare_unix_socket
 logger = get_logger()
 
 
-def _private_uds_server(uvicorn_module: Any, config: Any, path: str) -> Any:
-    """Build a uvicorn server that keeps its Unix socket private.
+def _instrumented_server(
+    uvicorn_module: Any,
+    config: Any,
+    *,
+    chmod_path: str | None = None,
+    on_started: Callable[[Any, tuple[str, int] | None], None] | None = None,
+) -> Any:
+    """Build a uvicorn server with the post-bind hooks a local hub needs.
 
     uvicorn chmods a Unix socket to ``0o666`` in ``Server.startup`` after the
-    listener exists, which overrides the process umask.  This subclass
-    tightens the socket to ``0o600`` before ``startup()`` returns, so the
-    mode is settled before the hub publishes the socket path.  The parent
-    directory is created ``0700``, so no other user can reach the socket
-    during that window either.
+    listener exists, which overrides the process umask; *chmod_path* tightens
+    it to ``0o600`` before ``startup()`` returns.  The parent directory is
+    created ``0700``, so no other user can reach the socket during that
+    window either.
+
+    *on_started* receives the server and, for a TCP listener, the bound
+    ``(host, port)``.  A hub uses it to publish an endpoint document with the
+    port of a ``port=0`` bind, once the listener is actually ready.
 
     Args:
         uvicorn_module: The imported ``uvicorn`` module.
         config: A ``uvicorn.Config`` bound to the gateway ASGI app.
-        path: The socket path to tighten after the bind.
+        chmod_path: Unix socket to tighten to ``0o600`` after the bind.
+        on_started: Callback invoked after a successful startup.
 
     Returns:
-        A ``uvicorn.Server`` instance that chmods the socket on startup.
+        A ``uvicorn.Server`` instance that runs the hooks on startup.
     """
 
-    class _PrivateUdsServer(uvicorn_module.Server):
+    class _InstrumentedServer(uvicorn_module.Server):
         async def startup(self, sockets: list[Any] | None = None) -> None:
             await super().startup(sockets=sockets)
-            if not self.should_exit:
-                os.chmod(path, 0o600)
+            if self.should_exit:
+                return
+            if chmod_path is not None:
+                os.chmod(chmod_path, 0o600)
+            if on_started is not None:
+                on_started(self, _bound_tcp_address(self))
 
-    return _PrivateUdsServer(config)
+    return _InstrumentedServer(config)
+
+
+def _bound_tcp_address(server: Any) -> tuple[str, int] | None:
+    """Return the bound ``(host, port)`` of a uvicorn server, if TCP."""
+    for listener in getattr(server, "servers", None) or ():
+        for sock in getattr(listener, "sockets", None) or ():
+            address = sock.getsockname()
+            if isinstance(address, tuple) and len(address) >= 2:
+                return str(address[0]), int(address[1])
+    return None
 
 
 if TYPE_CHECKING:
@@ -393,6 +418,32 @@ class _McpStreamableASGI:
         await manager.handle_request(scope, receive, send)
 
 
+class _SseSessionCounter:
+    """Count one SSE stream as an open session for its whole lifetime.
+
+    The request stays in flight while the stream is open, so bracketing the
+    call with a counter is enough to report a connected-but-quiet client.
+
+    Args:
+        app: The SSE ASGI application.
+        gateway: The owning gateway adapter.
+    """
+
+    def __init__(self, app: Any, gateway: GatewayAdapter) -> None:
+        self._app = app
+        self._gateway = gateway
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        self._gateway._sse_connections += 1
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            self._gateway._sse_connections -= 1
+
+
 class _GatewayASGI:
     """ASGI application that dispatches requests to gateway frontends.
 
@@ -446,6 +497,9 @@ class _GatewayASGI:
     async def _http(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Dispatch one HTTP request to its frontend."""
         gateway = self._gateway
+        hook = gateway._activity_hook
+        if hook is not None:
+            hook()
         path = scope.get("path", "")
 
         if await gateway._serve_metadata(scope, receive, send):
@@ -611,6 +665,8 @@ class GatewayAdapter(Adapter):
         self._sse_app: Any = None
         self._sse_path: str | None = None
         self._sse_wrapped: Any = None
+        self._sse_connections = 0
+        self._activity_hook: Callable[[], None] | None = None
         panel_registry = (
             self._registry_obj
             if self._registry_obj is not None
@@ -797,6 +853,32 @@ class GatewayAdapter(Adapter):
         """
         return [self._public_frontend(record) for record in self._registry.snapshot()]
 
+    def set_activity_hook(self, hook: Callable[[], None] | None) -> None:
+        """Call *hook* for every HTTP request that reaches the dispatcher.
+
+        A local hub uses this to measure idle time.  The hook runs before
+        authentication, must return quickly and must not raise.
+
+        Args:
+            hook: The callback, or ``None`` to remove it.
+        """
+        self._activity_hook = hook
+
+    def open_session_count(self) -> int:
+        """Return the number of MCP transport sessions that are open.
+
+        Streamable-HTTP sessions are counted from the session manager; an SSE
+        stream counts as one session while its request is in flight.  A hub
+        with an idle timeout treats a non-zero count as activity, so a
+        connected but quiet client keeps it alive.
+
+        Returns:
+            The number of open sessions.
+        """
+        manager = self._session_manager
+        sessions = len(getattr(manager, "_server_instances", None) or ())
+        return sessions + self._sse_connections
+
     def update_frontend(
         self,
         name: str,
@@ -914,7 +996,9 @@ class GatewayAdapter(Adapter):
                     path=sse_path,
                     route_path="/",
                 )
-                self._sse_wrapped = self._wrap_auth(self._sse_app)
+                self._sse_wrapped = _SseSessionCounter(
+                    self._wrap_auth(self._sse_app), self
+                )
                 self._sse_path = sse_path
             return self._sse_wrapped
 
@@ -935,6 +1019,11 @@ class GatewayAdapter(Adapter):
             ``True`` when the request was answered here.
         """
         if not self._tokens and self._principal_resolver is None:
+            return False
+        if self._socket_path is not None and self._server_url is None:
+            # A Unix-socket hub has no TCP address to advertise; its endpoint
+            # file is the discovery channel, so the derived host/port route
+            # would be a lie.
             return False
         mcp = self._registry.get("mcp")
         expected = "/.well-known/oauth-protected-resource" + mcp.path
@@ -1049,6 +1138,7 @@ class GatewayAdapter(Adapter):
         port: int = 8000,
         reload: bool = False,
         socket_path: str | None = None,
+        on_started: Callable[[Any, tuple[str, int] | None], None] | None = None,
         **kwargs,
     ) -> None:
         """Start the gateway server (blocking).
@@ -1059,6 +1149,9 @@ class GatewayAdapter(Adapter):
             reload: Accepted for CLI parity; ignored in gateway mode.
             socket_path: Unix socket to bind instead of *host*/*port*.
                 ``None`` keeps the socket configured at construction, if any.
+            on_started: Callback invoked once the listener is bound, with the
+                server and its TCP ``(host, port)`` address (``None`` for a
+                Unix socket).
         """
         if reload:
             logger.warning("--reload is not supported in gateway mode; it is ignored")
@@ -1074,6 +1167,11 @@ class GatewayAdapter(Adapter):
         where = f"unix:{target}" if target else f"{host}:{port}"
 
         if self._backend == "httpserver":
+            if on_started is not None:
+                raise ValueError(
+                    "on_started requires the ASGI backend; the httpserver "
+                    "backend cannot report the bound address"
+                )
             logger.info(f"Starting gateway (openapi only, httpserver) on {where}")
             try:
                 self._openapi_app.run(host=host, port=port, socket=target)
@@ -1082,21 +1180,31 @@ class GatewayAdapter(Adapter):
             return
 
         logger.info(f"Starting gateway on {where}")
-        asyncio.run(self.run_async(host=host, port=port, socket_path=target))
+        asyncio.run(
+            self.run_async(
+                host=host,
+                port=port,
+                socket_path=target,
+                on_started=on_started,
+            )
+        )
 
     async def run_async(self, **kwargs) -> None:
         """Start the gateway server in the current event loop.
 
         Args:
-            **kwargs: ``host``, ``port`` and ``socket_path`` bind options.
-                Other keywords are accepted for parity with
-                :meth:`Adapter.run_async`.
+            **kwargs: ``host``, ``port``, ``socket_path`` bind options and an
+                optional ``on_started`` callback.  Other keywords are accepted
+                for parity with :meth:`Adapter.run_async`.
         """
         import uvicorn
 
         host = kwargs.get("host", "0.0.0.0")
         port = kwargs.get("port", 8000)
         target: str | None = kwargs.get("socket_path")
+        on_started: Callable[[Any, tuple[str, int] | None], None] | None = kwargs.get(
+            "on_started"
+        )
         self._host = host
         self._port = port
         self._socket_path = target
@@ -1104,12 +1212,25 @@ class GatewayAdapter(Adapter):
         if target is not None:
             prepare_unix_socket(target)
             config["uds"] = target
+            if self._server_url is None and (
+                self._tokens or self._principal_resolver is not None
+            ):
+                logger.warning(
+                    "A gateway on a Unix socket publishes no protected-resource "
+                    "metadata: a host/port URL would advertise an address that "
+                    "is not listening. Pass --server-url to publish it"
+                )
         else:
             config["host"] = host
             config["port"] = port
-        if target is not None:
+        if target is not None or on_started is not None:
             config_obj = uvicorn.Config(self._asgi, **config)
-            server = _private_uds_server(uvicorn, config_obj, target)
+            server = _instrumented_server(
+                uvicorn,
+                config_obj,
+                chmod_path=target,
+                on_started=on_started,
+            )
         else:
             server = uvicorn.Server(uvicorn.Config(self._asgi, **config))
         try:

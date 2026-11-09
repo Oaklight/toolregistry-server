@@ -233,6 +233,27 @@ class TestSharedAuth:
             response = await client.get("/.well-known/oauth-protected-resource/mcp")
         assert response.status_code == 404
 
+    async def test_metadata_is_omitted_on_a_unix_socket_without_a_server_url(self):
+        """A UDS hub has no TCP address to advertise (#145)."""
+        gateway = _gateway(tokens=["secret"], host="127.0.0.1", port=9000)
+        gateway._socket_path = "/tmp/hub.sock"
+        async with _client(gateway) as client:
+            response = await client.get("/.well-known/oauth-protected-resource/mcp")
+        assert response.status_code == 404
+
+    async def test_a_server_url_restores_metadata_on_a_unix_socket(self):
+        gateway = _gateway(
+            tokens=["secret"],
+            host="127.0.0.1",
+            port=9000,
+            server_url="http://127.0.0.1:9000/mcp",
+        )
+        gateway._socket_path = "/tmp/hub.sock"
+        async with _client(gateway) as client:
+            response = await client.get("/.well-known/oauth-protected-resource/mcp")
+        assert response.status_code == 200
+        assert response.json()["resource"] == "http://127.0.0.1:9000/mcp"
+
 
 class TestBackendSelection:
     """Only the ASGI backend can mount multiple frontends."""
