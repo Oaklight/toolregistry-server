@@ -7,6 +7,7 @@ Frontend paths and enable flags live under a ``gateway`` section::
         openapi: {path: /openapi, enabled: true}
         mcp: {path: /mcp, enabled: true}
         sse: {path: /sse, enabled: true}
+        admin: {path: /admin, enabled: false}
 
 The section is additive: the existing ``tools``, ``mode``, ``profiles`` and
 ``tool_metadata`` settings are preserved when the file is rewritten.
@@ -43,7 +44,7 @@ from typing import Any
 
 from .._vendor.structlog import get_logger
 from ..source_manager import COMMENTS_WARNING
-from .frontends import DEFAULT_PATHS, FRONTEND_NAMES, normalize_path
+from .frontends import DEFAULT_ENABLED, DEFAULT_PATHS, FRONTEND_NAMES, normalize_path
 
 logger = get_logger()
 
@@ -273,7 +274,7 @@ def load_frontend_settings(config_path: str | None) -> dict[str, dict[str, Any]]
                 f"{', '.join(unknown)}; valid keys: "
                 f"{', '.join(sorted(_FRONTEND_KEYS))}"
             )
-        enabled = entry.get("enabled", True)
+        enabled = entry.get("enabled", DEFAULT_ENABLED[name])
         if not isinstance(enabled, bool):
             raise ValueError(
                 f"'{GATEWAY_SECTION}.{FRONTENDS_SECTION}.{name}.enabled' "

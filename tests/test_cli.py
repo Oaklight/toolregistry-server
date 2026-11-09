@@ -1069,9 +1069,15 @@ class TestGatewayCommand:
         assert args.openapi_path is None
         assert args.mcp_path is None
         assert args.sse_path is None
+        assert args.admin_path is None
         assert args.openapi is None
         assert args.mcp is None
         assert args.sse is None
+        assert args.admin is None
+        assert args.admin_token is None
+        assert args.admin_token_file is None
+        assert args.keys_db is None
+        assert args.admin_allow_private_hosts is False
         assert args.config_reload is False
         assert args.config_write is True
 
@@ -1091,7 +1097,15 @@ class TestGatewayCommand:
                 "/rpc",
                 "--sse-path",
                 "/events",
+                "--admin-path",
+                "/panel",
                 "--no-mcp",
+                "--admin",
+                "--admin-token-file",
+                "operator.txt",
+                "--keys-db",
+                "keys.db",
+                "--admin-allow-private-hosts",
                 "--config-reload",
                 "--no-config-write",
             ]
@@ -1101,9 +1115,14 @@ class TestGatewayCommand:
         assert args.openapi_path == "/api"
         assert args.mcp_path == "/rpc"
         assert args.sse_path == "/events"
+        assert args.admin_path == "/panel"
         assert args.openapi is None
         assert args.mcp is False
         assert args.sse is None
+        assert args.admin is True
+        assert args.admin_token_file == "operator.txt"
+        assert args.keys_db == "keys.db"
+        assert args.admin_allow_private_hosts is True
         assert args.config_reload is True
         assert args.config_write is False
 
@@ -1149,6 +1168,11 @@ class TestGatewayCommand:
             openapi_enabled=None,
             mcp_enabled=False,
             sse_enabled=None,
+            admin_path=None,
+            admin_enabled=None,
+            admin_token=None,
+            admin_token_file=None,
+            admin_allow_private_hosts=False,
             config_reload=False,
             write_config=True,
         )

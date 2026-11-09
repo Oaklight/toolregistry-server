@@ -331,9 +331,16 @@ class CLI:
                 "openapi_path": getattr(parsed, "openapi_path", None),
                 "mcp_path": getattr(parsed, "mcp_path", None),
                 "sse_path": getattr(parsed, "sse_path", None),
+                "admin_path": getattr(parsed, "admin_path", None),
                 "openapi_enabled": getattr(parsed, "openapi", None),
                 "mcp_enabled": getattr(parsed, "mcp", None),
                 "sse_enabled": getattr(parsed, "sse", None),
+                "admin_enabled": getattr(parsed, "admin", None),
+                "admin_token": getattr(parsed, "admin_token", None),
+                "admin_token_file": getattr(parsed, "admin_token_file", None),
+                "admin_allow_private_hosts": getattr(
+                    parsed, "admin_allow_private_hosts", False
+                ),
                 "config_reload": getattr(parsed, "config_reload", False),
                 "write_config": getattr(parsed, "config_write", True),
             }

@@ -1,7 +1,8 @@
-"""Single-process gateway for the OpenAPI and MCP frontends.
+"""Single-process gateway for the OpenAPI, MCP and admin frontends.
 
-The gateway builds one ASGI application that serves the OpenAPI adapter and
-both MCP HTTP transports from the same registry and auth configuration.
+The gateway builds one ASGI application that serves the OpenAPI adapter,
+both MCP HTTP transports and the operator admin panel from the same
+registry and configuration.
 
 Main components:
 
@@ -23,8 +24,14 @@ Example:
     ```
 """
 
+from .admin import (
+    GatewayAdminHost,
+    SourceManagerHook,
+    parse_source_payload,
+)
 from .app import GatewayAdapter, create_gateway_app, resolve_frontends
 from .frontends import (
+    DEFAULT_ENABLED,
     DEFAULT_PATHS,
     FRONTEND_NAMES,
     TRANSPORTS,
@@ -36,8 +43,10 @@ from .frontends import (
 from .persistence import load_frontend_settings, persist_frontend_settings
 
 __all__ = [
+    "DEFAULT_ENABLED",
     "DEFAULT_PATHS",
     "FRONTEND_NAMES",
+    "GatewayAdminHost",
     "TRANSPORTS",
     "Frontend",
     "FrontendRegistry",
@@ -48,4 +57,6 @@ __all__ = [
     "normalize_path",
     "persist_frontend_settings",
     "resolve_frontends",
+    "SourceManagerHook",
+    "parse_source_payload",
 ]

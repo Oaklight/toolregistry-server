@@ -65,6 +65,25 @@ class TestLoadFrontendSettings:
             "sse": {"path": "/events", "enabled": True}
         }
 
+    def test_admin_path_without_a_flag_stays_disabled(self, tmp_path):
+        config = _write(
+            tmp_path / "tools.yaml",
+            "gateway:\n  frontends:\n    admin:\n      path: /panel\n",
+        )
+        assert load_frontend_settings(config) == {
+            "admin": {"path": "/panel", "enabled": False}
+        }
+
+    def test_reads_admin_settings(self, tmp_path):
+        config = _write(
+            tmp_path / "tools.yaml",
+            "gateway:\n  frontends:\n    admin:\n      path: /panel\n"
+            "      enabled: true\n",
+        )
+        assert load_frontend_settings(config) == {
+            "admin": {"path": "/panel", "enabled": True}
+        }
+
     def test_rejects_unknown_frontend(self, tmp_path):
         config = _write(
             tmp_path / "tools.yaml",

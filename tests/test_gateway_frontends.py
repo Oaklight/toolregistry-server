@@ -3,6 +3,7 @@
 import pytest
 
 from toolregistry_server.gateway.frontends import (
+    DEFAULT_ENABLED,
     DEFAULT_PATHS,
     FRONTEND_NAMES,
     TRANSPORTS,
@@ -51,17 +52,23 @@ class TestNormalizePath:
 
 
 class TestDefaultFrontends:
-    """The default set serves all three transports."""
+    """The default set serves all four frontends; the panel is opt-in."""
 
     def test_one_record_per_frontend(self):
         records = default_frontends()
         assert [record.name for record in records] == list(FRONTEND_NAMES)
 
-    def test_all_enabled_on_default_paths(self):
+    def test_default_flags_and_paths(self):
         for record in default_frontends():
-            assert record.enabled is True
+            assert record.enabled is DEFAULT_ENABLED[record.name]
             assert record.path == DEFAULT_PATHS[record.name]
             assert record.transport == TRANSPORTS[record.name]
+
+    def test_admin_is_disabled_by_default(self):
+        records = {record.name: record for record in default_frontends()}
+        assert records["admin"].enabled is False
+        assert records["admin"].path == "/admin"
+        assert records["admin"].transport == "http"
 
 
 class TestFrontendRegistry:
