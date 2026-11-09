@@ -1134,6 +1134,7 @@ async def test_mcp_reports_a_busy_client_with_the_server_error_code(
             raise ClientBusyTimeout("key_1", 1, 0.01)
             yield  # pragma: no cover - unreachable, the raise is the point
 
+    stream = _capture_mcp_adapter_log(monkeypatch)
     server = route_table_to_mcp_server(
         table, principal_resolver=resolver, client_limiter=_BusyLimiter()
     )
@@ -1142,6 +1143,9 @@ async def test_mcp_reports_a_busy_client_with_the_server_error_code(
         message = await _mcp_error_message(client, "alpha-add", {"a": 1, "b": 2})
 
     assert "too many concurrent calls" in message
+    output = stream.getvalue()
+    assert "outcome=busy" in output
+    assert "tool=alpha-add" in output
 
 
 # ---------------------------------------------------------------------------
@@ -1237,6 +1241,133 @@ async def test_mcp_call_is_recorded_with_attribution(
     assert entry.arguments == {"a": 1, "b": 2}
     assert entry.result == "3"
     assert entry.metadata == {"key_id": created.record.id, "client_id": "alpha-bot"}
+
+
+def _capture_mcp_adapter_log(monkeypatch):
+    """Replace the MCP adapter logger and return the captured stream."""
+    from io import StringIO
+
+    from toolregistry_server._vendor.structlog import (
+        BoundLogger,
+        ConsoleRenderer,
+        PrintLogger,
+        TimeStamper,
+        add_log_level,
+    )
+    from toolregistry_server.adapters.mcp import adapter as adapter_module
+
+    stream = StringIO()
+    log = BoundLogger(
+        logger=PrintLogger(file=stream),
+        processors=[add_log_level, TimeStamper(), ConsoleRenderer(colors=False)],
+        context={},
+    )
+    monkeypatch.setattr(adapter_module, "logger", log)
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_mcp_scope_refusal_is_logged_as_denied(
+    table, store, resolver, monkeypatch
+):
+    """A refused attempt is visible even though it never reaches the log."""
+    from toolregistry_server.adapters.mcp import MCPAdapter
+
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    stream = _capture_mcp_adapter_log(monkeypatch)
+    adapter = MCPAdapter(table, principal_resolver=resolver)
+
+    async with create_test_client(adapter.server) as client:
+        message = await _mcp_error_message(client, "beta-echo", {"text": "hi"})
+
+    assert "not permitted for this credential" in message
+    output = stream.getvalue()
+    assert "outcome=denied" in output
+    assert "tool=beta-echo" in output
+    assert "client_id=alpha-bot" in output
+    assert "not permitted for this credential" in output
+    assert table.registry.get_execution_log().get_entries() == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_policy_refusal_is_logged_as_denied(
+    table, store, resolver, monkeypatch
+):
+    created = store.create("both-bot", {"namespaces": ["alpha", "beta"]})
+    monkeypatch.setattr(
+        "toolregistry_server.adapters.mcp.adapter._request_authorization",
+        lambda: created.secret,
+    )
+    stream = _capture_mcp_adapter_log(monkeypatch)
+    table.registry.set_permission_policy(_deny_echo_policy())
+    server = route_table_to_mcp_server(table, principal_resolver=resolver)
+
+    async with create_test_client(server) as client:
+        message = await _mcp_error_message(client, "beta-echo", {"text": "hi"})
+
+    assert "read-only host" in message
+    output = stream.getvalue()
+    assert "outcome=denied" in output
+    assert "tool=beta-echo" in output
+    assert "read-only host" in output
+    assert table.registry.get_execution_log().get_entries() == []
+
+
+def _teapot_table() -> RouteTable:
+    """A table whose only tool raises a deliberate ``HTTPException``."""
+    from fastapi import HTTPException
+
+    registry = ToolRegistry()
+
+    def teapot() -> str:
+        """Refuse with a deliberate HTTP status."""
+        raise HTTPException(status_code=418, detail="teapot")
+
+    registry.register(teapot, namespace="alpha")
+    return RouteTable(registry)
+
+
+def test_a_handler_raised_http_exception_is_recorded_on_fastapi(store, resolver):
+    from toolregistry.admin import ExecutionStatus
+
+    table = _teapot_table()
+    table.registry.enable_logging()
+    created = store.create("bot", {"namespaces": ["alpha"]})
+    client = _fastapi_client(table, resolver)
+
+    response = client.post(
+        "/tools/alpha/teapot", json={}, headers=_bearer(created.secret)
+    )
+
+    assert response.status_code == 418
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.tool_name == "alpha-teapot"
+    assert entry.status is ExecutionStatus.ERROR
+    assert entry.metadata == {"key_id": created.record.id, "client_id": "bot"}
+
+
+def test_a_handler_raised_http_exception_is_recorded_on_httpserver():
+    from toolregistry.admin import ExecutionStatus
+
+    table = _teapot_table()
+    table.registry.enable_logging()
+    app = create_httpserver_app(table)
+    url = _serve(app)
+    try:
+        status, _, _ = _request(url, "/tools/alpha/teapot", {})
+    finally:
+        app.shutdown()
+
+    # The httpserver backend has no HTTP-aware error path, so the deliberate
+    # status becomes a 500 — but the call itself is still one log row.
+    assert status == 500
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.tool_name == "alpha-teapot"
+    assert entry.status is ExecutionStatus.ERROR
 
 
 def test_openapi_call_is_recorded_with_attribution(table, store, resolver):

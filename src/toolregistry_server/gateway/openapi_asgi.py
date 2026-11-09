@@ -495,17 +495,15 @@ async def _invoke_tool(
 ) -> Any:
     """Run one async tool handler and record the call in the execution log.
 
-    An ``HTTPException`` the handler raises itself is re-raised untouched; it
-    is a deliberate response, not a tool failure.  Any other exception is
-    recorded and re-raised for the caller's error wrapper.
+    Every outcome that reached the handler is recorded, including an
+    ``HTTPException`` the handler raises itself.  The httpserver backend has
+    no separate path for that exception, so recording it here keeps the two
+    backends agreeing on what counts as an executed call.  The exception is
+    re-raised untouched for the caller's error wrapper.
     """
-    from fastapi import HTTPException
-
     started = time.monotonic()
     try:
         result = await handler(**arguments)
-    except HTTPException:
-        raise
     except Exception as exc:
         _record(registry, tool_name, arguments, principal, started, error=exc)
         raise
@@ -520,14 +518,14 @@ def _invoke_tool_sync(
     arguments: Any,
     principal: Any,
 ) -> Any:
-    """Run one synchronous tool handler and record the call."""
-    from fastapi import HTTPException
+    """Run one synchronous tool handler and record the call.
 
+    See :func:`_invoke_tool` for why a handler-raised ``HTTPException`` is
+    recorded like any other failure.
+    """
     started = time.monotonic()
     try:
         result = handler(**arguments)
-    except HTTPException:
-        raise
     except Exception as exc:
         _record(registry, tool_name, arguments, principal, started, error=exc)
         raise

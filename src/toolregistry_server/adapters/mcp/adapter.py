@@ -27,6 +27,7 @@ from ...isolation import (
     ClientLimiter,
     operator_refusal,
     policy_refusal,
+    principal_client_id,
     record_tool_call,
 )
 from ...scoped_discovery import (
@@ -705,6 +706,42 @@ def _refuse_proxy_target(
     )
 
 
+async def _authorise_call(
+    tool_name: str,
+    arguments: dict,
+    route: Any,
+    registry: Any,
+    principal_resolver: "PrincipalResolver | None",
+    principal: Any,
+    *,
+    started: float,
+) -> None:
+    """Enforce scope, proxy target and permission policy before execution.
+
+    A refusal is raised before the handler runs, so it never reaches the
+    execution log.  It is logged here with ``outcome="denied"`` and the
+    reason, or the attempt would be invisible everywhere it was denied.
+
+    Raises:
+        McpErrorClass: The refusal, carrying its message.
+    """
+    from mcp.types import INVALID_PARAMS
+
+    from ._compat import McpErrorClass, make_mcp_error
+
+    try:
+        _refuse_out_of_scope(tool_name, route, principal_resolver, principal)
+        _refuse_proxy_target(
+            tool_name, arguments, registry, principal_resolver, principal
+        )
+        policy_message = await policy_refusal(registry, route, arguments)
+        if policy_message is not None:
+            raise make_mcp_error(INVALID_PARAMS, policy_message)
+    except McpErrorClass as exc:
+        _log_attributed_call(tool_name, principal, "denied", started, reason=str(exc))
+        raise
+
+
 async def _mcp_tool_definitions(
     route_table: "RouteTable",
     principal_resolver: "PrincipalResolver | None",
@@ -757,9 +794,14 @@ async def _mcp_call_tool(
     key scope and the process permission policy.  Every call is logged with
     the principal's ``key_id`` and ``client_id`` for the admin panel.
     """
-    from mcp.types import INTERNAL_ERROR, INVALID_PARAMS
+    from mcp.types import INTERNAL_ERROR
 
-    from ._compat import McpErrorClass, make_mcp_error, tool_execution_error_message
+    from ._compat import (
+        McpErrorClass,
+        _get_mcp_error_code,
+        make_mcp_error,
+        tool_execution_error_message,
+    )
 
     # Reuse the route the v1 pre-dispatch hook already resolved, so a call
     # has one lookup and one outcome on both SDK generations (#97).
@@ -769,21 +811,24 @@ async def _mcp_call_tool(
         if principal_resolver is not None
         else None
     )
-    _refuse_out_of_scope(tool_name, route, principal_resolver, principal)
-    _refuse_proxy_target(
-        tool_name, arguments, route_table.registry, principal_resolver, principal
+    started = time.monotonic()
+    await _authorise_call(
+        tool_name,
+        arguments,
+        route,
+        route_table.registry,
+        principal_resolver,
+        principal,
+        started=started,
     )
-    policy_message = await policy_refusal(route_table.registry, route, arguments)
-    if policy_message is not None:
-        raise make_mcp_error(INVALID_PARAMS, policy_message)
 
     session_ctx = _get_session_context(session_mgr)
     token = None
     if session_ctx is not None:
         token = session_context_var.set(session_ctx)
 
-    started = time.monotonic()
     outcome = "ok"
+    reason: str | None = None
     executed = False
     call_started = started
     call_result: Any = None
@@ -823,11 +868,13 @@ async def _mcp_call_tool(
         return content, structured
 
     except McpErrorClass as exc:
-        outcome = "error"
+        outcome = "busy" if _get_mcp_error_code(exc) == BUSY_ERROR_CODE else "error"
+        reason = str(exc)
         call_error = exc
         raise
     except Exception as e:
         outcome = "error"
+        reason = str(e)
         call_error = e
         # Keep the exception text in the log; it can carry connection
         # strings, internal paths and upstream URLs.  The client only
@@ -843,7 +890,7 @@ async def _mcp_call_tool(
     finally:
         if token is not None:
             session_context_var.reset(token)
-        _log_attributed_call(tool_name, principal, outcome, started)
+        _log_attributed_call(tool_name, principal, outcome, started, reason=reason)
         if executed:
             record_tool_call(
                 route_table.registry,
@@ -857,15 +904,26 @@ async def _mcp_call_tool(
 
 
 def _log_attributed_call(
-    tool_name: str, principal: Any, outcome: str, started: float
+    tool_name: str,
+    principal: Any,
+    outcome: str,
+    started: float,
+    *,
+    reason: str | None = None,
 ) -> None:
-    """Record one call with the identity the credential established."""
+    """Record one call, or one refusal, with the credential's identity.
+
+    *outcome* is ``"ok"``, ``"error"``, ``"busy"`` or ``"denied"``.  A
+    denied or busy call carries *reason*, so the operator can tell why the
+    attempt did not run; the execution log records only executed calls.
+    """
     logger.info(
         "tool call",
         tool=tool_name,
         key_id=getattr(principal, "key_id", None),
-        client_id=getattr(principal, "label", None),
+        client_id=principal_client_id(principal),
         outcome=outcome,
+        reason=reason,
         duration_ms=round((time.monotonic() - started) * 1000, 3),
     )
 
