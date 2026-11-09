@@ -202,16 +202,27 @@ class _BearerAuthASGI:
     """ASGI wrapper that enforces one bearer-token set.
 
     The same wrapper protects every frontend, which is what makes the
-    gateway's auth configuration shared.
+    gateway's auth configuration shared.  When a key resolver is set, the
+    credential is resolved through the API key store instead of the static
+    token list; the scoped frontends then re-resolve it per request to
+    enforce the key's scope.
 
     Args:
         app: The wrapped ASGI application.
-        tokens: Accepted bearer tokens.
+        tokens: Accepted static bearer tokens.
+        principal_resolver: API key resolver.  ``None`` keeps the static
+            token check.
     """
 
-    def __init__(self, app: Any, tokens: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        app: Any,
+        tokens: tuple[str, ...],
+        principal_resolver: Any | None = None,
+    ) -> None:
         self._app = app
         self._tokens = tokens
+        self._principal_resolver = principal_resolver
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -234,7 +245,14 @@ class _BearerAuthASGI:
                 {"WWW-Authenticate": "Bearer"},
             )
             return
-        if not verify_token(credential, self._tokens):
+        if self._principal_resolver is not None:
+            principal = await asyncio.to_thread(
+                self._principal_resolver.resolve, credential
+            )
+            valid = principal is not None
+        else:
+            valid = verify_token(credential, self._tokens)
+        if not valid:
             await _send_json(
                 scope,
                 receive,
@@ -358,7 +376,13 @@ class GatewayAdapter(Adapter):
         identity: Server identity used for the OpenAPI title and MCP name.
         frontends: Resolved frontend records.
         tokens: Bearer tokens accepted by every frontend.  ``None`` or an
-            empty sequence disables authentication.
+            empty sequence disables authentication.  They stay unscoped
+            operator credentials when a key store is configured.
+        keys_db: Path to the SQLite API key store.  When set, every frontend
+            authenticates scoped client keys from it as well.  Static
+            ``tokens`` keep full, unscoped access.
+        principal_resolver: Pre-built API key resolver.  Takes precedence
+            over ``keys_db``; used by embedders and tests.
         backend: ``"fastapi"`` (ASGI) or ``"httpserver"``.  The httpserver
             backend can serve only the openapi frontend.
         config_path: Configuration file used to persist frontend settings.
@@ -390,6 +414,8 @@ class GatewayAdapter(Adapter):
         identity: ServerIdentity | None = None,
         frontends: list[Frontend] | None = None,
         tokens: list[str] | tuple[str, ...] | None = None,
+        keys_db: str | None = None,
+        principal_resolver: Any | None = None,
         backend: str = "fastapi",
         config_path: str | None = None,
         write_config: bool = True,
@@ -415,6 +441,15 @@ class GatewayAdapter(Adapter):
         self._config_path = config_path
         self._write_config = write_config
         self._tokens = tuple(tokens or ())
+        self._principal_resolver = principal_resolver
+        self._key_store: Any = None
+        if self._principal_resolver is None and keys_db:
+            from ..keystore import ApiKeyStore, PrincipalResolver
+
+            self._key_store = ApiKeyStore(keys_db)
+            self._principal_resolver = PrincipalResolver(
+                self._key_store, operator_tokens=self._tokens
+            )
         self._server_url = server_url
         self._host = host
         self._port = port
@@ -487,6 +522,7 @@ class GatewayAdapter(Adapter):
     def _build_openapi_app(self) -> Any:
         """Build the OpenAPI application for the configured backend."""
         identity = self._identity
+        resolver = self._principal_resolver
         if self._backend == "httpserver":
             from ..adapters.openapi.server_app import create_httpserver_app
 
@@ -500,10 +536,18 @@ class GatewayAdapter(Adapter):
                 max_sse_subscribers=self._max_sse_subscribers,
                 regex_timeout=self._regex_timeout,
                 regex_budget=self._regex_budget,
+                principal_resolver=resolver,
             )
 
         from ..adapters.openapi import create_openapi_app
 
+        dependencies = None
+        if resolver is not None:
+            from fastapi import Depends
+
+            from ..auth import create_scoped_bearer_dependency
+
+            dependencies = [Depends(create_scoped_bearer_dependency(resolver))]
         return create_openapi_app(
             self._route_table,
             title=identity.name,
@@ -513,6 +557,8 @@ class GatewayAdapter(Adapter):
             max_body_size=self._max_body_size,
             regex_timeout=self._regex_timeout,
             regex_budget=self._regex_budget,
+            principal_resolver=resolver,
+            dependencies=dependencies,
         )
 
     def _build_mcp_server(self) -> Any:
@@ -526,13 +572,14 @@ class GatewayAdapter(Adapter):
             list_tools_cache_scope=self._tools_list_cache_scope,
             version=self._identity.version,
             instructions=self._instructions,
+            principal_resolver=self._principal_resolver,
         )
 
     def _wrap_auth(self, app: Any) -> Any:
         """Wrap *app* with the shared bearer-token check when configured."""
-        if not self._tokens:
+        if not self._tokens and self._principal_resolver is None:
             return app
-        return _BearerAuthASGI(app, self._tokens)
+        return _BearerAuthASGI(app, self._tokens, self._principal_resolver)
 
     @property
     def app(self) -> Any:
@@ -662,7 +709,7 @@ class GatewayAdapter(Adapter):
         Returns:
             ``True`` when the request was answered here.
         """
-        if not self._tokens:
+        if not self._tokens and self._principal_resolver is None:
             return False
         mcp = self._registry.get("mcp")
         expected = "/.well-known/oauth-protected-resource" + mcp.path
@@ -725,16 +772,23 @@ class GatewayAdapter(Adapter):
         logger.info("Gateway MCP streamable-HTTP session manager started")
 
     async def shutdown(self) -> None:
-        """Close the MCP session manager opened by :meth:`startup`."""
+        """Close the MCP session manager and the API key store."""
         stack = self._exit_stack
         self._exit_stack = None
-        if stack is None:
-            return
         try:
-            await stack.aclose()
+            if stack is not None:
+                await stack.aclose()
+                logger.info("Gateway MCP streamable-HTTP session manager closed")
         finally:
             self._session_manager = None
-        logger.info("Gateway MCP streamable-HTTP session manager closed")
+            self.close()
+
+    def close(self) -> None:
+        """Close the API key store opened for ``keys_db``, if any."""
+        store = self._key_store
+        self._key_store = None
+        if store is not None:
+            store.close()
 
     def run(
         self,
@@ -758,7 +812,10 @@ class GatewayAdapter(Adapter):
 
         if self._backend == "httpserver":
             logger.info(f"Starting gateway (openapi only, httpserver) on {host}:{port}")
-            self._openapi_app.run(host=host, port=port)
+            try:
+                self._openapi_app.run(host=host, port=port)
+            finally:
+                self.close()
             return
 
         logger.info(f"Starting gateway on {host}:{port}")
@@ -819,6 +876,16 @@ class GatewayAdapter(Adapter):
             help=(
                 "Path to a file of Bearer tokens (one per line). "
                 "The same tokens protect every frontend"
+            ),
+        )
+        parser.add_argument(
+            "--keys-db",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help=(
+                "SQLite database of inbound API keys. Client keys are scoped; "
+                "--tokens stay unscoped operator credentials"
             ),
         )
         parser.add_argument(
@@ -954,6 +1021,8 @@ class GatewayAdapter(Adapter):
             identity=identity,
             frontends=frontends,
             tokens=tokens or None,
+            keys_db=kwargs.get("keys_db"),
+            principal_resolver=kwargs.get("principal_resolver"),
             backend=kwargs.get("backend", "fastapi"),
             config_path=kwargs.get("config_path"),
             write_config=kwargs.get("write_config", True),

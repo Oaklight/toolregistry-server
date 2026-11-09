@@ -286,6 +286,12 @@ class TestMain:
         main(["mcp", "--config", "tools.yaml", "--keys-db", "/tmp/keys.db"])
         assert mock_serve.call_args.kwargs["keys_db"] == "/tmp/keys.db"
 
+    @patch("toolregistry_server.app.App.serve_gateway")
+    def test_gateway_command_passes_keys_db(self, mock_serve):
+        """--keys-db reaches the gateway adapter (#200)."""
+        main(["gateway", "--config", "tools.yaml", "--keys-db", "/tmp/keys.db"])
+        assert mock_serve.call_args.kwargs["keys_db"] == "/tmp/keys.db"
+
     @patch("toolregistry_server.app.App.serve_mcp")
     def test_mcp_command_passes_tokens_path(self, mock_serve):
         """--tokens reaches the adapter, which already knew how to load it (#99)."""
