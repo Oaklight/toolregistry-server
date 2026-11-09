@@ -160,9 +160,17 @@ class TestStatusAndStopAuthority:
         write_endpoint(_unix(str(tmp_path / "missing.sock")))
         holder = _hold_lock_in_child("default", write_pid=False)
         signals = []
-        monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
         try:
-            assert local_hub.stop_hub() == 1
+            # Patch only for the call under test: Popen.terminate() also goes
+            # through os.kill, so the cleanup below needs the real one.  A
+            # zero signal is the liveness probe, not a signal.
+            with monkeypatch.context() as scoped:
+                scoped.setattr(
+                    os,
+                    "kill",
+                    lambda pid, sig: None if sig == 0 else signals.append((pid, sig)),
+                )
+                assert local_hub.stop_hub() == 1
         finally:
             holder.terminate()
             holder.wait(timeout=10)
