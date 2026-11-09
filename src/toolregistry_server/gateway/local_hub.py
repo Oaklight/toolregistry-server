@@ -271,6 +271,7 @@ def ensure_hub(
     idle_timeout: float = 0.0,
     timeout: float = DEFAULT_ENSURE_TIMEOUT,
     argv: Sequence[str] | None = None,
+    quiet: bool = False,
 ) -> int:
     """Make sure a hub is running and print its endpoint.
 
@@ -285,6 +286,8 @@ def ensure_hub(
         idle_timeout: Idle timeout for the hub that may be started.
         timeout: Seconds to wait for the endpoint.
         argv: The invoking command line, so the child inherits every option.
+        quiet: Suppress the endpoint print.  A caller whose stdout is a
+            protocol channel (the stdio shim) must not receive it.
 
     Returns:
         ``0`` when a hub is available, ``1`` when it could not be started.
@@ -293,14 +296,15 @@ def ensure_hub(
     try:
         running = _running_endpoint(name)
         if running is not None:
-            _print_endpoint(running)
+            if not quiet:
+                _print_endpoint(running)
             return 0
         if lock_is_held(name):
             # Another process owns the name and is still publishing.
-            return _wait_for_endpoint(name, None, timeout)
+            return _wait_for_endpoint(name, None, timeout, quiet=quiet)
 
         process = _spawn_hub(options, name=name, idle_timeout=idle_timeout, argv=argv)
-        return _wait_for_endpoint(name, process, timeout)
+        return _wait_for_endpoint(name, process, timeout, quiet=quiet)
     except EndpointError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -570,21 +574,23 @@ def _running_endpoint(name: str) -> HubEndpoint | None:
 
 
 def _wait_for_endpoint(
-    name: str, process: subprocess.Popen | None, timeout: float
+    name: str,
+    process: subprocess.Popen | None,
+    timeout: float,
+    *,
+    quiet: bool = False,
 ) -> int:
     """Poll for a published endpoint, failing when the child dies."""
     deadline = time.monotonic() + timeout
     while True:
         endpoint = _running_endpoint(name)
         if endpoint is not None:
-            _print_endpoint(endpoint)
-            return 0
+            return _published(endpoint, quiet)
         if process is not None and process.poll() is not None:
             # The child may have lost a start race; check once more.
             endpoint = _running_endpoint(name)
             if endpoint is not None:
-                _print_endpoint(endpoint)
-                return 0
+                return _published(endpoint, quiet)
             _report_child_failure(name, process)
             return 1
         if time.monotonic() >= deadline:
@@ -596,6 +602,13 @@ def _wait_for_endpoint(
             )
             return 1
         time.sleep(0.05)
+
+
+def _published(endpoint: HubEndpoint, quiet: bool) -> int:
+    """Report a published endpoint, unless stdout is a protocol channel."""
+    if not quiet:
+        _print_endpoint(endpoint)
+    return 0
 
 
 def _spawn_hub(
