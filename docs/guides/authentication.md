@@ -110,12 +110,19 @@ and `--expires-at ISO8601` to make a key expire.
 toolregistry-server openapi --config config.json --keys-db keys.db
 toolregistry-server mcp --config config.json --transport streamable-http \
   --keys-db keys.db
+toolregistry-server gateway --config config.json --keys-db keys.db
 ```
 
 The key database may be combined with `--tokens`. Static `--tokens`
 credentials keep full, unscoped access and remain the bootstrap/legacy path;
 scoping applies only to keys created in the database. `--keys-db` is ignored
 on the MCP `stdio` transport, which carries no request credential.
+
+The `gateway` command builds one resolver per process and passes it to the
+OpenAPI app, the streamable-HTTP server and the SSE app, so all three
+frontends share the key store and enforce the same four surfaces. The RFC
+9728 metadata route is served whenever a key store or a static token is
+configured.
 
 ### Scope rules
 
