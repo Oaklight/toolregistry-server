@@ -9,9 +9,9 @@ while the hub is down:
 * a tool call made while the hub is unavailable fails once with a clear MCP
   error, and a background reconnect (0.25 s to 5 s backoff) restores service;
 * after a reconnect, a changed tool fingerprint notifies the client with
-  ``notifications/tools/list_changed``.  The first list after a start with
-  the hub down is announced too: there is no previous fingerprint then, but
-  the client has already been served an empty list.
+  ``notifications/tools/list_changed``.  The comparison is against the list
+  actually served -- empty while the hub was down -- so a hub that returns
+  with the same tools it served before an outage is still announced.
 
 The endpoint document is discovery, not proof of life: the shim cannot hold
 the hub's lock, so "a document exists but nothing answers on its address" is
@@ -210,10 +210,11 @@ class HubConnection:
         self._stop: asyncio.Event | None = None
         self._tools: list[Any] = []
         self._fingerprint: str | None = None
-        # Whether the client has been served a list, empty included.  After a
-        # down start there is no fingerprint to compare against, so this is
-        # what makes the first successful list announce itself.
-        self._listed = False
+        # Fingerprint of the list the client was last served, empty answers
+        # included.  Comparing against it (not against the previous
+        # connection) is what makes a hub returning with the same tools
+        # after an outage announce itself.
+        self._served: str | None = None
         self._closed = False
         self._lock = asyncio.Lock()
         self._reconnect_task: asyncio.Task | None = None
@@ -294,7 +295,7 @@ class HubConnection:
     async def list_tools(self) -> list[Any]:
         """Return the hub's tools, or an empty list while it is down."""
         if not await self.ensure():
-            self._listed = True
+            self._served = tool_fingerprint([])
             return []
         session = self._session
         try:
@@ -305,10 +306,10 @@ class HubConnection:
             logger.warning(f"hub tools/list failed: {_describe_exception(exc)}")
             await self._drop()
             self._schedule_reconnect()
-            self._listed = True
+            self._served = tool_fingerprint([])
             return []
         self._update_tools(list(result.tools))
-        self._listed = True
+        self._served = self._fingerprint
         return self._tools
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any] | None) -> Any:
@@ -446,13 +447,15 @@ class HubConnection:
         self._owner = owner
         self._stop = stop
         self._session = session
-        previous = self._fingerprint
         self._update_tools(tools)
         if (
-            (previous is not None or self._listed)
-            and previous != self._fingerprint
+            self._served is not None
+            and self._served != self._fingerprint
             and self._notifier is not None
         ):
+            # The client's served list is now the new one; an unchanged
+            # reconnect must stay quiet until the client lists again.
+            self._served = self._fingerprint
             self._schedule_notify()
         return True
 

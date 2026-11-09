@@ -54,6 +54,16 @@ def _tool(name: str = "add", description: str = "Add two integers", schema=None)
     )
 
 
+class _FakeSession:
+    """A session whose ``tools/list`` returns a fixed list."""
+
+    def __init__(self, tools):
+        self._tools = tools
+
+    async def list_tools(self):
+        return SimpleNamespace(tools=self._tools)
+
+
 def _tcp_endpoint(
     name: str = "default",
     port: int = 4321,
@@ -337,6 +347,9 @@ class TestHubConnectionWithoutAHub:
                 try:
                     result = await client.call_tool("add", {"a": 1, "b": 2})
                 except Exception as exc:  # a client may raise instead
+                    # A raising client must still carry our code, not a
+                    # generic protocol error.
+                    assert _get_mcp_error_code(exc) == shim.HUB_ERROR_CODE
                     assert "unavailable" in str(exc)
                 else:
                     assert result.is_error is True
@@ -380,10 +393,14 @@ class TestReconnect:
 
         connection.set_notifier(notifier)
         assert await connection.list_tools() == []
-        assert connection._listed is True
+        assert connection._served == shim.tool_fingerprint([])
 
         async def open_one(_endpoint):
-            return contextlib.AsyncExitStack(), SimpleNamespace(), [_tool()]
+            return (
+                contextlib.AsyncExitStack(),
+                _FakeSession([_tool()]),
+                [_tool()],
+            )
 
         monkeypatch.setattr(connection, "_open", open_one)
         try:
@@ -404,21 +421,20 @@ class TestReconnect:
         endpoint = _tcp_endpoint()
 
         async def open_first(_endpoint):
-            return contextlib.AsyncExitStack(), SimpleNamespace(), [_tool()]
+            return (
+                contextlib.AsyncExitStack(),
+                _FakeSession([_tool()]),
+                [_tool()],
+            )
 
         monkeypatch.setattr(connection, "_open", open_first)
         assert await connection._connect(endpoint) is True
-        await asyncio.sleep(0.05)
-        assert not notified.is_set()
-
+        assert len(await connection.list_tools()) == 1
         await connection._drop()
 
         async def open_changed(_endpoint):
-            return (
-                contextlib.AsyncExitStack(),
-                SimpleNamespace(),
-                [_tool(description="Add integers")],
-            )
+            changed = _tool(description="Add integers")
+            return contextlib.AsyncExitStack(), _FakeSession([changed]), [changed]
 
         monkeypatch.setattr(connection, "_open", open_changed)
         assert await connection._connect(endpoint) is True
@@ -429,7 +445,7 @@ class TestReconnect:
 
     async def test_an_identical_tool_list_stays_quiet(self, monkeypatch):
         connection = shim.HubConnection(_config())
-        notifications = []
+        notifications: list[bool] = []
 
         async def notifier() -> None:
             notifications.append(True)
@@ -438,15 +454,63 @@ class TestReconnect:
         endpoint = _tcp_endpoint()
 
         async def open_same(_endpoint):
-            return contextlib.AsyncExitStack(), SimpleNamespace(), [_tool()]
+            return (
+                contextlib.AsyncExitStack(),
+                _FakeSession([_tool()]),
+                [_tool()],
+            )
 
         monkeypatch.setattr(connection, "_open", open_same)
         assert await connection._connect(endpoint) is True
+        assert len(await connection.list_tools()) == 1
         await connection._drop()
         assert await connection._connect(endpoint) is True
         await asyncio.sleep(0.05)
 
         assert notifications == []
+        await connection._drop()
+
+    async def test_the_same_list_after_an_outage_is_announced(self, monkeypatch):
+        """A hub that returns with the same tools must still be announced.
+
+        The client was served ``[]`` during the outage, so comparing against
+        the previous connection would stay silent.
+        """
+        connection = shim.HubConnection(_config())
+        notifications: list[bool] = []
+
+        async def notifier() -> None:
+            notifications.append(True)
+
+        connection.set_notifier(notifier)
+        endpoint = _tcp_endpoint()
+
+        async def open_same(_endpoint):
+            return (
+                contextlib.AsyncExitStack(),
+                _FakeSession([_tool()]),
+                [_tool()],
+            )
+
+        monkeypatch.setattr(connection, "_open", open_same)
+        assert await connection._connect(endpoint) is True
+        assert len(await connection.list_tools()) == 1
+        await connection._drop()
+
+        # The outage: the client lists and is served the empty answer.
+        assert await connection.list_tools() == []
+
+        assert await connection._connect(endpoint) is True
+        await asyncio.sleep(0.05)
+        assert notifications == [True]
+
+        # The announced fingerprint is now the served one: an unchanged
+        # reconnect stays quiet until the client lists again.
+        await connection._drop()
+        assert await connection._connect(endpoint) is True
+        await asyncio.sleep(0.05)
+        assert notifications == [True]
+
         await connection._drop()
 
 
