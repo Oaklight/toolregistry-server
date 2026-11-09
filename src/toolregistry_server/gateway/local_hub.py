@@ -71,6 +71,38 @@ class LocalHubUnsupported(RuntimeError):
     """The local hub cannot run on this platform yet."""
 
 
+def _isolated_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Return gateway options that make every client its own principal.
+
+    A hub is shared by several sessions, so its loopback address is not a
+    trust boundary: each client must present its own key.  A static operator
+    token would give every client the same unscoped identity, so hub mode
+    refuses one even though a plain gateway accepts it by default.
+
+    Args:
+        options: Gateway construction options.
+
+    Returns:
+        A copy of *options* with ``allow_operator_token`` cleared.
+
+    Raises:
+        ValueError: When no ``keys_db`` is configured.
+    """
+    if not options.get("keys_db"):
+        raise ValueError(
+            "a local hub requires --keys-db: every client must present its "
+            "own key, so no session can act as another"
+        )
+    isolated = dict(options)
+    if isolated.get("allow_operator_token"):
+        logger.warning(
+            "local-hub ignores --allow-operator-token: every client must use "
+            "its own key"
+        )
+        isolated["allow_operator_token"] = False
+    return isolated
+
+
 class _Termination:
     """Absorb uvicorn's SIGTERM re-raise and forward the request to the server.
 
@@ -226,6 +258,11 @@ def run_hub(
     _require_posix("run")
     if idle_timeout < 0:
         raise ValueError("--idle-timeout must be zero or positive")
+    try:
+        options = _isolated_options(options)
+    except ValueError as exc:
+        print(f"cannot start hub {name!r}: {exc}", file=sys.stderr)
+        return 1
     previous_sigterm: Any = None
     termination = _Termination()
     if threading.current_thread() is threading.main_thread():
@@ -294,6 +331,7 @@ def ensure_hub(
     """
     _require_posix("ensure")
     try:
+        options = _isolated_options(options)
         running = _running_endpoint(name)
         if running is not None:
             if not quiet:
@@ -305,7 +343,7 @@ def ensure_hub(
 
         process = _spawn_hub(options, name=name, idle_timeout=idle_timeout, argv=argv)
         return _wait_for_endpoint(name, process, timeout, quiet=quiet)
-    except EndpointError as exc:
+    except (EndpointError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 

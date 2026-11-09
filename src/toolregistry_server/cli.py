@@ -24,6 +24,7 @@ Subclassing (e.g. Hub)::
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, TextIO
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 
 from ._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
 from ._vendor.structlog import get_logger
+from .isolation import DEFAULT_CLIENT_CONCURRENCY, DEFAULT_CONCURRENCY_TIMEOUT
 from .regex_guard import DEFAULT_REGEX_BUDGET, DEFAULT_REGEX_TIMEOUT
 
 logger = get_logger()
@@ -257,6 +259,24 @@ class CLI:
             help="Unix socket for a hub the shim starts",
         )
         hub_shim_parser.add_argument(
+            "--keys-db",
+            default=None,
+            metavar="PATH",
+            help=(
+                "Key store a hub the shim starts must use. Hub mode requires "
+                "one; an operator-started hub keeps its own setting"
+            ),
+        )
+        hub_shim_parser.add_argument(
+            "--key-file",
+            default=None,
+            metavar="PATH",
+            help=(
+                "File holding the client key this shim presents. Falls back "
+                "to TOOLREGISTRY_HUB_KEY when omitted"
+            ),
+        )
+        hub_shim_parser.add_argument(
             "--connect-timeout",
             type=float,
             default=5.0,
@@ -398,6 +418,7 @@ class CLI:
                 "tools_list_cache_scope": getattr(
                     parsed, "tools_list_cache_scope", None
                 ),
+                "allow_operator_token": getattr(parsed, "allow_operator_token", False),
                 "config_reload": getattr(parsed, "config_reload", False),
                 "write_config": getattr(parsed, "config_write", True),
             }
@@ -440,6 +461,13 @@ class CLI:
             "admin_allow_private_hosts": getattr(
                 parsed, "admin_allow_private_hosts", False
             ),
+            "client_concurrency": getattr(
+                parsed, "client_concurrency", DEFAULT_CLIENT_CONCURRENCY
+            ),
+            "concurrency_timeout": getattr(
+                parsed, "concurrency_timeout", DEFAULT_CONCURRENCY_TIMEOUT
+            ),
+            "allow_operator_token": getattr(parsed, "allow_operator_token", False),
             "config_reload": getattr(parsed, "config_reload", False),
             "write_config": getattr(parsed, "config_write", True),
         }
@@ -485,12 +513,18 @@ class CLI:
         """Serve one stdio MCP client until it disconnects."""
         from .gateway import local_hub, shim
 
+        key_file = parsed.key_file
         config = shim.ShimConfig(
             name=parsed.name,
             config_path=parsed.config,
             socket_path=parsed.socket_path,
             connect_timeout=parsed.connect_timeout,
             spawn=parsed.spawn,
+            keys_db=parsed.keys_db,
+            key_file=key_file,
+            # An explicit file wins; the environment variable is a fallback
+            # for client configs that cannot write a key file.
+            key=None if key_file else os.environ.get("TOOLREGISTRY_HUB_KEY"),
         )
         try:
             code = shim.run_stdio(config)

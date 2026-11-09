@@ -43,6 +43,13 @@ from ..adapters import Adapter
 from ..adapters.openapi.adapter import DEFAULT_MAX_SSE_SUBSCRIBERS
 from ..auth import load_tokens, verify_token
 from ..identity import ServerIdentity
+from ..isolation import (
+    DEFAULT_CLIENT_CONCURRENCY,
+    DEFAULT_CONCURRENCY_TIMEOUT,
+    ClientLimiter,
+    identity_header,
+    principal_key,
+)
 from ..regex_guard import DEFAULT_REGEX_BUDGET, DEFAULT_REGEX_TIMEOUT
 from .admin import GatewayAdminHost, GatewayAdminProxyASGI
 from .frontends import (
@@ -159,6 +166,50 @@ def _non_negative_float(text: str) -> float:
         raise argparse.ArgumentTypeError("must be a finite number of seconds")
     if value < 0:
         raise argparse.ArgumentTypeError("must not be negative")
+    return value
+
+
+def _positive_count(text: str) -> int:
+    """Parse an integer that must be at least one.
+
+    Args:
+        text: Command-line value.
+
+    Returns:
+        The parsed integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not an integer >= 1.
+    """
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid int value: {text!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
+def _positive_seconds(text: str) -> float:
+    """Parse a finite number of seconds that must be greater than zero.
+
+    Args:
+        text: Command-line value.
+
+    Returns:
+        The parsed float.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not finite and positive.
+    """
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid float value: {text!r}") from exc
+    if value != value or value in (float("inf"), float("-inf")):
+        raise argparse.ArgumentTypeError("must be a finite number of seconds")
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
     return value
 
 
@@ -377,6 +428,7 @@ class _BearerAuthASGI:
             )
             valid = principal is not None
         else:
+            principal = None
             valid = verify_token(credential, self._tokens)
         if not valid:
             await _send_json(
@@ -386,6 +438,34 @@ class _BearerAuthASGI:
                 401,
                 {"detail": "Invalid authentication token"},
                 {"WWW-Authenticate": "Bearer"},
+            )
+            return
+        claimed = identity_header(scope.get("headers") or ())
+        if claimed is not None:
+            # Identity comes only from the credential.  The shim connects
+            # without the hub's lock, so a header a client sends cannot be
+            # checked against any local state and is refused outright.
+            logger.warning(
+                "refused a reserved client header",
+                header=claimed,
+                client_key=(
+                    principal_key(principal)
+                    if principal is not None
+                    else "static-token"
+                ),
+                path=scope.get("path", ""),
+            )
+            await _send_json(
+                scope,
+                receive,
+                send,
+                400,
+                {
+                    "detail": (
+                        f"{claimed} is not accepted: identity comes from the "
+                        "bearer credential"
+                    )
+                },
             )
             return
         await self._app(scope, receive, send)
@@ -551,6 +631,14 @@ class GatewayAdapter(Adapter):
             admin panel's Keys page.
         principal_resolver: Pre-built API key resolver.  Takes precedence
             over ``keys_db``; used by embedders and tests.
+        client_concurrency: In-flight calls one client may run at once when
+            its key sets no ``max_concurrency``.  Must be at least 1.
+        concurrency_timeout: Seconds a call waits for its client's slot
+            before it is refused.  Must be greater than zero.
+        allow_operator_token: Accept static ``--tokens`` credentials on MCP
+            when a key store is configured.  Without it, a key-scoped MCP
+            endpoint refuses them: every client holding the same operator
+            token would be one principal.  OpenAPI and admin are unaffected.
         backend: ``"fastapi"`` (ASGI) or ``"httpserver"``.  The httpserver
             backend can serve only the openapi frontend.
         config_path: Configuration file used to persist frontend settings.
@@ -596,6 +684,9 @@ class GatewayAdapter(Adapter):
         tokens: list[str] | tuple[str, ...] | None = None,
         keys_db: str | None = None,
         principal_resolver: Any | None = None,
+        client_concurrency: int = DEFAULT_CLIENT_CONCURRENCY,
+        concurrency_timeout: float = DEFAULT_CONCURRENCY_TIMEOUT,
+        allow_operator_token: bool = False,
         backend: str = "fastapi",
         config_path: str | None = None,
         write_config: bool = True,
@@ -636,6 +727,15 @@ class GatewayAdapter(Adapter):
             self._principal_resolver = PrincipalResolver(
                 self._key_store, operator_tokens=self._tokens
             )
+        # Validating here keeps a bad knob out of the listener: uvicorn binds
+        # only after the adapter is fully constructed.
+        self._client_limiter = ClientLimiter(client_concurrency, concurrency_timeout)
+        self._allow_operator_token = bool(allow_operator_token)
+        self._refuse_operator_token = bool(
+            not self._allow_operator_token
+            and self._principal_resolver is not None
+            and getattr(self._principal_resolver, "has_keys", False)
+        )
         self._server_url = server_url
         self._host = host
         self._port = port
@@ -689,6 +789,7 @@ class GatewayAdapter(Adapter):
             admin_token=self._admin_token or "",
             key_store=panel_key_store,
             allow_private_hosts=self._admin_allow_private_hosts,
+            client_limiter=self._client_limiter,
         )
         self._admin_proxy = GatewayAdminProxyASGI(self._admin_host)
         self._asgi = _GatewayASGI(self)
@@ -808,6 +909,8 @@ class GatewayAdapter(Adapter):
             version=self._identity.version,
             instructions=self._instructions,
             principal_resolver=self._principal_resolver,
+            refuse_operator_token=self._refuse_operator_token,
+            client_limiter=self._client_limiter,
         )
 
     def _wrap_auth(self, app: Any) -> Any:
@@ -1304,6 +1407,34 @@ class GatewayAdapter(Adapter):
             ),
         )
         parser.add_argument(
+            "--client-concurrency",
+            type=_positive_count,
+            default=DEFAULT_CLIENT_CONCURRENCY,
+            metavar="N",
+            help=(
+                "In-flight calls one client may run at once, unless its key "
+                f"sets a lower concurrency (default: {DEFAULT_CLIENT_CONCURRENCY})"
+            ),
+        )
+        parser.add_argument(
+            "--concurrency-timeout",
+            type=_positive_seconds,
+            default=DEFAULT_CONCURRENCY_TIMEOUT,
+            metavar="SECONDS",
+            help=(
+                "How long a call waits for its client's slot before it is "
+                f"refused (default: {DEFAULT_CONCURRENCY_TIMEOUT:g})"
+            ),
+        )
+        parser.add_argument(
+            "--allow-operator-token",
+            action="store_true",
+            help=(
+                "Accept static --tokens credentials on MCP when --keys-db is "
+                "set. Without this flag a key-scoped MCP endpoint refuses them"
+            ),
+        )
+        parser.add_argument(
             "--server-url",
             type=str,
             default=None,
@@ -1478,6 +1609,13 @@ class GatewayAdapter(Adapter):
             tokens=tokens or None,
             keys_db=kwargs.get("keys_db"),
             principal_resolver=kwargs.get("principal_resolver"),
+            client_concurrency=kwargs.get(
+                "client_concurrency", DEFAULT_CLIENT_CONCURRENCY
+            ),
+            concurrency_timeout=kwargs.get(
+                "concurrency_timeout", DEFAULT_CONCURRENCY_TIMEOUT
+            ),
+            allow_operator_token=kwargs.get("allow_operator_token", False),
             backend=kwargs.get("backend", "fastapi"),
             config_path=kwargs.get("config_path"),
             write_config=kwargs.get("write_config", True),

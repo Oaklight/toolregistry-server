@@ -230,13 +230,14 @@ def _hold_lock_in_child(name: str, *, write_pid: bool = True) -> subprocess.Pope
 class TestEnsure:
     """ensure returns the endpoint of a running hub without spawning."""
 
-    def test_ensure_returns_the_running_endpoint(self, capsys):
+    def test_ensure_returns_the_running_endpoint(self, capsys, isolated_home):
         lock = HubLock("default")
         assert lock.acquire() is True
         try:
             write_owner_pid("default", os.getpid())
             write_endpoint(_tcp(port=4321))
-            assert local_hub.ensure_hub(None, {}, timeout=1.0) == 0
+            options = {"keys_db": str(isolated_home / "keys.db")}
+            assert local_hub.ensure_hub(None, options, timeout=1.0) == 0
         finally:
             remove_owner_pid("default")
             lock.release()
@@ -244,22 +245,24 @@ class TestEnsure:
         payload = json.loads(capsys.readouterr().out)
         assert payload["port"] == 4321
 
-    def test_ensure_waits_for_a_starting_hub_then_times_out(self):
+    def test_ensure_waits_for_a_starting_hub_then_times_out(self, isolated_home):
         lock = HubLock("default")
         assert lock.acquire() is True
         try:
-            assert local_hub.ensure_hub(None, {}, timeout=0.2) == 1
+            options = {"keys_db": str(isolated_home / "keys.db")}
+            assert local_hub.ensure_hub(None, options, timeout=0.2) == 1
         finally:
             lock.release()
 
-    def test_a_quiet_ensure_prints_no_endpoint(self, capsys):
+    def test_a_quiet_ensure_prints_no_endpoint(self, capsys, isolated_home):
         """The stdio shim's stdout is its protocol channel."""
         lock = HubLock("default")
         assert lock.acquire() is True
         try:
             write_owner_pid("default", os.getpid())
             write_endpoint(_tcp(port=4321))
-            assert local_hub.ensure_hub(None, {}, timeout=1.0, quiet=True) == 0
+            options = {"keys_db": str(isolated_home / "keys.db")}
+            assert local_hub.ensure_hub(None, options, timeout=1.0, quiet=True) == 0
         finally:
             remove_owner_pid("default")
             lock.release()
@@ -369,6 +372,7 @@ async def test_idle_watchdog_exits_when_idle():
 
 
 _HUB_SCRIPT = """
+import os
 import sys
 
 from toolregistry import ToolRegistry
@@ -390,6 +394,8 @@ options = {
     "port": 0,
     "mcp_enabled": False,
     "sse_enabled": False,
+    "keys_db": os.path.join(os.environ["TOOLREGISTRY_HOME"], "keys.db"),
+    "tokens": ["operator-token"],
 }
 sys.exit(
     local_hub.run_hub(
@@ -500,8 +506,9 @@ class TestRunningHub:
         try:
             endpoint = _wait_for_endpoint("busy", process)
             time.sleep(1.5)
+            headers = {"Authorization": "Bearer operator-token"}
             with httpx.Client(base_url=endpoint.url or "") as client:
-                assert client.get("/openapi/tools").status_code == 200
+                assert client.get("/openapi/tools", headers=headers).status_code == 200
             time.sleep(1.5)
             assert process.poll() is None
 
@@ -514,6 +521,8 @@ def test_ensure_starts_a_hub_and_stop_ends_it(isolated_home, tmp_path):
     """End to end through the CLI: ensure spawns, stop reaps."""
     config = tmp_path / "tools.yaml"
     config.write_text("tools: []\n", encoding="utf-8")
+    tokens = tmp_path / "tokens.txt"
+    tokens.write_text("operator-token\n", encoding="utf-8")
     name = "ensure-test"
     env = {**os.environ, "TOOLREGISTRY_HOME": str(isolated_home)}
     command = local_hub._hub_command()
@@ -527,6 +536,10 @@ def test_ensure_starts_a_hub_and_stop_ends_it(isolated_home, tmp_path):
             str(config),
             "--name",
             name,
+            "--keys-db",
+            str(tmp_path / "keys.db"),
+            "--tokens",
+            str(tokens),
             "--timeout",
             "30",
         ],
@@ -545,8 +558,9 @@ def test_ensure_starts_a_hub_and_stop_ends_it(isolated_home, tmp_path):
         assert endpoint is not None
         assert endpoint.pid != os.getpid()
         assert local_hub.status_hub(name) == 0
+        headers = {"Authorization": "Bearer operator-token"}
         with httpx.Client(base_url=endpoint.url or "") as client:
-            assert client.get("/openapi/tools").status_code == 200
+            assert client.get("/openapi/tools", headers=headers).status_code == 200
     finally:
         stopped = subprocess.run(
             command + ["local-hub", "stop", "--name", name],
@@ -607,3 +621,27 @@ async def test_open_session_count_sees_a_streamable_http_session():
         await asyncio.to_thread(thread.join, 30)
 
     assert gateway.open_session_count() == 0
+
+
+class TestHubIsolation:
+    """A hub is shared, so every client must present its own key (#145)."""
+
+    @pytest.mark.skipif(os.name == "nt", reason="local hub is POSIX-only")
+    def test_run_requires_a_key_store(self, capsys):
+        assert local_hub.run_hub(None, {}) == 1
+        assert "requires --keys-db" in capsys.readouterr().err
+
+    @pytest.mark.skipif(os.name == "nt", reason="local hub is POSIX-only")
+    def test_ensure_requires_a_key_store(self):
+        assert local_hub.ensure_hub(None, {}) == 1
+
+    def test_operator_tokens_are_never_allowed(self):
+        assert local_hub._isolated_options({"keys_db": "keys.db"}) == {
+            "keys_db": "keys.db"
+        }
+
+    def test_an_operator_token_flag_is_forced_off(self):
+        options = local_hub._isolated_options(
+            {"keys_db": "keys.db", "allow_operator_token": True}
+        )
+        assert options["allow_operator_token"] is False

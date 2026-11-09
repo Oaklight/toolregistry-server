@@ -74,6 +74,16 @@ def add_keys_subparser(parser: argparse.ArgumentParser) -> None:
         help="Expiry timestamp (UTC is assumed when no offset is given)",
     )
     create.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "In-flight call limit for this key (default: the server's "
+            "--client-concurrency)"
+        ),
+    )
+    create.add_argument(
         "--json",
         action="store_true",
         help="Print the record and secret as one JSON object",
@@ -91,6 +101,19 @@ def add_keys_subparser(parser: argparse.ArgumentParser) -> None:
     revoke = commands.add_parser("revoke", help="Revoke one key immediately")
     revoke.add_argument("key_id", metavar="KEY_ID")
     revoke.add_argument("--json", action="store_true", help="Print JSON")
+
+    concurrency = commands.add_parser(
+        "set-concurrency", help="Change one key's in-flight call limit"
+    )
+    concurrency.add_argument("key_id", metavar="KEY_ID")
+    limit = concurrency.add_mutually_exclusive_group(required=True)
+    limit.add_argument("--value", type=int, metavar="N", help="New positive limit")
+    limit.add_argument(
+        "--clear",
+        action="store_true",
+        help="Drop the override and use the server's --client-concurrency",
+    )
+    concurrency.add_argument("--json", action="store_true", help="Print JSON")
 
 
 def dispatch_keys(parsed: argparse.Namespace) -> int:
@@ -110,6 +133,7 @@ def dispatch_keys(parsed: argparse.Namespace) -> int:
         "list": _dispatch_list,
         "get": _dispatch_get,
         "revoke": _dispatch_revoke,
+        "set-concurrency": _dispatch_set_concurrency,
     }
     handler = handlers.get(parsed.keys_command)
     if handler is None:
@@ -127,7 +151,16 @@ def _dispatch_create(parsed: argparse.Namespace) -> int:
         },
     )
     with ApiKeyStore(parsed.db) as store:
-        created = store.create(parsed.label, scopes, expires_at=parsed.expires_at)
+        try:
+            created = store.create(
+                parsed.label,
+                scopes,
+                expires_at=parsed.expires_at,
+                max_concurrency=parsed.concurrency,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     if parsed.json:
         print(json.dumps(created.to_dict(), sort_keys=True))
     else:
@@ -183,6 +216,25 @@ def _dispatch_revoke(parsed: argparse.Namespace) -> int:
     return 0
 
 
+def _dispatch_set_concurrency(parsed: argparse.Namespace) -> int:
+    """Set or clear one key's in-flight call limit."""
+    value = None if parsed.clear else parsed.value
+    with ApiKeyStore(parsed.db) as store:
+        try:
+            record = store.set_max_concurrency(parsed.key_id, value)
+        except KeyError:
+            print(f"Key not found: {parsed.key_id}", file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if parsed.json:
+        print(json.dumps(record.to_dict(), sort_keys=True))
+    else:
+        _print_record(record.to_dict())
+    return 0
+
+
 def _print_record(record: dict[str, Any]) -> None:
     """Print one record as ``field: value`` lines.
 
@@ -207,3 +259,4 @@ def _print_record(record: dict[str, Any]) -> None:
     print(f"expires:     {record.get('expires_at') or '-'}")
     print(f"revoked:     {record.get('revoked_at') or '-'}")
     print(f"last used:   {record.get('last_used_at') or 'never'}")
+    print(f"concurrency: {record.get('max_concurrency') or 'default'}")

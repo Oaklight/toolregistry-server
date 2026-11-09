@@ -450,3 +450,74 @@ def test_operator_principal_is_unrestricted():
     assert principal.unrestricted
     assert principal.allows("any", "any-tool")
     assert principal.token_scopes()[0] == "mcp"
+
+
+# ---------------------------------------------------------------------------
+# Per-key concurrency (#145)
+# ---------------------------------------------------------------------------
+
+
+class TestMaxConcurrency:
+    def test_a_key_can_carry_its_own_limit(self, store):
+        created = store.create("slow-bot", {"namespaces": ["alpha"]}, max_concurrency=2)
+
+        assert created.record.max_concurrency == 2
+        assert created.record.to_dict()["max_concurrency"] == 2
+        principal = store.verify(created.secret)
+        assert principal is not None
+        assert principal.max_concurrency == 2
+
+    def test_a_key_without_an_override_uses_the_process_default(self, store):
+        created = store.create("plain", {"namespaces": ["alpha"]})
+
+        assert created.record.max_concurrency is None
+        principal = store.verify(created.secret)
+        assert principal is not None
+        assert principal.max_concurrency is None
+
+    @pytest.mark.parametrize("value", [0, -1, True, 2.5, "2"])
+    def test_invalid_limits_are_rejected(self, store, value):
+        with pytest.raises(ValueError):
+            store.create("bad", {"namespaces": ["alpha"]}, max_concurrency=value)
+
+    def test_the_limit_can_be_changed_and_cleared(self, store):
+        created = store.create("bot", {"namespaces": ["alpha"]}, max_concurrency=4)
+
+        updated = store.set_max_concurrency(created.record.id, 1)
+        assert updated.max_concurrency == 1
+
+        cleared = store.set_max_concurrency(created.record.id, None)
+        assert cleared.max_concurrency is None
+
+    def test_an_unknown_key_cannot_be_changed(self, store):
+        with pytest.raises(KeyError):
+            store.set_max_concurrency("key_missing", 2)
+
+    def test_an_old_database_gains_the_column_in_place(self, tmp_path):
+        database = tmp_path / "old.db"
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                secret_digest TEXT NOT NULL,
+                secret_hash TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                revoked_at TEXT,
+                last_used_at TEXT
+            );
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        old = ApiKeyStore(database)
+        try:
+            created = old.create("migrated", {"namespaces": ["alpha"]})
+            assert created.record.max_concurrency is None
+            assert old.set_max_concurrency(created.record.id, 3).max_concurrency == 3
+        finally:
+            old.close()

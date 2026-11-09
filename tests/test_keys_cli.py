@@ -108,3 +108,68 @@ def test_create_without_a_namespace_denies_everything(tmp_path, capsys):
         principal = store.verify(payload["secret"])
     assert principal is not None
     assert not principal.allows("alpha", "alpha-add")
+
+
+def test_create_accepts_a_concurrency_limit(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    parsed = _parse(
+        "keys",
+        "--db",
+        database,
+        "create",
+        "--label",
+        "slow-bot",
+        "--namespace",
+        "alpha",
+        "--concurrency",
+        "3",
+        "--json",
+    )
+
+    assert dispatch_keys(parsed) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["max_concurrency"] == 3
+
+    with ApiKeyStore(database) as store:
+        principal = store.verify(payload["secret"])
+    assert principal is not None
+    assert principal.max_concurrency == 3
+
+
+def test_create_refuses_an_invalid_concurrency_limit(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    parsed = _parse(
+        "keys", "--db", database, "create", "--label", "bad", "--concurrency", "0"
+    )
+
+    assert dispatch_keys(parsed) == 2
+    assert "max_concurrency" in capsys.readouterr().err
+
+
+def test_set_concurrency_changes_and_clears_the_override(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+
+    set_limit = _parse(
+        "keys", "--db", database, "set-concurrency", key_id, "--value", "2", "--json"
+    )
+    assert dispatch_keys(set_limit) == 0
+    assert json.loads(capsys.readouterr().out)["max_concurrency"] == 2
+
+    clear = _parse(
+        "keys", "--db", database, "set-concurrency", key_id, "--clear", "--json"
+    )
+    assert dispatch_keys(clear) == 0
+    assert json.loads(capsys.readouterr().out)["max_concurrency"] is None
+
+
+def test_set_concurrency_reports_an_unknown_key(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    parsed = _parse(
+        "keys", "--db", database, "set-concurrency", "key_missing", "--value", "2"
+    )
+
+    assert dispatch_keys(parsed) == 1
+    assert "Key not found" in capsys.readouterr().err

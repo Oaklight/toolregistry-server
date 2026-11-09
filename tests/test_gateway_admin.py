@@ -107,6 +107,24 @@ class FakeKeyStore:
         return record
 
 
+class FakeClients:
+    """Stand-in for #145's per-client call budget."""
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "client_key": "key_1",
+                "client_id": "build-bot",
+                "key_id": "key_1",
+                "limit": 4,
+                "calls": 7,
+                "errors": 1,
+                "active": 0,
+                "queued": 0,
+            }
+        ]
+
+
 class FakeFrontends:
     """The #184 frontend surface: list and update, with persistence fields."""
 
@@ -262,6 +280,7 @@ def host():
         frontends=FakeFrontends(),
         sources=FakeSources(),
         parse_source=lambda payload: payload,
+        clients=FakeClients(),
     )
     admin = AdminServer(ToolRegistry(), port=0, extensions=[extension])
     info = admin.start()
@@ -403,6 +422,19 @@ class TestKeys:
         assert status == 404
 
 
+class TestClients:
+    def test_lists_the_live_counters(self, host) -> None:
+        status, body, _ = _request(f"{host.url}/ext/gateway/clients")
+
+        assert status == 200
+        [record] = json.loads(body)["clients"]
+        assert record["client_id"] == "build-bot"
+        assert record["key_id"] == "key_1"
+        assert record["limit"] == 4
+        assert record["calls"] == 7
+        assert record["errors"] == 1
+
+
 class TestFrontends:
     def test_list_and_update(self, host) -> None:
         status, body, _ = _request(f"{host.url}/ext/gateway/frontends")
@@ -521,7 +553,7 @@ class TestMissingCollaborators:
         admin = AdminServer(ToolRegistry(), port=0, extensions=[extension])
         info = admin.start()
         try:
-            for path in ("/keys", "/frontends", "/sources"):
+            for path in ("/keys", "/clients", "/frontends", "/sources"):
                 status, body, _ = _request(f"{info.url}/ext/gateway{path}")
                 assert status == 503
                 assert "no " in json.loads(body)["message"]

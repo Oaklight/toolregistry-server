@@ -12,6 +12,7 @@ import enum
 import inspect
 import json
 import pathlib
+import time
 import traceback
 import weakref
 from collections.abc import Callable
@@ -20,6 +21,13 @@ from typing import TYPE_CHECKING, Any, Literal
 from toolregistry.tool import Tool as _Tool
 
 from ..._vendor.structlog import get_logger
+from ...isolation import (
+    BUSY_ERROR_CODE,
+    ClientBusyTimeout,
+    ClientLimiter,
+    operator_refusal,
+    policy_refusal,
+)
 from ...scoped_discovery import (
     DISCOVERY_TOOL_NAME,
     filter_discovery_result,
@@ -125,6 +133,8 @@ def _request_authorization() -> str | None:
 
 async def _request_principal(
     resolver: "PrincipalResolver | None",
+    *,
+    refuse_operator: bool = False,
 ) -> "Any | None":
     """Resolve the current request's principal.
 
@@ -136,14 +146,31 @@ async def _request_principal(
 
     Args:
         resolver: The configured resolver, or ``None``.
+        refuse_operator: Refuse an unrestricted (static-token) principal.
+            A shared hub accepts client keys only; a deployment that has not
+            adopted keys keeps working, and ``--allow-operator-token``
+            re-admits the token explicitly.
 
     Returns:
         The principal, or ``None`` when no resolver is configured or the
         request carries no valid credential.
+
+    Raises:
+        McpError: When an operator token is presented on a key-scoped MCP
+            server and *refuse_operator* is set.
     """
     if resolver is None:
         return None
-    return await asyncio.to_thread(resolver.resolve, _request_authorization())
+    principal = await asyncio.to_thread(resolver.resolve, _request_authorization())
+    if refuse_operator:
+        message = operator_refusal(principal, allow_operator=False)
+        if message is not None:
+            from mcp.types import INVALID_PARAMS
+
+            from ._compat import make_mcp_error
+
+            raise make_mcp_error(INVALID_PARAMS, message)
+    return principal
 
 
 def _json_default(value: Any) -> Any:
@@ -607,13 +634,18 @@ def _discovery_available(route_table: "RouteTable") -> bool:
 
 
 async def _scoped_routes(
-    route_table: "RouteTable", principal_resolver: "PrincipalResolver | None"
+    route_table: "RouteTable",
+    principal_resolver: "PrincipalResolver | None",
+    *,
+    refuse_operator: bool = False,
 ) -> list:
     """Return the enabled, non-deferred routes the caller may see."""
     routes = route_table.list_routes(enabled_only=True, include_deferred=False)
     if principal_resolver is None:
         return routes
-    principal = await _request_principal(principal_resolver)
+    principal = await _request_principal(
+        principal_resolver, refuse_operator=refuse_operator
+    )
     return principal_resolver.filter_routes(principal, routes)
 
 
@@ -673,7 +705,10 @@ def _refuse_proxy_target(
 
 
 async def _mcp_tool_definitions(
-    route_table: "RouteTable", principal_resolver: "PrincipalResolver | None"
+    route_table: "RouteTable",
+    principal_resolver: "PrincipalResolver | None",
+    *,
+    refuse_operator: bool = False,
 ) -> list:
     """Build the MCP tool definitions for the caller's scope.
 
@@ -687,7 +722,9 @@ async def _mcp_tool_definitions(
     from ._compat import make_mcp_tool, make_tool_annotations
 
     tools: list = []
-    for route in await _scoped_routes(route_table, principal_resolver):
+    for route in await _scoped_routes(
+        route_table, principal_resolver, refuse_operator=refuse_operator
+    ):
         tools.append(
             make_mcp_tool(
                 name=route.tool_name,
@@ -709,9 +746,17 @@ async def _mcp_call_tool(
     principal_resolver: "PrincipalResolver | None",
     session_mgr: "SessionManager",
     route_table: "RouteTable",
+    *,
+    refuse_operator: bool = False,
+    client_limiter: ClientLimiter | None = None,
 ) -> "tuple[list[MCPContentBlock], Any]":
-    """Resolve, authorize and execute one MCP tool call."""
-    from mcp.types import INTERNAL_ERROR
+    """Resolve, authorize and execute one MCP tool call.
+
+    A call runs inside the caller's concurrency slot and must pass both the
+    key scope and the process permission policy.  Every call is logged with
+    the principal's ``key_id`` and ``client_id`` for the admin panel.
+    """
+    from mcp.types import INTERNAL_ERROR, INVALID_PARAMS
 
     from ._compat import McpErrorClass, make_mcp_error, tool_execution_error_message
 
@@ -719,7 +764,7 @@ async def _mcp_call_tool(
     # has one lookup and one outcome on both SDK generations (#97).
     route = _resolve_route_for_call(tool_name, get_enabled_route)
     principal = (
-        await _request_principal(principal_resolver)
+        await _request_principal(principal_resolver, refuse_operator=refuse_operator)
         if principal_resolver is not None
         else None
     )
@@ -727,14 +772,28 @@ async def _mcp_call_tool(
     _refuse_proxy_target(
         tool_name, arguments, route_table.registry, principal_resolver, principal
     )
+    policy_message = await policy_refusal(route_table.registry, route, arguments)
+    if policy_message is not None:
+        raise make_mcp_error(INVALID_PARAMS, policy_message)
 
     session_ctx = _get_session_context(session_mgr)
     token = None
     if session_ctx is not None:
         token = session_context_var.set(session_ctx)
 
+    started = time.monotonic()
+    outcome = "ok"
     try:
-        result = await _execute_tool(route, arguments, session_ctx, session_mgr)
+        if client_limiter is None:
+            result = await _execute_tool(route, arguments, session_ctx, session_mgr)
+        else:
+            try:
+                async with client_limiter.slot(principal):
+                    result = await _execute_tool(
+                        route, arguments, session_ctx, session_mgr
+                    )
+            except ClientBusyTimeout as exc:
+                raise make_mcp_error(BUSY_ERROR_CODE, str(exc)) from exc
         if tool_name == DISCOVERY_TOOL_NAME:
             result = filter_discovery_result(result, principal_resolver, principal)
         content = _result_to_mcp_content(result)
@@ -754,8 +813,10 @@ async def _mcp_call_tool(
         return content, structured
 
     except McpErrorClass:
+        outcome = "error"
         raise
     except Exception as e:
+        outcome = "error"
         # Keep the exception text in the log; it can carry connection
         # strings, internal paths and upstream URLs.  The client only
         # needs to know which tool failed.
@@ -770,6 +831,21 @@ async def _mcp_call_tool(
     finally:
         if token is not None:
             session_context_var.reset(token)
+        _log_attributed_call(tool_name, principal, outcome, started)
+
+
+def _log_attributed_call(
+    tool_name: str, principal: Any, outcome: str, started: float
+) -> None:
+    """Record one call with the identity the credential established."""
+    logger.info(
+        "tool call",
+        tool=tool_name,
+        key_id=getattr(principal, "key_id", None),
+        client_id=getattr(principal, "label", None),
+        outcome=outcome,
+        duration_ms=round((time.monotonic() - started) * 1000, 3),
+    )
 
 
 def route_table_to_mcp_server(
@@ -781,6 +857,8 @@ def route_table_to_mcp_server(
     version: str | None = None,
     instructions: str | None = None,
     principal_resolver: "PrincipalResolver | None" = None,
+    refuse_operator_token: bool = False,
+    client_limiter: ClientLimiter | None = None,
 ) -> "Server":
     """Create an MCP low-level Server from a RouteTable.
 
@@ -812,6 +890,12 @@ def route_table_to_mcp_server(
             expiry apply immediately.  ``None`` keeps the historical
             unscoped behaviour; static ``--tokens`` credentials stay
             unscoped even when a resolver is configured.
+        refuse_operator_token: Refuse an unrestricted (static-token)
+            principal on every MCP request.  The gateway sets this when a
+            key store is configured, unless ``--allow-operator-token`` is
+            passed.
+        client_limiter: Per-principal concurrency budget.  ``None`` runs
+            calls without one.
 
     Returns:
         A configured mcp.server.lowlevel.Server instance.
@@ -848,7 +932,11 @@ def route_table_to_mcp_server(
 
     async def handle_list_tools() -> list:
         """Return MCP tool definitions for the caller's scope."""
-        return await _mcp_tool_definitions(route_table, principal_resolver)
+        return await _mcp_tool_definitions(
+            route_table,
+            principal_resolver,
+            refuse_operator=refuse_operator_token,
+        )
 
     async def handle_call_tool(
         tool_name: str, arguments: dict
@@ -874,6 +962,8 @@ def route_table_to_mcp_server(
             principal_resolver,
             session_mgr,
             route_table,
+            refuse_operator=refuse_operator_token,
+            client_limiter=client_limiter,
         )
 
     # Track active MCP sessions so we can push tool-list-changed

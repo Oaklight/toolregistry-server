@@ -561,6 +561,8 @@ class GatewayAdminHost:
             panel and the tool frontends share one database.
         allow_private_hosts: Permit the panel to fetch a private-network
             source URL.
+        client_limiter: The gateway's per-client call budget, or ``None`` for
+            a 503 Clients page.  The panel reads its counters.
     """
 
     def __init__(
@@ -572,6 +574,7 @@ class GatewayAdminHost:
         admin_token: str,
         key_store: Any = None,
         allow_private_hosts: bool = False,
+        client_limiter: Any = None,
     ) -> None:
         self._registry = registry
         self._frontends = frontends
@@ -579,6 +582,7 @@ class GatewayAdminHost:
         self._admin_token = admin_token
         self._key_store = key_store
         self._allow_private_hosts = allow_private_hosts
+        self._client_limiter = client_limiter
         self._server: Any = None
         self._port: int | None = None
         self._lock = threading.RLock()
@@ -608,6 +612,7 @@ class GatewayAdminHost:
             frontends=self._frontends,
             sources=self._source_manager,
             parse_source=parse_source_payload,
+            clients=self._client_limiter,
         )
         hook = (
             SourceManagerHook(self._source_manager)

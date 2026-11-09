@@ -439,3 +439,97 @@ class TestSessionManagerLifecycle:
         # Shutdown is idempotent.
         await gateway.shutdown()
         assert manager.closed is True
+
+
+class TestClientIsolation:
+    """A shared gateway's identity and quota rules (#145)."""
+
+    async def test_a_reserved_identity_header_is_refused(self):
+        gateway = _gateway(tokens=["s3cret"])
+        async with _client(gateway) as client:
+            response = await client.get(
+                "/openapi/tools",
+                headers={
+                    "Authorization": "Bearer s3cret",
+                    "X-Client-CWD": "/home/someone",
+                },
+            )
+
+        assert response.status_code == 400
+        assert "x-client-cwd" in response.json()["detail"]
+
+    async def test_an_unrelated_client_header_is_not_a_refusal(self):
+        gateway = _gateway(tokens=["s3cret"])
+        async with _client(gateway) as client:
+            response = await client.get(
+                "/openapi/tools",
+                headers={
+                    "Authorization": "Bearer s3cret",
+                    "X-Client-Version": "1.2.3",
+                },
+            )
+
+        assert response.status_code == 200
+
+    def test_the_refusal_is_logged_with_the_client(self, monkeypatch):
+        from io import StringIO
+
+        from toolregistry_server._vendor.structlog import (
+            BoundLogger,
+            ConsoleRenderer,
+            PrintLogger,
+            TimeStamper,
+            add_log_level,
+        )
+        from toolregistry_server.gateway import app as app_module
+
+        stream = StringIO()
+        log = BoundLogger(
+            logger=PrintLogger(file=stream),
+            processors=[add_log_level, TimeStamper(), ConsoleRenderer(colors=False)],
+            context={},
+        )
+        monkeypatch.setattr(app_module, "logger", log)
+
+        gateway = _gateway(tokens=["s3cret"])
+
+        async def scenario():
+            async with _client(gateway) as client:
+                return await client.get(
+                    "/openapi/tools",
+                    headers={
+                        "Authorization": "Bearer s3cret",
+                        "x-remote-user": "mallory",
+                    },
+                )
+
+        response = asyncio.run(scenario())
+
+        assert response.status_code == 400
+        output = stream.getvalue()
+        assert "refused a reserved client header" in output
+        assert "x-remote-user" in output
+        assert "static-token" in output
+
+    def test_a_key_scoped_gateway_refuses_static_tokens_on_mcp(self, tmp_path):
+        gateway = _gateway(keys_db=str(tmp_path / "keys.db"), tokens=["operator"])
+        assert gateway._refuse_operator_token is True  # noqa: SLF001
+
+    def test_the_allow_flag_readmits_static_tokens(self, tmp_path):
+        gateway = _gateway(
+            keys_db=str(tmp_path / "keys.db"),
+            tokens=["operator"],
+            allow_operator_token=True,
+        )
+        assert gateway._refuse_operator_token is False  # noqa: SLF001
+
+    def test_static_tokens_alone_are_not_refused(self):
+        gateway = _gateway(tokens=["operator"])
+        assert gateway._refuse_operator_token is False  # noqa: SLF001
+
+    @pytest.mark.parametrize(
+        "kwargs", [{"client_concurrency": 0}, {"concurrency_timeout": 0}]
+    )
+    def test_an_invalid_quota_knob_fails_at_construction(self, kwargs):
+        with pytest.raises(ValueError):
+            _gateway(**kwargs)

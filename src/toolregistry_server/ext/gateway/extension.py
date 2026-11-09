@@ -23,6 +23,8 @@ tests can supply fakes:
 * ``parse_source`` — converts a JSON declaration into the declaration type
   ``sources.add`` accepts.  Core owns the config schema, so the gateway
   supplies this rather than the extension guessing it.
+* ``clients`` — the per-client call budget (#145), or any object with the
+  same ``snapshot`` method.  It supplies the Clients page counters.
 
 A missing collaborator answers 503 for its pages and leaves the others
 working.
@@ -33,6 +35,7 @@ Example:
     ...     frontends=gateway_adapter,
     ...     sources=source_manager,
     ...     parse_source=config_source_from_payload,
+    ...     clients=client_limiter,
     ... )
     >>> AdminServer(registry, extensions=[extension])
 """
@@ -123,6 +126,13 @@ class SourceControl(Protocol):
 
     def refresh(self, ref: str) -> Any:
         """Re-fetch an OpenAPI source's document and apply the diff."""
+
+
+class ClientControl(Protocol):
+    """The per-client call budget the Clients page reads (#145)."""
+
+    def snapshot(self) -> Sequence[Mapping[str, Any]]:
+        """Return one counter record per client seen."""
 
 
 class _BadRequest(Exception):
@@ -322,6 +332,8 @@ class GatewayAdminExtension:
             page.
         parse_source: Callable turning a JSON declaration into the type
             ``sources.add`` accepts.  Required together with ``sources``.
+        clients: Per-client call budget (#145), or ``None`` to answer 503
+            for the Clients page.
     """
 
     name = GATEWAY_EXTENSION_NAME
@@ -345,11 +357,13 @@ class GatewayAdminExtension:
         frontends: FrontendControl | None = None,
         sources: SourceControl | None = None,
         parse_source: Callable[[Mapping[str, Any]], Any] | None = None,
+        clients: ClientControl | None = None,
     ) -> None:
         self._key_store = key_store
         self._frontends = frontends
         self._sources = sources
         self._parse_source = parse_source
+        self._clients = clients
 
     def register(self, ctx: Any) -> None:
         """Register the extension routes on *ctx*.
@@ -360,6 +374,7 @@ class GatewayAdminExtension:
         ctx.get("/keys", self.list_keys)
         ctx.post("/keys", self.create_key)
         ctx.post("/keys/<key_id>/revoke", self.revoke_key)
+        ctx.get("/clients", self.list_clients)
         ctx.get("/frontends", self.list_frontends)
         ctx.patch("/frontends/<name>", self.update_frontend)
         ctx.get("/sources", self.list_sources)
@@ -414,6 +429,19 @@ class GatewayAdminExtension:
         if record is None:
             raise KeyError(f"key {key_id!r} not found")
         return {"key": _public_key(record)}
+
+    # ---- clients ---------------------------------------------------------
+
+    @_guard
+    def list_clients(self, request: Any) -> dict[str, Any]:
+        """Return one counter record per client the gateway has served.
+
+        The counters live in the running process, so they restart with it;
+        they are a live view, not an audit trail.  ``key_id`` is the key that
+        authenticated the client and ``client_id`` its label.
+        """
+        clients = self._require(self._clients, "client limiter")
+        return {"clients": [dict(record) for record in clients.snapshot()]}
 
     # ---- frontends -------------------------------------------------------
 
