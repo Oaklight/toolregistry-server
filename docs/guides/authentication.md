@@ -143,6 +143,26 @@ toolregistry-server gateway --config config.json --keys-db keys.db
 也无法调用。目标检查读取实时注册表而不是路由表，因此在配置 diff 仍在应用期间注册的
 工具也会以同样方式判定。
 
+### 按客户端隔离
+
+密钥同时是服务器记账的身份。
+
+- **保留头会被拒绝。** 携带 `x-client-id`、`x-client-identity`、`x-client-cwd`、
+  `x-client-env`、`x-client-environment`、`x-forwarded-user` 或 `x-remote-user`
+  的请求会在认证之后以 `400` 失败，并连同调用方密钥记录日志。身份只来自凭据，请在
+  服务器前面的任何代理上剥掉这些请求头。
+- **配置了密钥时，MCP 拒绝运维令牌。** 使用 `--keys-db` 时，静态令牌无法标识客户端，
+  因此解析为不受限 principal 的 MCP 请求会在 `tools/list` 与 `tools/call` 上被拒绝。
+  `--allow-operator-token` 可以重新放行；OpenAPI 与管理面板不受影响。
+- **并发按密钥限制。** `--client-concurrency`（默认 8）是进程上限；密钥的
+  `max_concurrency` 只能调低，不能调高。等待超过 `--concurrency-timeout`（默认 30 秒）
+  的调用返回 `-32000`「too many concurrent calls」。
+- **调用可归因。** 每次调用记录 `key_id` 与 `client_id`，管理面板的 Clients 页
+  （由 `/ext/gateway/clients` 支撑）按客户端报告调用、错误、在途与排队数量。
+
+进程的 `PermissionPolicy` 也会在每次对外调用上评估，MCP 与 OpenAPI 两个前端都如此；
+密钥作用域只能在此基础上进一步收紧。
+
 ### Python API
 
 管理扩展（#187）在进程内导入同一个存储：

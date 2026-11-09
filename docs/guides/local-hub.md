@@ -80,6 +80,36 @@ pid 文件与 endpoint 指向同一进程、公布地址能接受连接」时才
   列表未变化则保持安静。
 - 文档地址无人接受连接时按「没有 hub」处理，而不是报错，因此陈旧文档不会阻塞启动。
 
+## 密钥与隔离
+
+`local-hub` 要求 `--keys-db`：共享 hub 服务多个客户端，每个客户端都要出示自己的密钥；
+除非用 `--allow-operator-token` 启动，hub 会拒绝任何 MCP 请求（包括 `tools/list`）上的
+静态运维令牌。为每个客户端创建一个密钥，并交给它自己的 shim：
+
+```bash
+toolregistry-server keys create --label laptop --keys-db hub-keys.db   # 仅打印一次
+```
+
+```json
+{
+  "mcpServers": {
+    "toolregistry": {
+      "command": "toolregistry-server",
+      "args": ["hub-shim", "--name", "default", "--config", "/path/to/tools.yaml",
+               "--key-file", "/home/me/.config/toolregistry/hub.key"]
+    }
+  }
+}
+```
+
+`--key-file`（或 `TOOLREGISTRY_HUB_KEY`）携带客户端密钥；只有当 shim 需要自行拉起 hub
+时才需要 `--keys-db`。每次调用按密钥计数：`--client-concurrency` 限制在途调用，密钥可用
+`max_concurrency` 收紧但永不能放宽。任何在请求头中声称身份、工作目录或环境的请求
+（`x-client-id`、`x-client-identity`、`x-client-cwd`、`x-client-env`、
+`x-client-environment`、`x-forwarded-user`、`x-remote-user`）都会以 `400` 被拒绝，
+因此请在前置代理上剥掉这类请求头。面板的 Clients 页与 `/ext/gateway/clients` 展示实时
+的按客户端计数。
+
 ## 限制
 
 - `local-hub` 与 `hub-shim` 目前仅支持 POSIX。Windows 上命令会被拒绝并提示改用
