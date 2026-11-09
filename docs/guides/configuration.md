@@ -279,7 +279,7 @@ manager.retry(failed_entry.to_dict()["id"])   # 重试失败的注册
 ### 持久化
 
 add、remove、replace 会把配置写回服务器启动时使用的文件，因此重启后状态保持。
-写入前先把原文件复制为 `<path>.bak`；解析模型不保留 JSONC 注释，因此注释会丢失。
+写入前先把原文件复制为 `<path>.bak`；解析模型不保留注释，因此注释会丢失（JSONC 与 YAML 都是如此）。
 `MutationResult.persisted` 与 `persist_error` 报告结果：只读路径会被报告而不会静默忽略，
 运行期变更仍然生效。`--no-config-write`（或 `write_config=False`）让所有变更只保留在内存中。
 
@@ -400,16 +400,21 @@ gateway.list_frontends()
 result = gateway.update_frontend("mcp", enabled=False)
 # {"name": "mcp", "path": "/mcp", "enabled": False, ...,
 #  "persisted": True,
-#  "warning": "the config file was rewritten; JSONC comments are not preserved"}
+#  "warning": "the config file was rewritten; comments are not preserved"}
 
 gateway.update_frontend("sse", path="/events")
 ```
 
 更新会先把原文件复制为 `<path>.bak`，再把新路径与标记写回配置文件，因此重启后仍然生效。
 `result["persisted"]` 表示写入是否成功。`result["warning"]` 说明跳过或失败的原因；
-写入成功时它也会带上与运行期来源管理相同的注释丢失警告，因为 JSONC 注释不会被保留。
+写入成功时它也会带上与运行期来源管理相同的注释丢失警告，因为注释不会被保留。
 即使写入失败，运行期变更仍然生效。`--no-config-write`（或 `write_config=False`）
 关闭写入，并在 `warning` 中报告。
+
+在 `--backend httpserver` 下，OpenAPI 前端没有挂载前缀：它直接服务在监听根
+（`/tools`、`/openapi.json`、`/docs`、`/events`）。因此 `list_frontends()` 把它的
+`path` 报告为 `"/"` 并附带一条 `note` 说明原因；把这个 `"/"` 原样传给
+`update_frontend` 会被视为无变更而不是报错，所以保存未改动的记录也能成功。
 
 ## 环境变量
 

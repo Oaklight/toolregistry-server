@@ -19,6 +19,7 @@
 
 - **启动来源现在也会触发 `on_registered`**（#203）：`SourceManager.apply_initial()` 会注册配置中的来源，但从不调用 `on_registered`，因此依赖该钩子做注册后处理的下游——例如 Hub 的 `output_schema` 处理——在启动时不会执行，工具要等到后续一次 diff 才获得这些元数据。现在启动过程会在注册循环结束后以本次注册的全部名称调用一次钩子，位置与一次 diff 相同：在 `tool_metadata` 与部署配置过滤之前。没有任何名称注册时（空配置或全部来源被排除）不调用；钩子抛异常时记录日志，工具保持注册。
 - **同名替换会被复查非法 spec 正则，部分丢弃也可见**（#171）：加载时的检查比较的是工具名快照，因此当 source 用同名工具替换已存在的工具时，不会产生*新*名字，替换后的 schema 也就不会被编译——替换引入的坏 `pattern` 会留在注册表中，直到第一次调用才失败。现在改为比较工具对象：本次注册创建或替换的每个名字都会被检查，带非法正则的替换与新工具一样被丢弃。source 的汇总行会报告丢弃数量与工具名（例如 `Loaded OpenAPI tools from '…': dropped 2 tool(s) with an invalid regex: ['a', 'b']`），全部丢弃时的日志也带上数量与列表。`--strict-spec-regex` 与 hub 的 source 失败语义（只有全部丢弃才为 false）不变。
+- **httpserver 后端上报真正提供服务的 OpenAPI 路径，注释丢失警告同时覆盖两种格式**（#196）：gateway 之前上报配置的 `/openapi`，但该后端实际上把 OpenAPI 服务在监听根（`/tools`、`/openapi.json`、`/docs`、`/events`）。现在 `list_frontends()` 返回 `path: "/"` 并用 `note` 列出这些路由，`update_frontend()` 返回同样的结构；提交 `"/"` 会被视为「无变更」，因此保存未改动的记录也能成功，其他路径仍会得到「运行期不可修改」的拒绝。持久化仍写入配置中的路径，文件可正常重新加载。`COMMENTS_WARNING` 现在写「注释不会被保留」，而不是只提 JSONC——对 YAML writer 而言旧措辞本就不准确。
 
 ## [0.8.0] - 2026-11-08
 
