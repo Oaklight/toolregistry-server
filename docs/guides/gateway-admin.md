@@ -89,13 +89,12 @@ Keys 页面管理 OpenAPI 与 MCP 前端接受的限定作用域入站密钥。�
 
 ### 限定作用域的密钥与延迟工具
 
-!!! note "当前限制"
-    限定作用域的密钥看不到也无法调用发现代理 `discover_tools` 与
-    `call_deferred`：它们会从限定作用域的 `tools/list` 中隐藏，并在调用时被拒绝，
-    MCP 与 OpenAPI 两个面皆如此。这两个代理可以绕过逐次调用的作用域检查，因此在
-    作用域感知的发现功能落地之前保持失败即关闭
-    （[#195](https://github.com/Oaklight/toolregistry-server/issues/195)）。
-    运维身份与静态令牌不受影响。
+!!! note "限定作用域的密钥与发现代理"
+    限定作用域的密钥保留 `discover_tools` 与 `call_deferred`，两者都会对它们所操作
+    的工具执行该密钥的作用域：发现只返回密钥可调用的名称，`call_deferred` 命中
+    作用域外目标时的拒绝信息与直接调用完全一致。无论密钥的命名空间是什么，这对代理
+    都可见——它们位于 default 命名空间——但针对任一名称的显式单工具拒绝仍会将其
+    移除。运维身份与静态令牌不受影响。见[认证](authentication.md)。
 
 ## Frontends 页面
 
