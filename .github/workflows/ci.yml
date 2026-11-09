@@ -72,9 +72,10 @@ jobs:
           python -c "import importlib.metadata as m; print('mcp', m.version('mcp'))"
 
       - name: Run MCP adapter tests
+        # A hang under this SDK leg must fail fast and name the last test.
         run: >-
-          python -m pytest tests/test_mcp_adapter.py tests/test_mcp_session.py
-          tests/test_hub_shim.py -q
+          timeout 300 python -m pytest tests/test_mcp_adapter.py
+          tests/test_mcp_session.py tests/test_hub_shim.py -v
 
   # Forward-compatibility canary: run the OpenAPI suites against core's
   # master branch, which is ahead of the released floor pinned in
