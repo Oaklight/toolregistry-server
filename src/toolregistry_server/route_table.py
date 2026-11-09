@@ -911,6 +911,26 @@ class RouteTable:
                     stacklevel=3,
                 )
 
+    def clear_parameter_override(self, tool_name: str) -> None:
+        """Drop a stored parameter override, whether or not a route exists.
+
+        :meth:`override_parameters` raises ``KeyError`` for a missing route,
+        and that contract stays.  A reload can remove a configuration entry
+        and the route in the same pass, and the stored override must still
+        be forgotten: leaving it in the map re-attaches it to a later tool
+        that takes the same name.  Notifying only when a route exists keeps
+        a removal that leaves no route silent.
+
+        Args:
+            tool_name: Tool name whose stored override is dropped.
+        """
+        self._parameter_overrides.pop(tool_name, None)
+        route = self._routes.get(tool_name)
+        if route is None:
+            return
+        route.parameter_schema_override = None
+        self._notify_listeners(tool_name, ChangeEventType.METADATA_UPDATE.value)
+
     def override_parameters(
         self, tool_name: str, parameters: dict[str, Any] | None
     ) -> None:

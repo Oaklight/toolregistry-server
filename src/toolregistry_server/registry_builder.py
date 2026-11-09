@@ -731,9 +731,9 @@ def sync_parameter_overrides(
         apply_parameter_overrides(route_table, config, names=pending)
         return
     for tool_name in set(previous_block) - set(current):
-        # A tool the reload also unregistered has no route left to clear.
-        if route_table.get_route(tool_name) is not None:
-            route_table.override_parameters(tool_name, None)
+        # Drop the stored entry even when the route is already gone: leaving
+        # it in the map re-attaches it to a later tool with the same name.
+        route_table.clear_parameter_override(tool_name)
     apply_parameter_overrides(route_table, config)
 
 

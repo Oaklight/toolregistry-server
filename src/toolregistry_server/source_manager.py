@@ -682,6 +682,9 @@ class SourceManager:
                 if self.profile and entry.names:
                     _apply_profile_to_names(self.registry, entry.names, self.profile)
                 self._entries[key] = entry
+            # A successful retry registers tools without a diff; apply the
+            # current block to the names it brought back.
+            self._sync_parameter_overrides(self.config, self.config, set(entry.names))
             return entry
 
     def refresh(self, ref: SourceRef) -> RefreshResult:
