@@ -1180,11 +1180,70 @@ class TestOpenAPIRefresh:
         spec_server.etag = '"v2"'
         result = manager.refresh(source_id)
 
-        # The result must not name a tool that is not registered.
+        # The result must not name a tool that is not registered, and the
+        # drop must count as a change.
         assert result.added == ()
+        assert result.removed == ("pet-bad_get",)
+        assert result.changed is True
         assert "pet-bad_get" not in manager.registry._tools
         assert "pet-bad_get" not in manager.get(source_id).names
         assert "pet-list_pets" in manager.registry._tools
+
+    def test_a_still_bad_pattern_is_dropped_again(
+        self, spec_server, tmp_path, monkeypatch
+    ):
+        from toolregistry_server import regex_guard
+
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+        monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
+        monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
+
+        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.etag = '"v2"'
+        assert manager.refresh(source_id).removed == ("pet-bad_get",)
+
+        # The document still carries the typo: the tool must be registered
+        # again by the diff and dropped again, not silently skipped.
+        spec_server.etag = '"v3"'
+        second = manager.refresh(source_id)
+
+        assert second.added == ()
+        assert second.removed == ("pet-bad_get",)
+        assert "pet-bad_get" not in manager.registry._tools
+
+    def test_a_dropped_tool_comes_back_when_the_pattern_is_fixed(
+        self, spec_server, tmp_path, monkeypatch
+    ):
+        from toolregistry_server import regex_guard
+
+        manager = _openapi_manager(tmp_path, _spec_url(spec_server))
+        source_id = manager.list()[0].to_dict()["id"]
+        monkeypatch.setattr(regex_guard, "_regex", _BadRegex())
+        monkeypatch.setattr(regex_guard, "HAS_REGEX", True)
+
+        spec_server.spec["paths"]["/bad"] = _BAD_PARAM_PATH
+        spec_server.etag = '"v2"'
+        first = manager.refresh(source_id)
+        assert first.removed == ("pet-bad_get",)
+        assert "pet-bad_get" not in manager.registry._tools
+
+        # The path never left the document; only its pattern changed.  The
+        # integration must have forgotten the name, or core would count it as
+        # unchanged and never register it again.
+        spec_server.spec["paths"]["/bad"]["get"]["parameters"][0]["schema"] = {
+            "type": "string",
+            "pattern": "^[a-z]+$",
+        }
+        spec_server.etag = '"v3"'
+        second = manager.refresh(source_id)
+
+        assert second.added == ("pet-bad_get",)
+        assert second.removed == ()
+        tool = manager.registry.get_tool("pet-bad_get")
+        assert tool is not None
+        assert "pet-bad_get" in manager.get(source_id).names
+        assert tool.callable(q="abc") is not None
 
     def test_strict_refresh_drops_the_tool_then_raises(
         self, spec_server, tmp_path, monkeypatch
@@ -1228,6 +1287,7 @@ class TestOpenAPIRefresh:
         result = manager.refresh(source_id)
 
         assert result.updated == ()
+        assert result.removed == ("pet-list_pets",)
         assert "pet-list_pets" not in manager.registry._tools
         assert "pet-list_pets" not in manager.get(source_id).names
 
