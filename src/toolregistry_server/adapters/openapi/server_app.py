@@ -53,6 +53,11 @@ from ...regex_guard import (
     build_matcher_factory,
     log_status,
 )
+from ...scoped_discovery import (
+    DISCOVERY_TOOL_NAME,
+    filter_discovery_result,
+    refusing_target,
+)
 from .adapter import DEFAULT_MAX_SSE_SUBSCRIBERS, _validate_arguments
 from .serialisation import encode_tool_result
 
@@ -144,6 +149,61 @@ def _tool_listing(
     return {"tools": tools, "etag": etag}
 
 
+def _scope_refusal(
+    request: Any,
+    current: Any,
+    tool_name: str,
+    principal_resolver: Any | None,
+) -> Response | None:
+    """Return the ``403`` response when the route is outside the scope."""
+    if principal_resolver is None:
+        return None
+    principal = getattr(request.state, "principal", None)
+    if principal_resolver.allows_route(principal, current):
+        return None
+    return _error(
+        403,
+        f"Tool '{tool_name}' is not permitted for this credential",
+    )
+
+
+def _proxy_refusal(
+    request: Any,
+    tool_name: str,
+    arguments: Any,
+    route_table: RouteTable,
+    principal_resolver: Any | None,
+) -> Response | None:
+    """Return the ``403`` response when a proxy's target is out of scope.
+
+    The detail names the target, exactly as a direct out-of-scope call to
+    that tool does, so the two paths are indistinguishable to a client.
+    """
+    principal = getattr(request.state, "principal", None)
+    target = refusing_target(
+        tool_name, arguments, route_table, principal_resolver, principal
+    )
+    if target is None:
+        return None
+    return _error(
+        403,
+        f"Tool '{target}' is not permitted for this credential",
+    )
+
+
+def _filtered_result(
+    request: Any,
+    tool_name: str,
+    result: Any,
+    principal_resolver: Any | None,
+) -> Any:
+    """Apply the discovery scope filter when the call was ``discover_tools``."""
+    if tool_name != DISCOVERY_TOOL_NAME:
+        return result
+    principal = getattr(request.state, "principal", None)
+    return filter_discovery_result(result, principal_resolver, principal)
+
+
 def _make_tool_handler(
     route_table: RouteTable,
     tool_name: str,
@@ -157,13 +217,9 @@ def _make_tool_handler(
         if current is None or not current.enabled:
             return _error(503, f"Tool '{tool_name}' is currently disabled")
 
-        if principal_resolver is not None:
-            principal = getattr(request.state, "principal", None)
-            if not principal_resolver.allows_route(principal, current):
-                return _error(
-                    403,
-                    f"Tool '{tool_name}' is not permitted for this credential",
-                )
+        refusal = _scope_refusal(request, current, tool_name, principal_resolver)
+        if refusal is not None:
+            return refusal
 
         try:
             payload = request.json()
@@ -194,6 +250,12 @@ def _make_tool_handler(
                 return _error(status, getattr(exc, "detail", str(exc)))
             raise
 
+        refusal = _proxy_refusal(
+            request, tool_name, arguments, route_table, principal_resolver
+        )
+        if refusal is not None:
+            return refusal
+
         try:
             result = current.handler(**arguments)
             if asyncio.iscoroutine(result):
@@ -208,6 +270,8 @@ def _make_tool_handler(
                 exception=traceback.format_exc(),
             )
             return _error(500, f"Tool '{tool_name}' execution failed")
+
+        result = _filtered_result(request, tool_name, result, principal_resolver)
 
         try:
             # Compact separators and no ASCII escaping match FastAPI's

@@ -322,16 +322,20 @@ class TestPrincipalResolver:
         assert resolver.allows_route(principal, routes[0])
         assert not resolver.allows_route(principal, routes[1])
 
-    def test_scoped_principals_cannot_reach_the_proxy_tools(self, store):
-        created = store.create("all", {"namespaces": ["*"]})
+    def test_scoped_principals_keep_the_scope_aware_proxy_tools(self, store):
+        """The proxies enforce the target's scope, so a key keeps them (#195)."""
+        created = store.create("alpha-bot", {"namespaces": ["alpha"]})
         resolver = PrincipalResolver(store, operator_tokens=["bootstrap"])
         scoped = resolver.resolve(created.secret)
         operator = resolver.resolve("bootstrap")
         assert scoped is not None
         assert operator is not None
 
-        assert not resolver.allows(scoped, "default", "discover_tools")
-        assert not resolver.allows(scoped, "default", "call_deferred")
+        # The proxies live in the default namespace; a key scoped elsewhere
+        # still keeps them, because they judge the tool they act on.
+        assert resolver.allows(scoped, "default", "discover_tools")
+        assert resolver.allows(scoped, "default", "call_deferred")
+        assert not resolver.allows(scoped, "default", "unrelated-tool")
         assert resolver.allows(operator, "default", "discover_tools")
         assert resolver.allows(operator, "default", "call_deferred")
 

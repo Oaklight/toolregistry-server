@@ -17,6 +17,11 @@ from ..._vendor.jsonschema import SchemaValidationError, schema_validate
 from ..._vendor.structlog import get_logger
 from ...regex_guard import PatternMatcher, SpecPatternError
 from ...route_table import RouteEntry, RouteTable, _allows_additional_properties
+from ...scoped_discovery import (
+    DISCOVERY_TOOL_NAME,
+    filter_discovery_result,
+    refusing_target,
+)
 from .serialisation import encode_tool_result
 
 logger = get_logger(__name__)
@@ -369,6 +374,66 @@ def _require_route_scope(
     )
 
 
+def _filtered_result(
+    tool_name: str,
+    result: Any,
+    principal_resolver: Any,
+    principal: Any,
+) -> Any:
+    """Apply the discovery scope filter when the call was ``discover_tools``.
+
+    Keeping the conditional here leaves the tool endpoints with one statement
+    for every tool, so their complexity and their shared shape stay flat.
+
+    Args:
+        tool_name: The tool that ran.
+        result: Its result.
+        principal_resolver: The configured resolver, or ``None``.
+        principal: The caller's principal, or ``None``.
+
+    Returns:
+        The result, with out-of-scope discovered tools removed.
+    """
+    if tool_name == DISCOVERY_TOOL_NAME:
+        return filter_discovery_result(result, principal_resolver, principal)
+    return result
+
+
+def _require_proxy_target(
+    tool_name: str,
+    arguments: Any,
+    route_table: RouteTable,
+    principal_resolver: Any,
+    principal: Any,
+) -> None:
+    """Refuse ``call_deferred`` when its target is outside the scope.
+
+    The detail names the target, exactly as a direct out-of-scope call to
+    that tool does, so the two paths are indistinguishable to a client.
+
+    Args:
+        tool_name: The tool the client called.
+        arguments: The validated call arguments.
+        route_table: The route table being served.
+        principal_resolver: The configured resolver, or ``None``.
+        principal: The caller's principal, or ``None``.
+
+    Raises:
+        fastapi.HTTPException: ``403`` when the target is outside the scope.
+    """
+    target = refusing_target(
+        tool_name, arguments, route_table, principal_resolver, principal
+    )
+    if target is None:
+        return
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=403,
+        detail=f"Tool '{target}' is not permitted for this credential",
+    )
+
+
 def _add_route_from_entry(
     router: "APIRouter",
     route: RouteEntry,
@@ -471,12 +536,17 @@ def _add_route_from_entry(
                     data,
                     pattern_matcher=matcher,
                 )
+                principal = getattr(request.state, "principal", None)
+                _require_proxy_target(
+                    tname, arguments, rt, principal_resolver, principal
+                )
                 try:
                     result = await h(**arguments)
                 except HTTPException:
                     raise
                 except Exception as e:
                     raise _wrap_tool_error(tname, e) from e
+                result = _filtered_result(tname, result, principal_resolver, principal)
                 return _tool_result_response(result)
 
             return _endpoint
@@ -513,12 +583,20 @@ def _add_route_from_entry(
                 arguments = _validate_arguments(
                     current_route, data, pattern_matcher=matcher
                 )
+                principal = getattr(request.state, "principal", None)
+                _require_proxy_target(
+                    tname, arguments, rt, principal_resolver, principal
+                )
                 try:
                     result = h(**arguments)
                 except HTTPException:
                     raise
                 except Exception as e:
                     raise _wrap_tool_error(tname, e) from e
+                if tname == DISCOVERY_TOOL_NAME:
+                    result = filter_discovery_result(
+                        result, principal_resolver, principal
+                    )
                 return _tool_result_response(result)
 
             return _endpoint

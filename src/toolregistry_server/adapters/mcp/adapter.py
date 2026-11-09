@@ -20,6 +20,11 @@ from typing import TYPE_CHECKING, Any, Literal
 from toolregistry.tool import Tool as _Tool
 
 from ..._vendor.structlog import get_logger
+from ...scoped_discovery import (
+    DISCOVERY_TOOL_NAME,
+    filter_discovery_result,
+    refusing_target,
+)
 from ...session import (
     SessionContext,
     SessionManager,
@@ -612,19 +617,19 @@ async def _scoped_routes(
     return principal_resolver.filter_routes(principal, routes)
 
 
-async def _refuse_out_of_scope(
-    tool_name: str, route: Any, principal_resolver: "PrincipalResolver | None"
+def _refuse_out_of_scope(
+    tool_name: str,
+    route: Any,
+    principal_resolver: "PrincipalResolver | None",
+    principal: Any | None,
 ) -> None:
     """Raise the protocol error for a route outside the caller's key scope.
 
-    The principal is re-read from the store, so a key revoked or expired
-    since the transport check still fails here.  The resolver also denies the
-    proxy tools to scoped keys, so ``call_deferred`` cannot reach a target
-    outside the scope.
+    The principal was read from the store for this request by the caller, so
+    a key revoked or expired since the transport check still fails here.
     """
     if principal_resolver is None:
         return
-    principal = await _request_principal(principal_resolver)
     if principal_resolver.allows_route(principal, route):
         return
     from mcp.types import INVALID_PARAMS
@@ -637,6 +642,33 @@ async def _refuse_out_of_scope(
     )
 
 
+def _refuse_proxy_target(
+    tool_name: str,
+    arguments: Any,
+    route_table: "RouteTable",
+    principal_resolver: "PrincipalResolver | None",
+    principal: Any | None,
+) -> None:
+    """Refuse ``call_deferred`` when its target is outside the scope.
+
+    The message names the target, exactly as a direct out-of-scope call to
+    that tool does, so a client cannot tell which path refused it.
+    """
+    target = refusing_target(
+        tool_name, arguments, route_table, principal_resolver, principal
+    )
+    if target is None:
+        return
+    from mcp.types import INVALID_PARAMS
+
+    from ._compat import make_mcp_error
+
+    raise make_mcp_error(
+        INVALID_PARAMS,
+        f"Tool '{target}' is not permitted for this credential",
+    )
+
+
 async def _mcp_tool_definitions(
     route_table: "RouteTable", principal_resolver: "PrincipalResolver | None"
 ) -> list:
@@ -645,8 +677,9 @@ async def _mcp_tool_definitions(
     Deferred tools are excluded from the initial listing so that LLMs
     discover them via ``discover_tools``.  Tools whose metadata declares a
     title or execution hints carry ``title`` and ``annotations``; everything
-    else keeps the minimal definition.  A scoped key does not see the
-    ``discover_tools`` / ``call_deferred`` pair.
+    else keeps the minimal definition.  A scoped key keeps the
+    ``discover_tools`` / ``call_deferred`` pair: both enforce the scope on
+    the tool they act on (#195).
     """
     from ._compat import make_mcp_tool, make_tool_annotations
 
@@ -672,6 +705,7 @@ async def _mcp_call_tool(
     get_enabled_route: "Callable[[str], Any]",
     principal_resolver: "PrincipalResolver | None",
     session_mgr: "SessionManager",
+    route_table: "RouteTable",
 ) -> "tuple[list[MCPContentBlock], Any]":
     """Resolve, authorize and execute one MCP tool call."""
     from mcp.types import INTERNAL_ERROR
@@ -681,7 +715,15 @@ async def _mcp_call_tool(
     # Reuse the route the v1 pre-dispatch hook already resolved, so a call
     # has one lookup and one outcome on both SDK generations (#97).
     route = _resolve_route_for_call(tool_name, get_enabled_route)
-    await _refuse_out_of_scope(tool_name, route, principal_resolver)
+    principal = (
+        await _request_principal(principal_resolver)
+        if principal_resolver is not None
+        else None
+    )
+    _refuse_out_of_scope(tool_name, route, principal_resolver, principal)
+    _refuse_proxy_target(
+        tool_name, arguments, route_table, principal_resolver, principal
+    )
 
     session_ctx = _get_session_context(session_mgr)
     token = None
@@ -690,6 +732,8 @@ async def _mcp_call_tool(
 
     try:
         result = await _execute_tool(route, arguments, session_ctx, session_mgr)
+        if tool_name == DISCOVERY_TOOL_NAME:
+            result = filter_discovery_result(result, principal_resolver, principal)
         content = _result_to_mcp_content(result)
         is_multimodal = (
             _HAS_CONTENT_BLOCKS
@@ -826,6 +870,7 @@ def route_table_to_mcp_server(
             get_enabled_route,
             principal_resolver,
             session_mgr,
+            route_table,
         )
 
     # Track active MCP sessions so we can push tool-list-changed

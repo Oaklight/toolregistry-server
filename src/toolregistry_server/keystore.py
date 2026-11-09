@@ -71,6 +71,7 @@ __all__ = [
     "CreatedKey",
     "Principal",
     "PrincipalResolver",
+    "SCOPE_TRANSPARENT_TOOLS",
     "SCOPED_DENIED_TOOLS",
     "ScopeSpec",
     "bearer_credential",
@@ -86,12 +87,19 @@ DEFAULT_PAGE_SIZE = 50
 #: Upper bound on ``limit``.  A larger page would not be a page.
 MAX_PAGE_SIZE = 500
 
-#: Tools that invoke another tool by name.  A scoped key must not reach them:
-#: ``call_deferred`` would run a target the key's scope does not cover, and
-#: ``discover_tools`` would disclose schemas outside it.  Static operator
-#: tokens are unrestricted and keep both.  Scope-aware discovery is a
-#: follow-up; until then the proxy pair is operator-only.
-SCOPED_DENIED_TOOLS = frozenset({"discover_tools", "call_deferred"})
+#: Tools that invoke another tool by name and cannot make their own scope
+#: decision.  Empty today: ``call_deferred`` checks its target with this
+#: resolver before dispatching and ``discover_tools`` filters its result
+#: (#195), so both are scope-aware.  The set stays as a fail-closed valve for
+#: a future proxy that cannot enforce the caller's scope itself.
+SCOPED_DENIED_TOOLS: frozenset[str] = frozenset()
+
+#: Tools that speak for other tools and enforce the caller's scope
+#: themselves.  A scoped key keeps them whatever its namespaces are: the
+#: proxies are registered in the default namespace, so judging them by that
+#: namespace would deny discovery to every key scoped elsewhere even though
+#: the proxy can only return or invoke tools the key may already use.
+SCOPE_TRANSPARENT_TOOLS = frozenset({"discover_tools", "call_deferred"})
 
 #: scrypt work factors.  ``n`` is the CPU/memory cost, ``r`` the block size
 #: and ``p`` the parallelisation factor.  16 MiB at the default settings.
@@ -920,15 +928,20 @@ class PrincipalResolver:
     ) -> bool:
         """Whether *principal* may call one tool.  ``None`` denies.
 
-        A scoped principal is additionally denied the proxy tools in
-        :data:`SCOPED_DENIED_TOOLS`: they invoke or describe another tool and
-        would bypass the scope.  Static operator tokens are unrestricted and
-        keep them.
+        A scoped principal is denied the proxy tools in
+        :data:`SCOPED_DENIED_TOOLS` and keeps the ones in
+        :data:`SCOPE_TRANSPARENT_TOOLS`.  The transparent pair enforce the
+        scope on the tool they act on, so denying them by their own namespace
+        would only break discovery for keys scoped elsewhere (#195).  Static
+        operator tokens are unrestricted and meet neither rule.
         """
         if principal is None:
             return False
-        if not principal.unrestricted and tool_name in SCOPED_DENIED_TOOLS:
-            return False
+        if not principal.unrestricted:
+            if tool_name in SCOPED_DENIED_TOOLS:
+                return False
+            if tool_name in SCOPE_TRANSPARENT_TOOLS:
+                return True
         return principal.allows(namespace, tool_name)
 
     def allows_route(self, principal: Principal | None, route: Any) -> bool:
