@@ -95,6 +95,28 @@ def test_prepare_creates_a_private_parent_directory(tmp_path):
     assert stat.S_IMODE(parent.stat().st_mode) == 0o700
 
 
+def _wait_for_mode(path, expected, process, timeout=5):
+    """Wait until *path* reports *expected* permission bits.
+
+    uvicorn binds the listener and chmods it to ``0o666`` inside its startup
+    hook; the gateway tightens it to ``0o600`` before that hook returns.  A
+    probe that connects between the two calls must not fail the test.
+    """
+    deadline = time.monotonic() + timeout
+    mode = 0
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            output = process.stdout.read() if process.stdout else ""
+            raise AssertionError(
+                f"gateway exited before the socket was private: {output!r}"
+            )
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        if mode == expected:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"socket mode {mode:#o}, expected {expected:#o}")
+
+
 _SERVER_SCRIPT = """
 import sys
 
@@ -135,7 +157,7 @@ def test_gateway_serves_over_a_unix_socket(tmp_path):
     try:
         _wait_until_accepting(path, process)
 
-        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        _wait_for_mode(path, 0o600, process)
 
         with httpx.Client(
             transport=httpx.HTTPTransport(uds=str(path)),

@@ -58,6 +58,35 @@ from .unix import prepare_unix_socket
 
 logger = get_logger()
 
+
+def _private_uds_server(uvicorn_module: Any, config: Any, path: str) -> Any:
+    """Build a uvicorn server that keeps its Unix socket private.
+
+    uvicorn chmods a Unix socket to ``0o666`` in ``Server.startup`` after the
+    listener exists, which overrides the process umask.  This subclass
+    tightens the socket to ``0o600`` before ``startup()`` returns, so the
+    mode is settled before the hub publishes the socket path.  The parent
+    directory is created ``0700``, so no other user can reach the socket
+    during that window either.
+
+    Args:
+        uvicorn_module: The imported ``uvicorn`` module.
+        config: A ``uvicorn.Config`` bound to the gateway ASGI app.
+        path: The socket path to tighten after the bind.
+
+    Returns:
+        A ``uvicorn.Server`` instance that chmods the socket on startup.
+    """
+
+    class _PrivateUdsServer(uvicorn_module.Server):
+        async def startup(self, sockets: list[Any] | None = None) -> None:
+            await super().startup(sockets=sockets)
+            if not self.should_exit:
+                os.chmod(path, 0o600)
+
+    return _PrivateUdsServer(config)
+
+
 if TYPE_CHECKING:
     from starlette.types import Receive, Scope, Send
 
@@ -1073,10 +1102,11 @@ class GatewayAdapter(Adapter):
         else:
             config["host"] = host
             config["port"] = port
-        server = uvicorn.Server(uvicorn.Config(self._asgi, **config))
-        # uvicorn creates the socket during serve(); a umask of 0177 makes the
-        # socket file mode 0600 instead of the default 0755.
-        previous_umask = os.umask(0o177) if target is not None else None
+        if target is not None:
+            config_obj = uvicorn.Config(self._asgi, **config)
+            server = _private_uds_server(uvicorn, config_obj, target)
+        else:
+            server = uvicorn.Server(uvicorn.Config(self._asgi, **config))
         try:
             await server.serve()
         except KeyboardInterrupt:
@@ -1084,8 +1114,6 @@ class GatewayAdapter(Adapter):
         except asyncio.CancelledError:
             logger.info("Gateway shutdown requested (CancelledError)")
         finally:
-            if previous_umask is not None:
-                os.umask(previous_umask)
             # uvicorn closes the listener and the lifespan on its own graceful
             # path; this covers an interrupted serve(), where it may not.
             await self.shutdown()
@@ -1112,6 +1140,7 @@ class GatewayAdapter(Adapter):
         )
         parser.add_argument(
             "--socket",
+            dest="socket_path",
             type=str,
             default=None,
             metavar="PATH",
