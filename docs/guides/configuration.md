@@ -410,12 +410,10 @@ contract (`ADMIN_EXTENSION_API == 1`, core 0.21.0 or newer). On an older core
 the frontend refuses to start with a clear error; the default configuration
 does not load it.
 
-`--keys-db` also enables scoped inbound keys on the gateway, with the same
-rules as the `openapi` and `mcp` subcommands: the OpenAPI and MCP frontends
-accept an active key as well as the static `--tokens` credentials, and each
-frontend enforces the key's namespace and per-tool scope. Static tokens keep
-full, unscoped access. A key created or revoked in the panel applies on the
-next request, because the store row is read on every request.
+`--keys-db` is the gateway's scoped-key option; its enforcement rules are
+documented under [Authentication](authentication.md#scoped-api-keys). The
+panel shares that store, so a key created or revoked there applies on the next
+tool request.
 
 ### Runtime frontend API
 
