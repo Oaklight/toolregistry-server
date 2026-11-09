@@ -93,6 +93,40 @@ owned by another user, or is readable by group or others.
 - A document whose address accepts no connection is treated as "no hub", not
   as an error, so a stale document never blocks a start.
 
+## Keys and isolation
+
+`local-hub` requires `--keys-db`: a shared hub serves many clients, so each
+one presents its own client key, and the hub refuses a static operator token
+on any MCP request (including `tools/list`) unless it is started with
+`--allow-operator-token`. Create one key per client and hand it to that
+client's shim:
+
+```bash
+toolregistry-server keys create --label laptop --keys-db hub-keys.db   # printed once
+```
+
+```json
+{
+  "mcpServers": {
+    "toolregistry": {
+      "command": "toolregistry-server",
+      "args": ["hub-shim", "--name", "default", "--config", "/path/to/tools.yaml",
+               "--key-file", "/home/me/.config/toolregistry/hub.key"]
+    }
+  }
+}
+```
+
+`--key-file` (or `TOOLREGISTRY_HUB_KEY`) carries the client key; `--keys-db`
+is needed only when the shim has to start the hub itself. Each call is
+counted per key: `--client-concurrency` caps in-flight calls, and a key can
+narrow that with `max_concurrency` but never raise it. A request that claims
+an identity, working directory or environment in a header (`x-client-id`,
+`x-client-identity`, `x-client-cwd`, `x-client-env`, `x-client-environment`,
+`x-forwarded-user`, `x-remote-user`) is refused with `400`, so strip any such
+header at a proxy in front of the hub. The panel's Clients tab and
+`/ext/gateway/clients` show the live per-client counters.
+
 ## Limits
 
 - `local-hub` and `hub-shim` are POSIX-only for now. On Windows the commands

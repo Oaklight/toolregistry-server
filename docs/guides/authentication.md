@@ -170,6 +170,32 @@ check reads the live registry rather than the route table, so a tool
 registered while a configuration diff is still applying is judged the same
 way.
 
+### Per-client isolation
+
+A key is also the identity the server accounts to.
+
+- **Reserved headers are refused.** A request carrying `x-client-id`,
+  `x-client-identity`, `x-client-cwd`, `x-client-env`, `x-client-environment`,
+  `x-forwarded-user` or `x-remote-user` fails with `400` after authentication
+  and is logged with the caller's key. Identity comes from the credential, so
+  strip these headers at any proxy in front of the server.
+- **Operator tokens are refused on MCP when keys are configured.** With
+  `--keys-db`, a static token cannot identify a client, so an MCP request that
+  resolves to an unscoped principal is refused for `tools/list` and
+  `tools/call`. `--allow-operator-token` re-admits it; OpenAPI and the admin
+  panel are unaffected.
+- **Concurrency is capped per key.** `--client-concurrency` (default 8) is the
+  process ceiling; a key's `max_concurrency` can lower it and never raise it.
+  A call that waits longer than `--concurrency-timeout` (default 30 s) returns
+  `-32000` "too many concurrent calls".
+- **Calls are attributed.** Each call logs `key_id` and `client_id`, and the
+  admin panel's Clients tab (backed by `/ext/gateway/clients`) reports calls,
+  errors, in-flight and queued counts per client.
+
+The process `PermissionPolicy` is evaluated on every served call as well, on
+both the MCP and the OpenAPI frontends; a key's scope can only narrow what the
+policy allows.
+
 ### Python API
 
 The admin extension (#187) imports the same store in-process:
