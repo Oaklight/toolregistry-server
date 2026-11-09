@@ -116,19 +116,36 @@ The same flag is accepted by `load_openapi_spec(..., allow_private_hosts=True)`,
 
 ### Spec loading and refresh
 
-An OpenAPI source loads its document once, when the source is registered. A
-route refresh — `RouteTable.refresh()`, `refresh_all()`, and the
-`last_refreshed_at` field on `/tools` — rebuilds routes from the tools already
-in the registry. It does not download the spec again, so a path added to the
-remote document stays invisible until the source is registered again: restart
-the server, or, in the Hub, change that source's entry in `tools.jsonc` while
-`--config-reload` is on (an unchanged declaration is not re-registered).
+An OpenAPI source loads its document when the source is registered.
+`SourceManager.refresh(ref)` re-reads that document later without
+re-registering the source: the stored `spec_url` is fetched with its ETag, and
+a `304` changes nothing — no `last_refreshed_at` bump, no route rebuild, no
+renames. A changed document is diffed against the live tools, so an added path
+appears, a removed path disappears, a tool whose definition did not change
+keeps its state, and a tool an operator disabled by hand stays disabled. A
+source registered from a local file has no ETag; the file is re-read on every
+refresh. Refreshed tools pass the same post-registration steps as a config
+reload: namespace tags, the deployment profile and `tool_metadata` are applied,
+and a tool whose spec `pattern` the regex guard cannot compile is dropped and
+reported in the diff.
 
-The source's `allow_private_hosts` reaches both checks: the spec URL is
+The base URL follows the document within the limit core enforces: a moved
+`servers[0]` is adopted only when the stored base URL came from the document (a
+configured `base_url` is kept), only that adopted candidate is checked against
+the outbound address policy, and adoption rebuilds every tool wrapper, which
+the diff reports as `base_url_changed` rather than as updates. Every fetch
+re-validates the spec URL before I/O, so a source whose URL now resolves to a
+refused address fails with the registry and the last good document intact.
+
+The gateway exposes the operation as `POST /ext/gateway/sources/<id>/refresh`,
+which returns the diff, and as a **Refresh spec** action on an OpenAPI source
+row. A route refresh — `RouteTable.refresh()`, `refresh_all()`, and the
+`last_refreshed_at` field on `/tools` — only rebuilds routes from the tools
+already in the registry.
+
+The source's `allow_private_hosts` reaches every check: the spec URL is
 validated before it is fetched, and the client validates the base URL it
 actually uses (`servers[0]` or the configured `base_url`) before each request.
-Registering the source again re-downloads the document through the same
-outbound address policy; no refresh path fetches a spec without that check.
 
 ### Request Format
 
