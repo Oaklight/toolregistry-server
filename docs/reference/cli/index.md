@@ -196,6 +196,16 @@ share one registry, one tool schema set and one set of caches. POSIX only; on
 Windows the actions refuse and point at `gateway`. See the
 [Local Hub guide](../../guides/local-hub.md).
 
+A hub started by `ensure` or by a shim is spawned as
+`toolregistry-server local-hub run ...`. Set
+`TOOLREGISTRY_LOCAL_HUB_COMMAND` to start it with a different launcher — a Hub
+deployment uses `TOOLREGISTRY_LOCAL_HUB_COMMAND=toolregistry-hub`, so the
+resident process keeps the Hub launcher's registry policy. The value is split
+like a shell command and used verbatim, so a wrapper or another interpreter can
+be named. Precedence: the variable when it holds non-blank text, then
+`toolregistry-server` on `PATH`, then the current interpreter running the
+package bootstrap. The spawned hub inherits the variable.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `action` | `run` | `run` serves in the foreground; `ensure` adopts a live hub or starts a detached one and prints its endpoint; `stop` signals the owner; `status` reports it |

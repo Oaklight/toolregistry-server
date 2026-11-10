@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **A resident hub can be started by a launcher**: `local-hub ensure` and the stdio shim spawn `TOOLREGISTRY_LOCAL_HUB_COMMAND` when it holds non-blank text, split like a shell command, instead of `toolregistry-server`. A Hub deployment points it at `toolregistry-hub`, so a hub started on demand keeps the Hub launcher's registry policy (preset defaults, configurable hook, admin panel). Unset or blank keeps the previous lookup: `toolregistry-server` on `PATH`, then the current interpreter with the package bootstrap. The spawned hub inherits the variable; only the shim's key is removed from its environment.
+
 ## [0.9.0] - 2026-11-09
 
 ### Added
