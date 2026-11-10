@@ -300,7 +300,10 @@ Discovered metadata is used only when its `issuer` equals the configured
 issuer (RFC 8414 section 3.3), or, for a bare `discovery_url`, when it names an
 issuer at all. Its endpoints must be absolute `http` or `https` URLs, and a
 document without a usable `token_endpoint` is not cached, so the next
-discovery candidate can still answer.
+discovery candidate can still answer. A cached document is fetched again after
+300 seconds, so an endpoint that moves without answering 404/410 is still
+picked up without a restart; when that fetch fails, the cached document is
+used until the next attempt and a warning is logged.
 
 A panel edit that would make an `oauth.clients` selector name no source, or
 several, is rejected before it is written; a failed write leaves the token
@@ -308,6 +311,13 @@ rows in place. Error text is redacted: URL userinfo, credential-shaped
 parameters, the client secret and the base64 HTTP Basic credential. A secret
 shorter than six characters is not replaced in free text, because replacing it
 would rewrite ordinary words.
+
+A token row belongs to the declaration that created it. The store records
+which selector was declared against which `token_store` path, and the next
+start deletes the row of any recorded selector that the file no longer
+declares — including when the whole `clients` section was removed while the
+server was stopped. A row the record does not name, such as one written by
+another configuration sharing the database, is left alone.
 
 A token response without `expires_in` is assumed to last one hour, measured
 from the stored row's `updated_at`. An identity provider that omits the field
@@ -331,8 +341,10 @@ such as `introspection_ur1` would otherwise leave a security control silently
 off. A value of the wrong type names its key, for example
 `oauth.scope must be a mapping from a scope to its entries, or a list of
 SCOPE=ENTRY[,ENTRY] strings` or `oauth.scopes must be a string or a list of
-strings`. A bad per-client limit names its source, for example
-`oauth.client_concurrency['reports-bot'] must be a positive integer`.
+strings`. A wrong-typed scalar is rejected even when its flag is also given,
+because the flag wins at runtime and the typo would otherwise stay hidden
+until the flag was removed. A bad per-client limit names its source, for
+example `oauth.client_concurrency['reports-bot'] must be a positive integer`.
 
 A setting in the file without an issuer — in either the file or a flag — is a
 startup error, the same as the flags. The audience gate runs on the merged
