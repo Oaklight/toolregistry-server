@@ -42,7 +42,11 @@ What each side provides:
 The server reads `jwks_uri` from the RFC 8414 document, then from
 `/.well-known/openid-configuration`, and only then falls back to
 `<issuer>/.well-known/jwks.json`. Providers that publish neither metadata
-document need `--oauth-jwks`.
+document need `--oauth-jwks`. The fallback removes a trailing slash from the
+issuer before composing the URL, so an issuer published as
+`https://auth.example.com/` is composed as
+`https://auth.example.com/.well-known/jwks.json`; the `iss` comparison itself
+stays byte for byte.
 
 ## Step 1 — configure the authorization server
 
@@ -158,6 +162,65 @@ tool, including destructive or file-system tools. There is no wildcard
 substitution on the AS side: the AS issues the scope, and this mapping
 decides what it grants.
 
+One scope entry can also allow or deny a single tool, with `+tool-name` and
+`-tool-name`:
+
+```bash
+--oauth-scope "tools:read=calculator,+web-search,-calculator-danger"
+```
+
+That grants the `calculator` namespace, allows `web-search` even though its
+namespace is not in the list, and denies `calculator-danger` inside the
+allowed namespace. When two granted scopes disagree about one tool, the deny
+wins.
+
+## Prompt revocation with introspection
+
+Local JWT verification cannot see a revocation that happens after a token is
+minted, so the token keeps working until it expires. Add an RFC 7662
+introspection endpoint when that window is too long:
+
+```bash
+--oauth-introspection-url https://auth.example.com/introspect \
+--oauth-introspection-client-id toolregistry \
+--oauth-introspection-client-secret "$INTROSPECTION_SECRET" \
+--oauth-introspection-cache-ttl 5
+```
+
+- The endpoint is called after the local check, so the AS must still issue
+  RS256 or ES256 JWTs. Introspection does not make opaque tokens usable.
+- The result is cached per token for the TTL, which is the longest time a
+  revoked token is still accepted. The default is 5 seconds; `0` introspects
+  on every request.
+- A failing endpoint rejects the token by default. Add
+  `--oauth-introspection-optional` to fall back to the local result when
+  availability matters more than immediate revocation.
+- The same settings can live in the configuration file under `oauth:` as
+  `introspection_url`, `introspection_client_id`,
+  `introspection_client_secret`, `introspection_cache_ttl` and
+  `introspection_optional`, with per-client limits under
+  `client_concurrency`. A flag wins over the file.
+
+The introspection endpoint needs a client credential of its own; it is not
+the client the end user authorized. Keep that secret out of the command line
+where the process list is visible — the configuration file is the better
+place for it.
+
+## Per-client concurrency
+
+`--client-concurrency` is the per-client ceiling. For OAuth clients, narrow
+it per client with either of:
+
+```bash
+--oauth-client-concurrency reports-bot=2 \
+--oauth-concurrency-claim max_concurrency
+```
+
+A positive integer in the claim wins over the static entry. An invalid claim
+is ignored rather than rejecting the token. The limit is applied per OAuth
+client, so two clients acting for one user never share a budget, and a call
+that waits too long is recorded with outcome `busy`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -170,6 +233,9 @@ decides what it grants.
 | AS metadata unreachable from the server | Private network or the AS publishes no RFC 8414 document | Pass `--oauth-jwks` (and, for Swagger, `--oauth-authorization-url` / `--oauth-token-url`) |
 | Client says dynamic registration is unsupported | DCR is disabled at the AS, or the client needs CIMD | Enable DCR or CIMD at the AS, or pre-register the client and enter its credentials manually |
 | Swagger "Authorize" does nothing | The document has no OAuth2 scheme | Confirm `--oauth-issuer` is set and the endpoints are resolvable; the scheme is omitted with a warning otherwise |
+| Swagger ends on a 404 after the AS callback | The AS redirect URI does not match the served redirect page | Register `<public origin><openapi path>/oauth2-redirect.html`; the page moves with `--openapi-path` |
+| Every token is rejected after enabling introspection | The endpoint is unreachable, or its client id and secret are wrong | Check the startup log and the endpoint; `--oauth-introspection-optional` confirms the diagnosis by falling back to local verification |
+| A revoked token still works | No introspection endpoint is configured, or the cache TTL has not elapsed | Configure `--oauth-introspection-url`, and shorten `--oauth-introspection-cache-ttl` (default 5 seconds) |
 
 ## See also
 

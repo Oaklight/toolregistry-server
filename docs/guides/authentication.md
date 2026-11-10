@@ -410,9 +410,15 @@ For the full flag table and per-command defaults see the
 
 ### Limitations
 
-Token introspection (RFC 7662) is not implemented: the deployment must issue
-JWTs the server can verify offline. An opaque-token authorization server needs
-a proxy that introspects, or `--keys-db` instead.
+Local verification cannot see a token that is revoked or disabled after it is
+minted, so it stays valid until it expires. Configure
+`--oauth-introspection-url` (with a client id and secret) to confirm each
+locally verified token with the authorization server's RFC 7662 endpoint; the
+answer is cached for `--oauth-introspection-cache-ttl`, which bounds how long
+a revoked token is still accepted. A failed endpoint rejects the token unless
+`--oauth-introspection-optional` is set. The token itself must still be a JWT
+the server can verify offline: introspection does not make opaque tokens
+usable. See the [OAuth reference](../reference/oauth.md#token-introspection).
 
 The Python API is available in process: `OAuthSettings`, `OAuthTokenVerifier`
 and `build_resolver()` in `toolregistry_server.oauth` build the same verifier

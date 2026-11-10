@@ -87,19 +87,29 @@ server setting.
 The served OpenAPI document contains the `OAuth2` authorization-code scheme
 whenever `--oauth-issuer` is set. In Swagger UI:
 
-1. Open the document (gateway: `https://tools.example.com/openapi/openapi.json`).
+1. Open the page: `https://tools.example.com/docs` on the standalone
+   `openapi` server, `https://tools.example.com/openapi/docs` on a gateway
+   with the default mount.
 2. Click **Authorize**, pick the `OAuth2` scheme, enter the scopes the AS
    issues, and continue.
 3. Swagger UI sends the browser to `authorizationUrl`; after the AS callback
    it exchanges the code at `tokenUrl` and calls the tools with the resulting
    bearer token.
 
-Register Swagger UI's redirect URI at the AS. Stock Swagger UI expects an
-`oauth2-redirect.html` next to the documentation page. The built-in `/docs`
-page does not serve that file today, so the final redirect fails even though
-the document and the scheme are correct. Until that is fixed, use an
-OAuth-capable client that completes the authorization-code flow (or a
-Swagger UI you host, with its redirect page served from the same origin).
+Register Swagger UI's redirect URI at the AS. Swagger UI expects
+`oauth2-redirect.html` next to the documentation page, and the OpenAPI
+frontend serves that page itself — at the listener root for the standalone
+server, and under the mount path for a gateway:
+
+| Deployment | Redirect URI to register |
+|------------|--------------------------|
+| `toolregistry-server openapi` | `https://tools.example.com/oauth2-redirect.html` |
+| `gateway` with the default `/openapi` mount | `https://tools.example.com/openapi/oauth2-redirect.html` |
+
+The `/docs` page passes the matching location to Swagger UI, so the callback
+lands on the served page even when `--openapi-path` changes the mount. The
+page is unauthenticated on purpose — the AS redirects the browser without a
+bearer token — and holds no secret.
 
 The scopes listed in the Authorize dialog come from `--oauth-scopes`; they
 must be a subset of what the AS issues.
@@ -114,6 +124,7 @@ must be a subset of what the AS issues.
 | `invalid_client` with DCR | DCR is disabled at the AS | Enable it, or switch to CIMD/manual registration |
 | 401 from the tool server right after a successful login | Audience/resource mismatch | Mint `aud` or `resource` equal to `--oauth-audience` |
 | 401 after a key rotation | Cached JWKS lacks the new `kid` | Retry after 30 seconds; confirm the AS publishes the new key |
+| 404 on the browser after the AS callback | The registered redirect URI is not the served `oauth2-redirect.html` location | Register `<public origin><openapi path>/oauth2-redirect.html`; the standalone server serves it at the origin root |
 
 ## See also
 
