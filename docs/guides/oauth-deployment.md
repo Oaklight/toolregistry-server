@@ -233,6 +233,29 @@ still carry the client and the `sub`, so two users of one client remain
 distinguishable even though they share its limit. A call that waits too long
 is recorded with outcome `busy`.
 
+## Upstream credentials for a protected MCP source
+
+The section above is the direction this server verifies: what it accepts.
+The other direction — the credential it presents to an MCP server that
+requires OAuth — is declared in the same section under `clients`, one entry
+per source:
+
+```yaml
+oauth:
+  clients:
+    - source: "namespace:reports"        # or url:https://mcp.example.com/mcp
+      issuer: https://auth.example.com
+      client_id: toolregistry-reports
+      client_secret_env: MCP_REPORTS_SECRET
+      scopes: [mcp:read]
+      grant: client_credentials          # or authorization_code
+```
+
+Stage 1 covers the declaration, the token store, both grants and the header
+sent at connect time; the panel flow that drives an interactive authorization
+is not part of it. The [OAuth reference](../reference/oauth.md#configuration-file)
+lists every key.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

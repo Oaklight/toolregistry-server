@@ -238,8 +238,8 @@ OAuth flag on the command line, the server behaves exactly as
 `jwks`, `authorization_url`, `token_url` and `refresh_url` keys override
 discovery for the same flags. The remaining keys are `introspection_url`,
 `introspection_client_id`, `introspection_client_secret`,
-`introspection_cache_ttl`, `introspection_optional`, `concurrency_claim`
-and `client_concurrency`.
+`introspection_cache_ttl`, `introspection_optional`, `concurrency_claim`,
+`client_concurrency` and `clients`.
 
 | Key | Flag | Accepted values |
 |-----|------|-----------------|
@@ -251,11 +251,25 @@ and `client_concurrency`.
 | `refresh_url` | `--oauth-refresh-url` | string |
 | `scope` | `--oauth-scope` | mapping from a scope to its entries; each value is a list of entries or one comma-separated string. The flag's `[SCOPE=ENTRY[,ENTRY], ...]` list is accepted too |
 | `scopes` | `--oauth-scopes` | list of strings, or one space-separated string |
+| `clients` | — | list of mappings, one per source this server presents a credential to; see below |
 
 The `scope` entries use the same grammar as the flag: a namespace pattern,
 `+tool-name` to allow one tool, or `-tool-name` to deny it. An unmapped scope
 still grants nothing, so `scope` is where least privilege is expressed for a
 file-driven deployment.
+
+`clients` is the other direction of the same section: the OAuth credential
+this server presents to an access point it calls, rather than the one it
+accepts. Each entry selects one HTTP(S) MCP source with `namespace:<name>` or
+`url:<url>`, and carries `issuer` or `discovery_url`, `client_id`, exactly one
+of `client_secret` and `client_secret_env`, optional `scopes`, `grant`
+(`client_credentials` or `authorization_code`), a `token_endpoint` override, a
+`client_auth` choice (`client_secret_post` or `client_secret_basic`) and an
+absolute `token_store` path. Two entries cannot select the same source, and an
+unknown key, a relative `token_store` or an existing `Authorization` header on
+the source fails the load. Tokens are kept in SQLite outside the
+configuration file; the client secret is never written there. See
+[the deployment guide](../guides/oauth-deployment.md#upstream-credentials-for-a-protected-mcp-source).
 
 Precedence is replacement, not merging. When any `--oauth-scope` value is
 given, the file's `scope` mapping is ignored as a whole rather than combined
