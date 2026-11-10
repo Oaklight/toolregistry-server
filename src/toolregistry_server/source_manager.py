@@ -199,12 +199,30 @@ def _auth_rejection_status(exc: BaseException) -> int | None:
         if current is None or id(current) in seen:
             continue
         seen.add(id(current))
-        status = getattr(current, "status_code", None)
-        if isinstance(status, int) and status in _AUTH_REJECTION_STATUSES:
+        status = _status_of(current)
+        if status is not None and status in _AUTH_REJECTION_STATUSES:
             return status
         pending.extend(getattr(current, "exceptions", ()) or ())
         pending.append(current.__cause__)
         pending.append(current.__context__)
+    return None
+
+
+def _status_of(exc: BaseException) -> int | None:
+    """Return the HTTP status an exception carries, if any.
+
+    ``httpx.HTTPStatusError`` keeps it on ``response``, an
+    ``http.client``-style error puts it on ``code``, and
+    ``http.HTTPStatus`` exposes ``status_code`` directly.
+    """
+    response = getattr(exc, "response", None)
+    for value in (
+        getattr(exc, "status_code", None),
+        getattr(response, "status_code", None),
+        getattr(exc, "code", None),
+    ):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
     return None
 
 
