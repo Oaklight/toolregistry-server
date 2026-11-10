@@ -1052,6 +1052,29 @@ def _config_error(argument: str, expectation: str, value: Any) -> ValueError:
     return ValueError(f"{label} must be {expectation}, got {value!r}")
 
 
+def _numeric_string_error(argument: Any) -> ValueError:
+    """Build the error for a number where a string is required.
+
+    The YAML parser resolves an unquoted scalar before the server sees it,
+    and that resolution loses the original lexeme: ``0123`` becomes ``83``,
+    ``0x1f`` becomes ``31`` and ``1_000`` becomes ``1000``.  Quoting keeps
+    the text as written, so the message says to do that — and echoes no
+    value, because a resolved one is not what the operator typed and a
+    ``main()`` log keeps it verbatim.
+
+    Args:
+        argument: The destination name without the leading dashes.
+
+    Returns:
+        The error to raise.
+    """
+    label = _config_label(argument)
+    what = "secret" if argument.removeprefix("oauth_").endswith("secret") else "value"
+    return ValueError(
+        f'{label} must be a string; quote a numeric {what}, e.g. {label}: "9182736450"'
+    )
+
+
 def _config_text(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     """Return a string option, rejecting a non-string file value.
 
@@ -1072,6 +1095,8 @@ def _config_text(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     value = _config_value(parsed, argument, section)
     if value is None or isinstance(value, str):
         return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        raise _numeric_string_error(argument)
     raise _config_error(argument, "a string", value)
 
 
@@ -1109,13 +1134,19 @@ def _config_number(parsed: Any, argument: str, section: Mapping[str, Any]) -> An
 
 
 def _config_secret(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
-    """Return a credential option, accepting a digit-only integer from YAML.
+    """Return a credential option, rejecting a non-string file value.
 
-    A YAML parser turns an unquoted all-digit secret such as
-    ``introspection_client_secret: 9182736450`` into an ``int``; the value
-    is legal at most identity providers, so it is stringified rather than
-    rejected.  The value is never interpolated into an error: ``main()``
-    logs these messages verbatim.
+    A YAML parser types an unquoted scalar before this function sees it, and
+    that resolution is lossy for three of its integer forms: ``0123`` becomes
+    ``83``, ``0x1f`` becomes ``31`` and ``1_000`` becomes ``1000``.  A
+    credential the operator never wrote would then be sent to the identity
+    provider, and the first connect would fail with ``invalid_client`` and
+    nothing pointing at the configuration file.  An integer is therefore
+    rejected with a message that says how to quote it, rather than accepted.
+
+    The value is never interpolated into an error: ``main()`` logs these
+    messages verbatim.  The quoted example in the message is a fixed
+    placeholder, not the rejected value.
 
     The flag is typed by argparse, so only the file value is checked here.
 
@@ -1125,21 +1156,16 @@ def _config_secret(parsed: Any, argument: str, section: Mapping[str, Any]) -> An
         section: The ``oauth`` mapping from the configuration file.
 
     Returns:
-        The flag value, the file value as a string, or ``None``.
+        The flag value, the file value, or ``None``.
 
     Raises:
-        ValueError: If the file supplies neither a string nor an integer.
+        ValueError: If the file supplies a value that is not a string.
     """
     value = _config_value(parsed, argument, section)
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        # bool is an int subclass; a YAML ``true`` is never a secret.
-        raise ValueError(f"{_config_label(argument)} must be a string")
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, str):
+    if value is None or isinstance(value, str):
         return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        raise _numeric_string_error(argument)
     raise ValueError(f"{_config_label(argument)} must be a string")
 
 
