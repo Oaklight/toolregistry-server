@@ -221,7 +221,7 @@ MCP 来源，并带有 `issuer` 或 `discovery_url`、`client_id`、`client_secr
 `authorization_code`）、可选的 `token_endpoint`、`client_auth`（`client_secret_post`
 或 `client_secret_basic`）以及绝对路径的 `token_store`。两个条目不能选中同一来源；
 未知键、相对路径的 `token_store`，或来源已设置 `Authorization` 头，都会使加载失败。
-令牌保存在配置文件之外的 SQLite 中。客户端密钥本身从不写入其中，但会保存一个加盐、多次迭代的指纹，以便在轮换密钥时丢弃过期的重新授权判定，同时不保存密钥。第 1 阶段的 start/complete 流程仅供嵌入方调用，面板路由尚未使用。参见
+令牌保存在配置文件之外的 SQLite 中。客户端密钥本身从不写入其中，但会保存一个加盐、多次迭代的指纹，以便在轮换密钥时丢弃过期的重新授权判定，同时不保存密钥。第 1 阶段的 start/complete 流程仅供嵌入方调用，面板路由尚未使用。面板的连接测试不会附加上游凭据，当声明选中该来源时，测试结果会说明这一点。参见
 [部署指南](../guides/oauth-deployment.md#受保护-mcp-来源的上游凭据)。
 
 已存令牌在被 MCP 服务器拒绝之前会一直复用。连接时来源返回 HTTP 401/403，会丢弃
