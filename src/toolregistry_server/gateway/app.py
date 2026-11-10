@@ -737,6 +737,7 @@ class GatewayAdapter(Adapter):
                 keys_db, self._tokens, oauth, store=self._key_store
             )
         self._oauth_issuer = oauth.issuer if oauth is not None else None
+        self._oauth_scopes = oauth.scopes_supported if oauth is not None else None
         # Validating here keeps a bad knob out of the listener: uvicorn binds
         # only after the adapter is fully constructed.
         self._client_limiter = ClientLimiter(client_concurrency, concurrency_timeout)
@@ -1175,17 +1176,24 @@ class GatewayAdapter(Adapter):
             self._server_url, self._host, self._port, mcp.path
         )
         issuer = self._oauth_issuer or (resource.rsplit(mcp.path, 1)[0] or resource)
+        metadata: dict[str, Any] = {
+            "resource": resource,
+            "authorization_servers": [issuer],
+            "bearer_methods_supported": ["header"],
+        }
+        if self._oauth_issuer is not None:
+            # An external authorization server may reject the generic "mcp"
+            # scope at authorize time, so advertising it is opt-in.
+            if self._oauth_scopes:
+                metadata["scopes_supported"] = list(self._oauth_scopes)
+        else:
+            metadata["scopes_supported"] = ["mcp"]
         await _send_json(
             scope,
             receive,
             send,
             200,
-            {
-                "resource": resource,
-                "authorization_servers": [issuer],
-                "scopes_supported": ["mcp"],
-                "bearer_methods_supported": ["header"],
-            },
+            metadata,
             {"Cache-Control": "public, max-age=3600"},
         )
         return True

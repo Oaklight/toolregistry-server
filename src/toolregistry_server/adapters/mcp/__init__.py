@@ -151,6 +151,7 @@ async def run_streamable_http(
     server_url: str | None = None,
     principal_resolver: "PrincipalResolver | None" = None,
     authorization_servers: list[str] | None = None,
+    scopes_supported: "list[str] | tuple[str, ...] | None" = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
@@ -166,6 +167,8 @@ async def run_streamable_http(
             set, and tool handlers enforce the resolved scope.
         authorization_servers: Issuers to advertise in the
             protected-resource metadata.
+        scopes_supported: Scopes to advertise in the
+            protected-resource metadata.
     """
     from .server import run_streamable_http as _run_streamable_http
 
@@ -178,6 +181,7 @@ async def run_streamable_http(
         server_url=server_url,
         principal_resolver=principal_resolver,
         authorization_servers=authorization_servers,
+        scopes_supported=scopes_supported,
     )
 
 
@@ -295,6 +299,7 @@ class MCPAdapter(Adapter):
         instructions: str | None = None,
         principal_resolver: "PrincipalResolver | None" = None,
         oauth_issuer: str | None = None,
+        oauth_scopes: "tuple[str, ...] | None" = None,
         allow_operator_token: bool = False,
         client_limiter: ClientLimiter | None = None,
         execution_log: bool | None = None,
@@ -302,6 +307,7 @@ class MCPAdapter(Adapter):
         super().__init__(route_table)
         self._principal_resolver = principal_resolver
         self._oauth_issuer = oauth_issuer
+        self._oauth_scopes = oauth_scopes or None
         self._client_limiter = client_limiter
         has_keys = bool(
             principal_resolver is not None
@@ -400,6 +406,7 @@ class MCPAdapter(Adapter):
                 authorization_servers=(
                     [self._oauth_issuer] if self._oauth_issuer else None
                 ),
+                scopes_supported=self._oauth_scopes,
             )
         else:
             raise ValueError(f"Unknown transport type: {transport}")
@@ -573,6 +580,11 @@ class MCPAdapter(Adapter):
             principal_resolver=principal_resolver,
             oauth_issuer=(
                 oauth.issuer if oauth is not None and transport != "stdio" else None
+            ),
+            oauth_scopes=(
+                oauth.scopes_supported
+                if oauth is not None and transport != "stdio"
+                else None
             ),
             allow_operator_token=kwargs.pop("allow_operator_token", False),
             client_limiter=None if transport == "stdio" else limiter,

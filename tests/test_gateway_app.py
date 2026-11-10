@@ -233,6 +233,34 @@ class TestSharedAuth:
         body = response.json()
         assert body["resource"] == "http://127.0.0.1:9000/mcp"
         assert body["authorization_servers"] == ["https://idp.example.com/realms/dev"]
+        # An external AS may reject the generic "mcp" scope.
+        assert "scopes_supported" not in body
+
+    async def test_metadata_advertises_configured_oauth_scopes(self, monkeypatch):
+        from toolregistry_server.oauth import OAuthSettings
+
+        monkeypatch.setattr(
+            "toolregistry_server.oauth.verifier._JwksCache.warm", lambda self: None
+        )
+        gateway = _gateway(
+            tokens=["secret"],
+            host="127.0.0.1",
+            port=9000,
+            oauth=OAuthSettings(
+                issuer="https://idp.example.com/realms/dev",
+                audience="http://127.0.0.1:9000/mcp",
+                scopes_supported=("openid", "profile", "email", "offline_access"),
+            ),
+        )
+        async with _client(gateway) as client:
+            response = await client.get("/.well-known/oauth-protected-resource/mcp")
+        assert response.status_code == 200
+        assert response.json()["scopes_supported"] == [
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
+        ]
 
     async def test_metadata_follows_the_current_mcp_path(self):
         gateway = _gateway(tokens=["secret"], host="127.0.0.1", port=9000)

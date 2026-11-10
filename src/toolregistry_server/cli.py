@@ -399,6 +399,17 @@ class CLI:
                 "Unmapped scopes grant nothing"
             ),
         )
+        group.add_argument(
+            "--oauth-scopes",
+            default=None,
+            metavar="SCOPE ...",
+            help=(
+                "Space-separated scopes advertised in protected-resource "
+                "metadata.  The field is omitted when this is empty and, by "
+                "default, whenever an issuer is configured; a server without "
+                "OAuth keeps advertising 'mcp'"
+            ),
+        )
 
     def configure_subparsers(
         self, subparsers: dict[str, argparse.ArgumentParser]

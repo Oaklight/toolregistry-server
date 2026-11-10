@@ -59,6 +59,11 @@ class OAuthSettings:
         cache_ttl: How long a fetched JWKS stays usable, in seconds.
         timeout: JWKS request timeout, in seconds.
         algorithms: Accepted signature algorithms.
+        scopes_supported: Scopes advertised in the protected-resource
+            metadata.  ``None`` and an empty tuple both omit the field; when
+            an issuer is configured the field is omitted unless this is set
+            explicitly, because an external authorization server may reject
+            the generic ``mcp`` scope.
     """
 
     issuer: str
@@ -69,6 +74,7 @@ class OAuthSettings:
     cache_ttl: float = DEFAULT_CACHE_TTL
     timeout: float = DEFAULT_TIMEOUT
     algorithms: tuple[str, ...] = DEFAULT_ALGORITHMS
+    scopes_supported: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.issuer.strip():
@@ -88,6 +94,12 @@ class OAuthSettings:
         )
         if not self.algorithms:
             raise ValueError("OAuth algorithm allowlist must not be empty")
+        if self.scopes_supported is not None:
+            object.__setattr__(
+                self,
+                "scopes_supported",
+                tuple(str(scope) for scope in self.scopes_supported if str(scope)),
+            )
 
     @property
     def jwks_url(self) -> str:
@@ -386,8 +398,9 @@ def settings_from_args(parsed: Any, *, default_audience: str) -> OAuthSettings |
     audience = getattr(parsed, "oauth_audience", None)
     jwks_uri = getattr(parsed, "oauth_jwks", None)
     raw_scopes = getattr(parsed, "oauth_scope", None) or []
+    raw_supported = getattr(parsed, "oauth_scopes", None)
     if issuer is None:
-        if audience or jwks_uri or raw_scopes:
+        if audience or jwks_uri or raw_scopes or raw_supported is not None:
             raise ValueError(
                 "--oauth-issuer is required when other OAuth options are set"
             )
@@ -408,11 +421,16 @@ def settings_from_args(parsed: Any, *, default_audience: str) -> OAuthSettings |
             )
         scope_map[scope] = values
 
+    scopes_supported = None
+    if raw_supported is not None:
+        scopes_supported = tuple(raw_supported.split())
+
     return OAuthSettings(
         issuer=issuer,
         audience=audience or default_audience,
         jwks_uri=jwks_uri,
         scope_map=scope_map,
+        scopes_supported=scopes_supported,
     )
 
 
