@@ -206,29 +206,78 @@ needed.
 ## Configuration file
 
 The tool-source configuration file (`--config`) may carry an `oauth` section.
-Only the introspection settings and the static client limits are read from
-it; a command-line flag wins over the file for every key.
+Every OAuth setting is available there, named after its flag with the
+`oauth_` prefix removed; a command-line flag wins over the file for every
+key, and the file supplies a value only when its flag is absent.
 
 ```yaml
 oauth:
+  issuer: https://auth.example.com
+  audience: https://tools.example.com/mcp
+  jwks: https://auth.example.com/.well-known/jwks.json
+  scope:
+    tools:read: [calculator, web/*, +web-search, -calculator-danger]
+    tools:admin: web/*
+  scopes: [openid, profile, email]
+  authorization_url: https://auth.example.com/authorize
+  token_url: https://auth.example.com/token
+  refresh_url: https://auth.example.com/refresh
   introspection_url: https://auth.example.com/introspect
   introspection_client_id: toolregistry
   introspection_client_secret: change-me
   introspection_cache_ttl: 5
   introspection_optional: false
+  concurrency_claim: max_concurrency
   client_concurrency:
     reports-bot: 2
 ```
 
-The issuer, audience and scope mapping remain command-line options, so OAuth
-still requires the corresponding flags. The section is checked: a key the
-server does not read is rejected at startup, because a typo such as
-`introspection_ur1` would otherwise leave a security control silently off.
-The accepted keys are `introspection_url`, `introspection_client_id`,
-`introspection_client_secret`, `introspection_cache_ttl`,
-`introspection_optional`, `concurrency_claim` and `client_concurrency`. A bad
-per-client limit names its source, for example
+`issuer` is the only key needed to turn OAuth on: with it in the file and no
+OAuth flag on the command line, the server behaves exactly as
+`--oauth-issuer` would. `audience` replaces the derived audience. The
+`jwks`, `authorization_url`, `token_url` and `refresh_url` keys override
+discovery for the same flags. The remaining keys are `introspection_url`,
+`introspection_client_id`, `introspection_client_secret`,
+`introspection_cache_ttl`, `introspection_optional`, `concurrency_claim`
+and `client_concurrency`.
+
+| Key | Flag | Accepted values |
+|-----|------|-----------------|
+| `issuer` | `--oauth-issuer` | string |
+| `audience` | `--oauth-audience` | string |
+| `jwks` | `--oauth-jwks` | string |
+| `authorization_url` | `--oauth-authorization-url` | string |
+| `token_url` | `--oauth-token-url` | string |
+| `refresh_url` | `--oauth-refresh-url` | string |
+| `scope` | `--oauth-scope` | mapping from a scope to its entries; each value is a list of entries or one comma-separated string. The flag's `[SCOPE=ENTRY[,ENTRY], ...]` list is accepted too |
+| `scopes` | `--oauth-scopes` | list of strings, or one space-separated string |
+
+The `scope` entries use the same grammar as the flag: a namespace pattern,
+`+tool-name` to allow one tool, or `-tool-name` to deny it. An unmapped scope
+still grants nothing, so `scope` is where least privilege is expressed for a
+file-driven deployment.
+
+Precedence is replacement, not merging. When any `--oauth-scope` value is
+given, the file's `scope` mapping is ignored as a whole rather than combined
+with it, and the same holds for `client_concurrency`. The repeatable
+`--oauth-scope` flag defaults to an empty list, so giving it no value cannot
+be told apart from omitting it: an empty list falls through to the file, and
+a file `scope` cannot be overridden to *nothing* from the command line.
+Remove the key instead.
+
+The section is checked: an unknown key is rejected at startup, because a typo
+such as `introspection_ur1` would otherwise leave a security control silently
+off. A value of the wrong type names its key, for example
+`oauth.scope must be a mapping from a scope to its entries, or a list of
+SCOPE=ENTRY[,ENTRY] strings` or `oauth.scopes must be a string or a list of
+strings`. A bad per-client limit names its source, for example
 `oauth.client_concurrency['reports-bot'] must be a positive integer`.
+
+A setting in the file without an issuer — in either the file or a flag — is a
+startup error, the same as the flags. The audience gate runs on the merged
+value: the `openapi`, `mcp` and `gateway` commands derive an audience when
+they can, and `local-hub` needs an explicit `audience` or `--server-url`
+because its bind address is never a public audience.
 
 On the standalone `openapi` command, OAuth needs PyJWT with a crypto backend:
 install `toolregistry-server[openapi]`. The base install stays free of
@@ -241,8 +290,6 @@ These are tracked, not available today:
 - No built-in authorization server and no client-registration commands.
 - Introspection does not make opaque tokens usable: local JWT verification
   still runs first.
-- The `oauth` configuration section covers introspection and static client
-  limits only; issuer, audience and scope mapping are flags.
 
 ## See also
 

@@ -262,6 +262,30 @@ package bootstrap. The spawned hub inherits the variable.
 | `--idle-timeout SECONDS` | `0` | Exit after that long without a request or an open MCP/SSE session; `0` stays resident |
 | `--timeout SECONDS` | - | Wait limit for `ensure` and `stop` |
 | `--json` | off | `status` prints the endpoint document |
+| `--oauth-issuer URL` | - | Authorization-server issuer (`iss`) to accept. Enables OAuth bearer verification; tokens are verified locally against the issuer's JWKS |
+| `--oauth-audience URL` | from `--server-url`, else required | Expected `aud` or RFC 8707 `resource` value. A hub binds loopback or a Unix socket, so the audience must be explicit whenever an issuer is set |
+| `--oauth-jwks URL` | discovered from RFC 8414/OIDC metadata, else `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
+| `--oauth-scope SCOPE=ENTRY[,ENTRY]` | - | Map one token scope to namespace patterns and tool overrides; repeatable. An entry is a namespace pattern, `+tool-name` to allow one tool, or `-tool-name` to deny it. Unmapped scopes grant nothing |
+| `--oauth-scopes "SCOPE ..."` | - | Space-separated scopes advertised in protected-resource metadata. Omitted when empty, and by default when an issuer is set; without OAuth the metadata keeps advertising `mcp` |
+| `--oauth-authorization-url URL` | from AS metadata | Authorization endpoint for the OpenAPI `authorizationCode` flow |
+| `--oauth-token-url URL` | from AS metadata | Token endpoint for the OpenAPI `authorizationCode` flow |
+| `--oauth-refresh-url URL` | - | Optional `refreshUrl`; omitted unless set |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | Token claim that may carry a client's in-flight call limit; a non-positive or non-integer value is ignored, and a wider value never raises the client's current budget |
+| `--oauth-client-concurrency CLIENT=LIMIT` | - | Static in-flight call limit for one OAuth client; repeatable. A valid concurrency claim wins |
+| `--oauth-introspection-url URL` | - | RFC 7662 introspection endpoint; every locally verified token is confirmed with it |
+| `--oauth-introspection-client-id ID` | - | Client id for the introspection endpoint (HTTP Basic); required with the URL |
+| `--oauth-introspection-client-secret SECRET` | - | Client secret for the introspection endpoint (HTTP Basic); required with the URL |
+| `--oauth-introspection-cache-ttl SECONDS` | `5` | How long one introspection result is reused; bounds how long a revoked token is still accepted. `0` disables caching |
+| `--oauth-introspection-optional` | `false` | Fall back to local verification when the introspection endpoint fails; by default a failure rejects the token |
+| `--server-url URL` | from `--host`/`--port` | Public MCP URL advertised in protected-resource metadata |
+
+!!! note
+    A hub needs an explicit audience whenever an issuer is set, with or
+    without `--socket`: it binds `127.0.0.1` on an ephemeral port or a Unix
+    socket, and neither address is one a client carries in a token. Either
+    `--oauth-audience` or `--server-url` supplies it, by flag or from the
+    [`oauth` section](../oauth.md#configuration-file) of the config file. See
+    the [OAuth reference](../oauth.md#per-command-behaviour).
 
 The hub publishes an endpoint document and takes an exclusive lock that makes
 ownership unambiguous. `status` exits `0` when the hub runs and `3` when it
