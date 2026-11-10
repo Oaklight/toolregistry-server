@@ -217,6 +217,66 @@ toolregistry-server mcp \
 
 客户端使用标准的 `Authorization: Bearer <token>` 请求头连接。
 
+## OAuth 2.0 资源服务器
+
+服务器可以接受由外部授权服务器签发的访问令牌，而不是自己签发凭据。验证在本地完成：
+令牌签名用授权服务器的 JWKS 校验，每次请求都不做内省，也不记录令牌。
+
+```bash
+toolregistry-server gateway \
+  --config config.yaml \
+  --oauth-issuer https://idp.example.com/realms/dev \
+  --oauth-scope tools:read=calculator,web
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--oauth-issuer URL` | 接受的精确 `iss` 值。设置后启用 OAuth 校验 |
+| `--oauth-audience URL` | 期望的 `aud` 或 RFC 8707 `resource` 值，默认为对外公布的 MCP URL |
+| `--oauth-jwks URL` | JWKS 端点（默认：`<issuer>/.well-known/jwks.json`） |
+| `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | 把一个作用域映射到命名空间模式；可重复 |
+
+`openapi`、`mcp`（HTTP 传输）、`gateway` 与 `local-hub` 都接受这些选项。
+
+### 校验规则
+
+- 仅接受 RS256 与 ES256 签名。`none` 与 HMAC 算法会被拒绝，`kid` 未公布的令牌也会被拒绝。
+- `iss` 必须与 `--oauth-issuer` 完全一致；令牌的 `aud` 或 RFC 8707 `resource` 声明必须包含期望的 audience。
+- `exp` 与 `nbf` 生效，允许 60 秒时钟偏差。
+- JWKS 缓存 5 分钟。遇到未知 `kid` 会强制重新拉取一次，因此轮换密钥无需重启。
+- JWKS 拉取失败时拒绝令牌；启动时的预取是尽力而为，只记录警告。
+
+### 作用域映射
+
+映射遵循最小权限：作用域未出现在 `--oauth-scope` 中的令牌得到空作用域，不能调用任何工具。
+每个条目把右侧的命名空间授予该作用域，模式规则与 API 密钥作用域相同（`*`、`web/*`、精确名称）：
+
+```bash
+toolregistry-server mcp \
+  --config config.json \
+  --transport streamable-http \
+  --oauth-issuer https://idp.example.com/realms/dev \
+  --oauth-scope tools:read=calculator,web \
+  --oauth-scope tools:admin=admin
+```
+
+### 凭据优先级
+
+先尝试 `--keys-db` 的 API 密钥和静态 `--tokens`，再尝试 OAuth 令牌。因此只有当请求凭据
+不匹配密钥或静态令牌时，才会按 OAuth 令牌解析。省略 `--oauth-issuer` 时行为完全不变。
+
+在 MCP streamable-HTTP 上，RFC 9728 受保护资源元数据的 `authorization_servers` 会公布配置的
+issuer，客户端据此发现授权服务器。绑定 Unix socket 的 hub 没有可推导的 URL：请显式传入
+`--oauth-audience`（若希望客户端发现元数据，还需传入 `--server-url`）。
+
+### 限制
+
+未实现令牌内省（RFC 7662）：部署方必须签发服务器可离线校验的 JWT。只签发不透明令牌的
+授权服务器需要内省代理，或改用 `--keys-db`。
+
+进程内 Python API：`toolregistry_server.oauth` 的 `OAuthSettings`、`OAuthTokenVerifier` 与
+`build_resolver()` 构建与命令行相同的校验器和组合解析器。
+
 ## 发起认证请求
 
 在 `Authorization` 请求头中携带 Bearer Token：

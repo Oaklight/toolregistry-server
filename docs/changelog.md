@@ -40,6 +40,8 @@
 
 - **独立 MCP 服务器拥有同样的按客户端配额**（#223 后续）：`mcp` 在 `sse` 与 `streamable-http` 上接受 `--client-concurrency`（默认 8）与 `--concurrency-timeout`（默认 30 秒），按密钥收紧的规则与 gateway 相同，繁忙时同样返回 `-32000`。`stdio` 会校验这两个值但不限流，因为它只服务一个客户端且没有按客户端的凭据。管理面板的 Keys 表单也接受 `max_concurrency`，与 `keys create --concurrency` 一致。
 
+- **OAuth 2.0 资源服务器基础**（#234）：`openapi`、`mcp`（HTTP 传输）、`gateway` 与 `local-hub` 接受 `--oauth-issuer`、`--oauth-audience`、`--oauth-jwks` 以及可重复的 `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]`。由外部授权服务器签发的 Bearer 令牌在本地用该服务器的 JWKS 校验（仅 RS256/ES256、精确 `iss`、`aud`/RFC 8707 `resource`、`exp`/`nbf` 允许 60 秒偏差；JWKS 缓存 5 分钟，未知 `kid` 会强制重新拉取一次）。作用域映射显式且遵循最小权限：未映射的作用域不授予任何权限。先尝试 API 密钥和静态令牌，再尝试 OAuth，因此省略 `--oauth-issuer` 时行为不变。MCP 受保护资源元数据在 `authorization_servers` 中公布配置的 issuer；绑定 Unix socket 的 hub 必须显式提供 `--oauth-audience`。未实现令牌内省（RFC 7662）；`PyJWT`（含 `crypto`）成为 `gateway` extra 的新依赖。
+
 ### 变更
 
 - **独立 OpenAPI 服务器变为零依赖，FastAPI 移至 `gateway` extra**（epic #101）：`toolregistry-server openapi` 现在只运行在内联的 `httpserver` 上，因此 `pip install toolregistry-server` 即可提供完整的 OpenAPI 契约，无需任何第三方包。FastAPI 组装移至 gateway 私有的 `toolregistry_server.gateway.openapi_asgi`，只由 gateway 的 ASGI 后端使用；`create_openapi_app` 与 ETag/请求体上限中间件不再能从 `adapters.openapi` 导入。`pyproject.toml` 新增 `gateway = [fastapi, uvicorn]`，`openapi = []` 作为空别名保留；`all` 改为拉取 `[gateway]` 与 `[mcp]`。**破坏性变更**：`openapi` 命令移除 `--backend` 与 `--reload`（两者都只属于 uvicorn；gateway 保留 `--backend`），`OpenAPIAdapter(..., backend=...)` 被移除，`OpenAPIAdapter.app` 现在返回内联的 `httpserver.App` 而不是 ASGI 应用。未安装该 extra 时启动 gateway 会抛出指明 `toolregistry-server[gateway]` 的 `ImportError`。见[OpenAPI API](guides/openapi.md)与[安装](get-started/installation.md)。
