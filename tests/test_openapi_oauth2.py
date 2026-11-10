@@ -25,6 +25,7 @@ from toolregistry_server.keystore import PrincipalResolver
 from toolregistry_server.oauth import OAuthSettings, OpenAPIAuth
 
 ISSUER = "https://idp.example.com/realms/dev"
+DOC_TOKEN = "doc-secret"
 AUTHZ = "https://idp.example.com/realms/dev/authorize"
 TOKEN = "https://idp.example.com/realms/dev/token"
 
@@ -86,8 +87,12 @@ def _document(
         openapi_auth=openapi_auth,
     )
     url = _serve(app)
+    headers = {}
+    if tokens or resolver is not None:
+        headers["Authorization"] = f"Bearer {DOC_TOKEN}"
+    request = urllib.request.Request(f"{url}/openapi.json", headers=headers)
     try:
-        with urllib.request.urlopen(f"{url}/openapi.json") as response:
+        with urllib.request.urlopen(request) as response:
             return json.loads(response.read())
     finally:
         app.shutdown()
@@ -120,25 +125,27 @@ class TestDocumentSecurity:
             assert parsed.netloc == "idp.example.com"
 
     def test_the_document_is_unchanged_without_an_issuer(self):
-        document = _document(OpenAPIAuth(None, bearer_accepted=True), tokens=["s"])
+        document = _document(
+            OpenAPIAuth(None, bearer_accepted=True), tokens=[DOC_TOKEN]
+        )
 
         assert "security" not in document
         assert "components" not in document
 
     def test_static_tokens_alone_keep_the_previous_document(self):
-        document = _document(tokens=["s"])
+        document = _document(tokens=[DOC_TOKEN])
 
         assert "security" not in document
 
     def test_bearer_alone_without_oauth_keeps_the_bearer_scheme(self):
-        document = _document(resolver=PrincipalResolver())
+        document = _document(resolver=PrincipalResolver(operator_tokens=[DOC_TOKEN]))
 
         assert document["security"] == [{"HTTPBearer": []}]
         assert "OAuth2" not in document["components"]["securitySchemes"]
 
     def test_keys_and_oauth_are_an_or_of_two_requirements(self):
         document = _document(
-            OpenAPIAuth(_settings(), bearer_accepted=True), tokens=["s"]
+            OpenAPIAuth(_settings(), bearer_accepted=True), tokens=[DOC_TOKEN]
         )
 
         schemes = document["components"]["securitySchemes"]
