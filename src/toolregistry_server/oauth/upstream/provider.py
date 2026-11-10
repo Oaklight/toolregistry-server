@@ -54,6 +54,7 @@ from urllib.parse import urlencode, urlsplit
 
 from toolregistry.config import ToolSource
 
+from ..._vendor.structlog import get_logger
 from ..verifier import _metadata_url_candidates
 from .config import (
     DEFAULT_EXPIRY_SKEW,
@@ -62,7 +63,15 @@ from .config import (
     default_token_store_path,
     selector_matches_source,
 )
-from .store import PendingAuthorization, TokenRecord, TokenStore, utcnow
+from .store import (
+    DEFAULT_ASSUMED_TTL,
+    PendingAuthorization,
+    TokenRecord,
+    TokenStore,
+    utcnow,
+)
+
+logger = get_logger()
 
 __all__ = [
     "AuthorizationRequest",
@@ -79,6 +88,13 @@ __all__ = [
 
 #: How long an authorization request may wait for its callback.
 AUTHORIZATION_STATE_TTL = 600.0
+
+#: Statuses that mean a discovered endpoint has moved rather than refused us.
+#: They are retried once after the metadata cache is dropped.
+_MOVED_ENDPOINT_STATUSES = frozenset({404, 410})
+
+#: Consecutive resource-server rejections after which retrying stops.
+MAX_REJECTIONS = 2
 
 #: ``scheme://user:password@`` in a URL, inside arbitrary text.
 _URL_USERINFO = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s]+@")
@@ -164,8 +180,8 @@ class UrllibTransport:
     supplies every URL it dials, but the URLs are not screened by
     :mod:`toolregistry.netpolicy`: discovery and the token POST can reach a
     loopback or link-local host if the configuration names one.  That matches
-    :mod:`toolregistry_server.oauth.verifier`, and screening both is tracked
-    separately.
+    :mod:`toolregistry_server.oauth.verifier`.  Screening either has to be
+    added under a separate issue; nothing implements it here.
     """
 
     def get_json(self, url: str, timeout: float) -> Any:
@@ -289,6 +305,8 @@ class OAuthClientProvider:
         clock: Callable returning the current aware datetime.
         timeout: Per-request timeout, in seconds.
         skew: Seconds before expiry at which a token is refreshed.
+        assumed_ttl: Seconds a token is trusted when its response stated no
+            expiry.  ``None`` keeps such a token until something replaces it.
     """
 
     def __init__(
@@ -301,6 +319,7 @@ class OAuthClientProvider:
         clock: Callable[[], datetime] | None = None,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         skew: float = DEFAULT_EXPIRY_SKEW,
+        assumed_ttl: float | None = DEFAULT_ASSUMED_TTL,
     ) -> None:
         self._declarations = tuple(declarations)
         self._store = store
@@ -309,6 +328,7 @@ class OAuthClientProvider:
         self._clock = clock or utcnow
         self._timeout = timeout
         self._skew = skew
+        self._assumed_ttl = assumed_ttl
         self._lock = threading.RLock()
         self._stores: dict[str, TokenStore] = {}
         self._token_locks: dict[str, threading.Lock] = {}
@@ -355,6 +375,46 @@ class OAuthClientProvider:
                 return declaration
         return None
 
+    def reject_at_resource_server(self, source: ToolSource) -> bool:
+        """Record that the resource server rejected the token for *source*.
+
+        The access token is always cleared, so the next connect refreshes or
+        re-fetches instead of presenting the rejected value again.  The
+        refresh token is kept because it may still be good.
+
+        Args:
+            source: The MCP source whose credential was rejected.
+
+        Returns:
+            ``True`` when a stored row was marked, ``False`` when no
+            declaration selects *source*.
+        """
+        declaration = self.declaration_for(source)
+        if declaration is None:
+            return False
+        with self._token_lock(declaration.source):
+            store = self._store_for(declaration)
+            if store.get(declaration.source) is None:
+                return False
+            store.mark_rejected(declaration.source)
+        return True
+
+    def accept_at_resource_server(self, source: ToolSource) -> None:
+        """Clear the rejection counter after the resource server accepted it.
+
+        The connect path is the only place that knows the credential worked
+        end to end, so it owns the reset; a successful token-endpoint call
+        alone does not prove the resource server will take the token.
+
+        Args:
+            source: The MCP source that just registered successfully.
+        """
+        declaration = self.declaration_for(source)
+        if declaration is None:
+            return
+        with self._token_lock(declaration.source):
+            self._store_for(declaration).reset_rejections(declaration.source)
+
     def clear_stored_token(self, selector: str) -> None:
         """Delete the stored token for *selector* when a declaration uses it.
 
@@ -369,6 +429,10 @@ class OAuthClientProvider:
             return
         with self._token_lock(declaration.source):
             self._store_for(declaration).clear(declaration.source)
+        # The selector is gone, so its lock can never be taken again; keeping
+        # it would grow ``_token_locks`` for every declaration ever removed.
+        with self._lock:
+            self._token_locks.pop(declaration.source, None)
 
     def _token_lock(self, source_id: str) -> threading.Lock:
         """Return the per-source lock that serialises token acquisition."""
@@ -412,6 +476,17 @@ class OAuthClientProvider:
         gets a fresh fetch instead of a permanent failure.  A stored record
         minted for another ``issuer`` or ``client_id`` is ignored.
 
+        A token whose response stated no expiry is trusted for
+        :attr:`_assumed_ttl` seconds from when it was stored, so an immortal
+        token cannot pin a source to a credential forever.
+
+        Repeated resource-server rejections escalate: at
+        :data:`MAX_REJECTIONS` an ``authorization_code`` source is marked for
+        re-authorization, and a ``client_credentials`` source has its row
+        dropped so the next attempt starts clean.  Until then the rejected
+        access token has already been cleared by the rejection itself, so the
+        next attempt refreshes or re-fetches.
+
         Raises:
             ReauthorizationRequired: When the stored grant is unusable and
                 cannot be refreshed.
@@ -420,26 +495,90 @@ class OAuthClientProvider:
         """
         store = self._store_for(declaration)
         with self._token_lock(declaration.source):
-            record = store.get(declaration.source)
-            if record is not None and not self._record_matches(declaration, record):
-                store.clear(declaration.source)
-                record = None
-            now = self._clock()
+            record = self._live_record(declaration, store)
             if record is not None:
-                if record.needs_reauth and declaration.grant != "client_credentials":
-                    raise ReauthorizationRequired(
-                        record.error
-                        or f"{declaration.source} requires re-authorization"
-                    )
-                if record.access_token and not record.is_expiring(now, self._skew):
-                    return record
-                if record.refresh_token:
-                    return self._refresh(declaration, store, record)
+                return record
             if declaration.grant == "client_credentials":
                 return self._client_credentials(declaration, store)
         raise ReauthorizationRequired(
             f"{declaration.source} has no usable token; authorize it"
         )
+
+    def _live_record(
+        self, declaration: OAuthClientConfig, store: TokenStore
+    ) -> TokenRecord | None:
+        """Return a stored record that can be used as it stands.
+
+        Args:
+            declaration: The declaration being resolved.
+            store: The store holding the row.
+
+        Returns:
+            A record to hand out, or ``None`` when one must be fetched.
+
+        Raises:
+            ReauthorizationRequired: When the row says a new authorization is
+                needed, or repeated rejections exhaust the retry bound.
+        """
+        record = store.get(declaration.source)
+        if record is not None and not self._record_matches(declaration, record):
+            store.clear(declaration.source)
+            record = None
+        if record is None:
+            return None
+        if record.needs_reauth and declaration.grant != "client_credentials":
+            # A ``client_credentials`` row can carry the flag from an older
+            # release; that grant has no interactive path, so it is retried
+            # rather than latched.
+            raise ReauthorizationRequired(
+                record.error or f"{declaration.source} requires re-authorization"
+            )
+        if record.rejections >= MAX_REJECTIONS:
+            return self._escalate_rejections(declaration, store, record)
+        if record.access_token and not record.is_expiring(
+            self._clock(), self._skew, assumed_ttl=self._assumed_ttl
+        ):
+            return record
+        if record.refresh_token:
+            return self._refresh(declaration, store, record)
+        return None
+
+    def _escalate_rejections(
+        self,
+        declaration: OAuthClientConfig,
+        store: TokenStore,
+        record: TokenRecord,
+    ) -> TokenRecord:
+        """Stop retrying a credential the resource server keeps rejecting.
+
+        Args:
+            declaration: The declaration being resolved.
+            store: The store holding the row.
+            record: The row, whose counter reached :data:`MAX_REJECTIONS`.
+
+        Returns:
+            A freshly fetched record, for ``client_credentials`` only.
+
+        Raises:
+            ReauthorizationRequired: For ``authorization_code``, which has an
+                interactive path the operator can use.
+        """
+        if declaration.grant == "client_credentials":
+            # No interactive authorization exists for this grant, so the only
+            # escape is a clean row: the operator may have fixed the secret.
+            store.clear(declaration.source)
+            return self._client_credentials(declaration, store)
+        message = (
+            f"{declaration.source} was rejected by the MCP server "
+            f"{record.rejections} times; authorize it again"
+        )
+        store.mark_reauth(
+            declaration.source,
+            message,
+            issuer=self._issuer_for(declaration),
+            client_id=declaration.client_id,
+        )
+        raise ReauthorizationRequired(message)
 
     def _record_matches(
         self, declaration: OAuthClientConfig, record: TokenRecord
@@ -490,15 +629,72 @@ class OAuthClientProvider:
         *,
         fallback_refresh: str | None = None,
     ) -> TokenRecord:
-        """POST one token request, persist the result, and map failures."""
+        """POST one token request, persist the result, and map failures.
+
+        A 404/410 from an endpoint that came from discovery is not treated as
+        a rejection: the endpoint may have moved, so the cached metadata is
+        dropped, the endpoint re-discovered and the request retried once.  A
+        second 404 is definitive.  An endpoint the operator set explicitly is
+        never re-discovered, because nothing else could replace it.
+        """
         try:
             payload = self._request_token(declaration, fields)
         except OAuthHTTPError as exc:
-            self._record_failure(declaration, store, exc, fields=fields)
+            payload = self._retry_moved_endpoint(declaration, store, fields, exc)
         record = self._record_from_payload(
             declaration, payload, fallback_refresh=fallback_refresh
         )
         return store.put(record)
+
+    def _retry_moved_endpoint(
+        self,
+        declaration: OAuthClientConfig,
+        store: TokenStore,
+        fields: dict[str, str],
+        exc: OAuthHTTPError,
+    ) -> dict[str, Any]:
+        """Re-discover and retry once when a discovered endpoint has moved.
+
+        Args:
+            declaration: The declaration being resolved.
+            store: The store the failure would be recorded on.
+            fields: The token-request form body.
+            exc: The first failure.
+
+        Returns:
+            The retried response.
+
+        Raises:
+            ReauthorizationRequired: If the retried request is also rejected.
+            TransientOAuthError: If the retried request fails transiently.
+        """
+        if exc.status not in _MOVED_ENDPOINT_STATUSES or declaration.token_endpoint:
+            self._record_failure(declaration, store, exc, fields=fields)
+        if not self._forget_metadata(declaration):
+            # Nothing was cached, so discovery produced this endpoint and a
+            # retry would ask the same server the same question.
+            self._record_failure(declaration, store, exc, fields=fields)
+        logger.info(
+            f"OAuth endpoint for {declaration.source} answered "
+            f"HTTP {exc.status}; re-discovering once"
+        )
+        try:
+            return self._request_token(declaration, fields)
+        except OAuthHTTPError as retry_exc:
+            self._record_failure(declaration, store, retry_exc, fields=fields)
+
+    def _forget_metadata(self, declaration: OAuthClientConfig) -> bool:
+        """Drop the cached authorization-server metadata for a declaration.
+
+        Args:
+            declaration: The declaration whose metadata is stale.
+
+        Returns:
+            ``True`` when something was cached and is now gone.
+        """
+        key = declaration.discovery_url or declaration.issuer or ""
+        with self._lock:
+            return self._metadata.pop(key, None) is not None
 
     def _request_token(
         self, declaration: OAuthClientConfig, fields: dict[str, str]

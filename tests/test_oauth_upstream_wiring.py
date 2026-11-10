@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import builtins
 import dataclasses
+import importlib
 import sys
 import textwrap
+import types
 
-import httpx
 import pytest
 from toolregistry import ToolRegistry
 from toolregistry.config import MCPSource, ToolConfig, load_config
 
 from toolregistry_server import source_manager as source_manager_module
 from toolregistry_server._config_file import read_config_mapping
+from toolregistry_server.oauth.upstream.config import load_oauth_clients
 from toolregistry_server.oauth.upstream.provider import (
     OAuthClientError,
+    OAuthClientProvider,
     ReauthorizationRequired,
     TransientOAuthError,
 )
@@ -193,10 +196,30 @@ def test_transient_failure_is_not_marked_for_reauth(monkeypatch, tmp_path):
     assert entry.error == "connection reset"
 
 
+def _sdk_http_module():
+    """Return the HTTP client module the installed MCP SDK raises from.
+
+    mcp 2.x uses ``httpx2`` and 1.x uses ``httpx``; they are separate
+    packages, so a fixture built from the wrong one would pass while the
+    classifier missed every real rejection.
+    """
+    for name in ("mcp.client.streamable_http", "mcp.client.sse"):
+        try:
+            transport = importlib.import_module(name)
+        except ImportError:  # pragma: no cover - mcp is an optional extra
+            continue
+        for attribute in ("httpx2", "httpx"):
+            module = getattr(transport, attribute, None)
+            if module is not None:
+                return module
+    pytest.skip("the installed MCP SDK exposes no HTTP client module")
+
+
 def _status_error(status: int) -> Exception:
-    request = httpx.Request("POST", "https://mcp.example.com/mcp")
-    response = httpx.Response(status, request=request)
-    return httpx.HTTPStatusError("client error", request=request, response=response)
+    module = _sdk_http_module()
+    request = module.Request("POST", "https://mcp.example.com/mcp")
+    response = module.Response(status, request=request)
+    return module.HTTPStatusError("client error", request=request, response=response)
 
 
 _EXCEPTION_GROUP = pytest.mark.skipif(
@@ -267,6 +290,53 @@ def test_a_401_without_oauth_is_not_reported_as_reauth(monkeypatch, tmp_path):
     entry = manager.apply_initial()[0]
     assert entry.status is SourceStatus.FAILED
     assert entry.reauth_required is False
+
+
+def _fake_http_module(module):
+    """A transport-facing view of *module* that exposes only HTTP classes."""
+    return types.SimpleNamespace(
+        Request=module.Request,
+        Response=module.Response,
+        HTTPStatusError=module.HTTPStatusError,
+    )
+
+
+@pytest.mark.parametrize("attribute", ["httpx2", "httpx"])
+def test_classification_uses_the_module_the_sdk_exposes(monkeypatch, attribute):
+    """The resolver must follow the transport, whichever client it names.
+
+    Patching a transport to expose one client and hide the other proves the
+    classifier reads that module; a hard-coded ``httpx`` would fail the
+    ``httpx2`` leg, which is the leg the default install runs.
+    """
+    try:
+        available = importlib.import_module(attribute)
+    except ImportError:
+        pytest.skip(f"{attribute} is not installed")
+    fake = _fake_http_module(available)
+
+    for name in ("mcp.client.streamable_http", "mcp.client.sse"):
+        try:
+            transport = importlib.import_module(name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(transport, attribute, fake, raising=False)
+        for other in {"httpx2", "httpx"} - {attribute}:
+            monkeypatch.delattr(transport, other, raising=False)
+
+    from toolregistry_server import source_manager as module_under_test
+
+    assert module_under_test._auth_rejection_status(_error_from(fake, 401)) == 401
+    assert module_under_test._auth_rejection_status(_error_from(fake, 403)) == 403
+    # A status that is not a credential verdict stays unclassified.
+    assert module_under_test._auth_rejection_status(_error_from(fake, 400)) is None
+    assert module_under_test._auth_rejection_status(_error_from(fake, 500)) is None
+
+
+def _error_from(module, status: int) -> Exception:
+    request = module.Request("POST", "https://mcp.example.com/mcp")
+    response = module.Response(status, request=request)
+    return module.HTTPStatusError("client error", request=request, response=response)
 
 
 def test_a_non_auth_error_is_not_reported_as_reauth(monkeypatch, tmp_path):
@@ -383,6 +453,150 @@ def test_an_exception_with_a_bare_code_attribute_is_ignored(monkeypatch, tmp_pat
     monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
     entry = manager.apply_initial()[0]
     assert entry.reauth_required is False
+
+
+def test_an_exception_with_a_bare_401_code_attribute_is_ignored(monkeypatch, tmp_path):
+    """A local ``code = 401`` is not HTTP, so it must not clear a credential."""
+
+    class Coded(Exception):
+        code = 401
+
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = FakeProvider()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        oauth_provider=provider,
+    )
+
+    def refuse(registry, source, *, oauth_headers=None):
+        raise Coded("boom")
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
+    entry = manager.apply_initial()[0]
+    assert entry.reauth_required is False
+    assert provider.cleared == []
+
+
+def test_a_context_only_401_is_not_a_credential_rejection(monkeypatch, tmp_path):
+    """``__context__`` is incidental; only ``__cause__`` and groups count.
+
+    Python sets ``__context__`` on anything raised while another exception is
+    being handled, and ``raise ... from None`` does not clear it, so a parse
+    error inside the client's 401 handler inherits the 401.  Following that
+    link would destroy a good credential.
+    """
+
+    def refuse(registry, source, *, oauth_headers=None):
+        try:
+            raise _status_error(401)
+        except Exception:
+            raise ValueError("could not parse the response") from None
+
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = FakeProvider()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        oauth_provider=provider,
+    )
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
+    entry = manager.apply_initial()[0]
+    assert entry.reauth_required is False
+    assert provider.cleared == []
+
+
+def test_an_explicit_cause_is_still_followed(monkeypatch, tmp_path):
+    """``raise ... from exc`` is a deliberate verdict, so it counts."""
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = FakeProvider()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        oauth_provider=provider,
+    )
+
+    def refuse(registry, source, *, oauth_headers=None):
+        try:
+            raise _status_error(403)
+        except Exception as exc:
+            raise RuntimeError("wrapped") from exc
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
+    entry = manager.apply_initial()[0]
+    assert entry.reauth_required is True
+
+
+def test_a_resource_server_rejection_clears_the_stored_token(monkeypatch, tmp_path):
+    """A 401 from the MCP server invalidates the token it was given.
+
+    Without the clear, a token whose response omitted ``expires_in`` never
+    looks expired, so every retry presents the same rejected Bearer value and
+    a ``client_credentials`` source has no way out.  Everything here is
+    offline: the provider is built directly and its transport is stubbed, so
+    the store is the only thing consulted until the token is gone.
+    """
+    store_path = tmp_path / "tokens.db"
+    section = OAUTH_SECTION + f"      token_store: {store_path}\n"
+    path = _write(tmp_path, MCP_SOURCE, section)
+    config = _config(path)
+    declarations = load_oauth_clients(path, config)
+    provider = OAuthClientProvider(declarations)
+
+    class Counting:
+        def __init__(self):
+            self.posts = 0
+
+        def get_json(self, url, timeout):
+            raise OAuthClientError("offline")
+
+        def post_form(self, url, fields, headers, timeout):
+            self.posts += 1
+            raise OAuthClientError("offline")
+
+    counting = Counting()
+    provider._transport = counting
+    store = provider._store_for(declarations[0])
+    store.put(
+        TokenRecord(
+            source_id="namespace:example",
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="DEAD",
+            # No expires_in, so is_expiring() can never retire it.
+            expires_at=None,
+        )
+    )
+
+    presented: list[object] = []
+
+    def refuse(registry, source, *, oauth_headers=None):
+        presented.append(oauth_headers)
+        raise _status_error(401)
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
+    manager = SourceManager(
+        ToolRegistry(), config, config_path=path, oauth_provider=provider
+    )
+    entry = manager.apply_initial()[0]
+
+    # The dead token was presented, then cleared; the row itself survives so
+    # the rejection can be counted and escalated later.
+    assert presented == [{"Authorization": "Bearer DEAD"}]
+    assert entry.status is SourceStatus.FAILED
+    assert entry.reauth_required is True
+    record = store.get("namespace:example")
+    assert record is not None
+    assert record.access_token is None
+    assert record.rejections == 1
+
+    # The next attempt reaches the token endpoint instead of replaying it.
+    with pytest.raises(OAuthClientError, match="offline"):
+        provider.headers_for(config.tools[0])
+    assert counting.posts == 1
 
 
 def test_persist_preserves_server_sections(monkeypatch, tmp_path):

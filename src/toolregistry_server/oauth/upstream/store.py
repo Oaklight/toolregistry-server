@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS oauth_client_tokens (
     expires_at TEXT,
     updated_at TEXT NOT NULL,
     needs_reauth INTEGER NOT NULL DEFAULT 0,
-    error TEXT
+    error TEXT,
+    rejections INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS oauth_client_pending (
     state TEXT PRIMARY KEY,
@@ -64,9 +65,43 @@ CREATE TABLE IF NOT EXISTS oauth_client_pending (
 """
 
 
+#: Columns added after the first release.  ``CREATE TABLE IF NOT EXISTS`` is a
+#: no-op on an existing database, so a column an older file lacks has to be
+#: added explicitly or the first statement that names it fails at upgrade time.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("oauth_client_tokens", "rejections", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Add any column an older database file is missing.
+
+    Args:
+        connection: The open connection, before the first read.
+
+    Only missing columns are added; an existing column is left untouched, so
+    this is safe to run at every open.
+    """
+    for table, column, declaration in _ADDED_COLUMNS:
+        present = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column in present:
+            continue
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
 def utcnow() -> datetime:
     """Return the current time as an aware UTC datetime."""
     return datetime.now(timezone.utc)
+
+
+#: Seconds a token is trusted when its response stated no expiry.  A token
+#: with no ``expires_in`` never looks expired, so without an assumption it is
+#: kept until something else replaces it; an hour bounds that without
+#: re-fetching on every call.
+DEFAULT_ASSUMED_TTL = 3600.0
 
 
 def _format_time(value: datetime | None) -> str | None:
@@ -101,8 +136,12 @@ class TokenRecord:
             state one.
         updated_at: When the row was last written.
         needs_reauth: ``True`` after a definitive refresh or exchange
-            failure; the source must be authorized again.
+            failure, or after repeated resource-server rejections; the source
+            must be authorized again.
         error: Redacted reason for :attr:`needs_reauth`.
+        rejections: Consecutive resource-server rejections since the
+            credential was last known to work.  Reset when a connect
+            succeeds, never by :meth:`TokenStore.put` alone.
     """
 
     source_id: str
@@ -116,14 +155,29 @@ class TokenRecord:
     updated_at: datetime = field(default_factory=utcnow)
     needs_reauth: bool = False
     error: str | None = None
+    rejections: int = 0
 
-    def is_expiring(self, now: datetime, skew: float) -> bool:
+    def is_expiring(
+        self,
+        now: datetime,
+        skew: float,
+        *,
+        assumed_ttl: float | None = DEFAULT_ASSUMED_TTL,
+    ) -> bool:
         """Whether the access token is expired or within *skew* seconds.
 
-        A token with no stated expiry is never considered expiring.
+        A token whose response stated no expiry is assumed to last
+        *assumed_ttl* seconds from :attr:`updated_at`; ``None`` opts out and
+        means such a token never expires.  The assumption is applied here, on
+        the read path, so a row written before the assumption existed is
+        bounded too.  ``0`` (the default) means no ``expires_in`` at all.
         """
         if self.expires_at is None:
-            return False
+            if assumed_ttl is None:
+                return False
+            return now >= self.updated_at + timedelta(seconds=assumed_ttl) - timedelta(
+                seconds=skew
+            )
         return now >= self.expires_at - timedelta(seconds=skew)
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -138,6 +192,7 @@ class TokenRecord:
             "updated_at": _format_time(self.updated_at),
             "needs_reauth": self.needs_reauth,
             "error": self.error,
+            "rejections": self.rejections,
             "has_access_token": bool(self.access_token),
             "has_refresh_token": bool(self.refresh_token),
         }
@@ -230,6 +285,7 @@ class TokenStore:
         self._connection.row_factory = sqlite3.Row
         with self._lock:
             self._connection.executescript(_SCHEMA)
+            _migrate(self._connection)
             if database != ":memory:":
                 self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.commit()
@@ -260,7 +316,11 @@ class TokenStore:
         """Insert or replace *record* and return the stored form.
 
         The write clears ``needs_reauth`` and the stored error: a new token
-        is a successful authorization.
+        is a successful authorization.  The rejection counter is carried
+        through unchanged: a refresh that succeeds at the token endpoint says
+        nothing about whether the resource server accepts the new token, so
+        resetting here would make the two-strike escalation unreachable.
+        :meth:`reset_rejections` is the success path.
         """
         stored = TokenRecord(
             source_id=record.source_id,
@@ -293,7 +353,8 @@ class TokenStore:
                     expires_at = excluded.expires_at,
                     updated_at = excluded.updated_at,
                     needs_reauth = 0,
-                    error = NULL
+                    error = NULL,
+                    rejections = oauth_client_tokens.rejections
                 """,
                 _record_values(stored),
             )
@@ -336,6 +397,53 @@ class TokenStore:
                     updated_at = excluded.updated_at
                 """,
                 (source_id, issuer, client_id, _format_time(self._clock()), error),
+            )
+            self._connection.commit()
+
+    def mark_rejected(self, source_id: str) -> None:
+        """Record that the resource server rejected the access token.
+
+        The access token and its expiry are always cleared.  A row left with
+        a live access token keeps being handed out, because the "not expiring"
+        branch returns before any grant is considered: that is the loop this
+        method exists to break.  The refresh token is kept, because it may
+        still be good, and the rejection counter is incremented so repeated
+        failures can escalate.
+
+        Args:
+            source_id: Selector the declaration is written under.
+        """
+        with self._lock:
+            self._connection.execute(
+                """
+                UPDATE oauth_client_tokens
+                   SET access_token = NULL,
+                       expires_at = NULL,
+                       updated_at = ?,
+                       rejections = rejections + 1
+                 WHERE source_id = ?
+                """,
+                (_format_time(self._clock()), source_id),
+            )
+            self._connection.commit()
+
+    def reset_rejections(self, source_id: str) -> None:
+        """Clear the rejection counter after the credential was accepted.
+
+        Called from the connect path, which is the only place that knows the
+        resource server accepted the token.
+
+        Args:
+            source_id: Selector the declaration is written under.
+        """
+        with self._lock:
+            self._connection.execute(
+                """
+                UPDATE oauth_client_tokens
+                   SET rejections = 0
+                 WHERE source_id = ? AND rejections != 0
+                """,
+                (source_id,),
             )
             self._connection.commit()
 
@@ -427,6 +535,7 @@ def _record_from_row(row: sqlite3.Row) -> TokenRecord:
         updated_at=_parse_time(row["updated_at"]) or utcnow(),
         needs_reauth=bool(row["needs_reauth"]),
         error=row["error"],
+        rejections=int(row["rejections"] or 0),
     )
 
 

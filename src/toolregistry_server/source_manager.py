@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import importlib
 import os
 import re
 import threading
@@ -189,8 +190,13 @@ def _auth_rejection_status(exc: BaseException) -> int | None:
 
     The MCP client reports a resource-server rejection as an ``httpx``
     ``HTTPStatusError``, sometimes wrapped in an ``ExceptionGroup`` because it
-    is raised inside a task group.  The whole cause chain and every group
-    member are searched; no other failure carries a credential verdict.
+    is raised inside a task group.  Only the exception, its ``__cause__``
+    chain and its group members are searched.  ``__context__`` is
+    deliberately not followed: Python sets it on any exception raised while
+    another is being handled, so a JSON parse error raised inside the client's
+    401 handler would inherit the 401 and be misread as a credential
+    rejection.  A rejection that destroys a stored credential must be
+    explicit, not incidental.
     """
     seen: set[int] = set()
     pending: list[BaseException | None] = [exc]
@@ -204,20 +210,50 @@ def _auth_rejection_status(exc: BaseException) -> int | None:
             return status
         pending.extend(getattr(current, "exceptions", ()) or ())
         pending.append(current.__cause__)
-        pending.append(current.__context__)
     return None
+
+
+def _sdk_http_modules() -> tuple[Any, ...]:
+    """Return the HTTP client modules the installed MCP SDK raises from.
+
+    SDK 2.x talks to ``httpx2`` and 1.x talks to ``httpx``; they are separate
+    packages, and neither class derives from the other, so checking one name
+    misses every real rejection on the other leg.  Each transport module names
+    its own client, so it is read from there (the same rule
+    :func:`toolregistry_server.gateway.shim._sdk_http_module` follows).  A
+    direct import is the fallback for an exception raised outside a transport
+    module that is importable here.
+    """
+    modules: list[Any] = []
+    for transport_name in ("mcp.client.streamable_http", "mcp.client.sse"):
+        try:
+            transport = importlib.import_module(transport_name)
+        except ImportError:  # pragma: no cover - mcp is an optional extra
+            continue
+        for attribute in ("httpx2", "httpx"):
+            module = getattr(transport, attribute, None)
+            if module is not None and module not in modules:
+                modules.append(module)
+    if modules:
+        return tuple(modules)
+    # No transport is importable here, so nothing this server raises can come
+    # from one; ``httpx`` is the historical client and is the best guess.
+    try:
+        return (importlib.import_module("httpx"),)
+    except ImportError:  # pragma: no cover - the mcp extra brings a client
+        return ()
 
 
 def _status_of(exc: BaseException) -> int | None:
     """Return the HTTP status an exception carries, if any.
 
-    Only HTTP-shaped errors are read.  An MCP ``McpError`` carries a JSON-RPC
+    Only HTTP-shaped errors are read.  An MCP ``MCPError`` carries a JSON-RPC
     error code, and a JSON-RPC ``403`` (or ``401``) is a protocol code, not an
-    HTTP response: reading it as a status would mark a source for
-    re-authorization on an unrelated failure.  The status is therefore taken
-    from ``httpx.HTTPStatusError`` (which keeps it on ``response``) or from a
+    HTTP response: reading it as a status would destroy a good credential on
+    an unrelated failure.  The status is therefore taken from an SDK HTTP
+    client's ``HTTPStatusError`` (which keeps it on ``response``) or from a
     genuine ``http.client``/``urllib`` error (``HTTPError.code``), never from
-    an arbitrary ``code`` attribute.
+    an arbitrary ``code`` or ``status_code`` attribute.
 
     Args:
         exc: One exception from a cause chain or a group.
@@ -229,12 +265,14 @@ def _status_of(exc: BaseException) -> int | None:
 
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code
-    try:
-        import httpx
-    except ImportError:  # pragma: no cover - the mcp extra always brings httpx
+    for module in _sdk_http_modules():
+        error_cls = getattr(module, "HTTPStatusError", None)
+        if error_cls is None or not isinstance(exc, error_cls):
+            continue
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
         return None
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code
     return None
 
 
@@ -1194,12 +1232,20 @@ class SourceManager:
             status = _auth_rejection_status(exc)
             if oauth_headers is not None and status is not None:
                 # The resource server rejected the credential itself, so the
-                # stored grant is dead even though the token endpoint accepted
-                # it.  Report it the same way as a rejected token request.
+                # token is dead even though the token endpoint accepted it.
+                # Record it before reporting, or the next attempt presents the
+                # same rejected token: ``access_token`` returns a live-looking
+                # token before any grant is considered, a response without
+                # ``expires_in`` never looks expired, and changing the client
+                # secret changes neither the issuer nor the client id.  The
+                # provider clears the access token and keeps the refresh
+                # token; a second rejection escalates.
                 logger.warning(
                     f"MCP source {_describe_source(source)} rejected the OAuth "
-                    f"credential with HTTP {status}; re-authorization required"
+                    f"credential with HTTP {status}; clearing it and requiring "
+                    "re-authorization"
                 )
+                self._mark_oauth_rejection(source)
                 return SourceEntry(
                     key,
                     source,
@@ -1216,6 +1262,9 @@ class SourceManager:
                 key, source, frozenset(), SourceStatus.FAILED, _safe_error(exc)
             )
         self._remember_integration(key, source, before_integrations)
+        if oauth_headers is not None:
+            # Only a successful connect proves the credential works end to end.
+            self._mark_oauth_accepted(source)
         return SourceEntry(key, source, names, SourceStatus.APPLIED)
 
     def _oauth_failure(
@@ -1517,6 +1566,13 @@ class SourceManager:
                 for source in self.config.tools
             )
         ]
+        # Membership by object identity, not equality: these are the same
+        # dict objects from the list just read, so an id is exact, and it
+        # stays valid because ``section`` holds every element alive until
+        # this function returns.  Do not "fix" it into a set of dicts: they
+        # are unhashable.  Do not switch to ``==`` on the values either: two
+        # distinct entries with the same text are two declarations, and both
+        # must be pruned.
         kept_ids = {id(entry) for entry in kept}
         pruned = [
             entry["source"]
@@ -1536,12 +1592,56 @@ class SourceManager:
             # ``issuer`` and the other resource-server keys belong to it too.
             data.pop(OAUTH_SECTION, None)
 
-    def _clear_stored_tokens(self, selectors: Sequence[str]) -> None:
-        """Delete the stored token for each removed OAuth declaration.
+    def _mark_oauth_rejection(self, source: ToolSource) -> None:
+        """Record that the resource server rejected the credential.
 
-        A store that cannot be opened is not an error: the row is stale, and
-        the next authorization overwrites it.  The write must not fail
-        because of a cleanup.
+        The provider clears the access token and keeps the refresh token, so
+        the next connect refreshes or re-fetches instead of presenting the
+        rejected value.  Best-effort: the failure is already being reported,
+        and a store problem must not replace it.
+
+        Args:
+            source: The source whose credential was rejected.
+        """
+        provider = self.oauth_provider
+        reject = getattr(provider, "reject_at_resource_server", None)
+        if reject is None:  # pragma: no cover - a stand-in provider has none
+            return
+        try:
+            reject(source)
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning(
+                f"Could not record the OAuth rejection for "
+                f"{_describe_source(source)}: {_safe_error(exc)}"
+            )
+
+    def _mark_oauth_accepted(self, source: ToolSource) -> None:
+        """Clear the rejection counter after a successful connect.
+
+        Best-effort for the same reason as :meth:`_mark_oauth_rejection`.
+
+        Args:
+            source: The source that just registered.
+        """
+        provider = self.oauth_provider
+        accept = getattr(provider, "accept_at_resource_server", None)
+        if accept is None:  # pragma: no cover - a stand-in provider has none
+            return
+        try:
+            accept(source)
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning(
+                f"Could not reset the OAuth rejection count for "
+                f"{_describe_source(source)}: {_safe_error(exc)}"
+            )
+
+    def _clear_stored_tokens(self, selectors: Sequence[str]) -> None:
+        """Delete the stored token for each selector.
+
+        Used when a declaration leaves the configuration and when a resource
+        server rejects the credential.  A store that cannot be opened is not
+        an error: the row is stale, and the next authorization overwrites it.
+        The caller's operation must not fail because of a cleanup.
 
         Args:
             selectors: Selectors whose declaration left the configuration.
