@@ -271,6 +271,26 @@ the source fails the load. Tokens are kept in SQLite outside the
 configuration file; the client secret is never written there. See
 [the deployment guide](../guides/oauth-deployment.md#upstream-credentials-for-a-protected-mcp-source).
 
+A stored token is reused until the MCP server refuses it. An HTTP 401 or 403
+from the source on connect drops the stored access token and counts the
+rejection, keeping the refresh token. The next connect uses the refresh token
+when the row has one; otherwise a `client_credentials` source requests a new
+token at once, while an `authorization_code` source reports `reauth_required`
+and waits for the operator. A second consecutive rejection latches an
+`authorization_code` source and makes a `client_credentials` one drop the row
+and retry the current secret. The counter resets only after a connect succeeds
+end to end, so a token fetched at the token endpoint is not trusted until the
+source accepts it.
+
+A token response without `expires_in` is assumed to last one hour, measured
+from the stored row's `updated_at`. An identity provider that omits the field
+therefore causes one token request per hour per source instead of a token that
+is never refreshed.
+
+A token endpoint taken from discovery that answers 404 or 410 drops the cached
+authorization-server metadata and is re-discovered once; a second 404 is
+definitive. An explicit `token_endpoint` is never re-discovered.
+
 Precedence is replacement, not merging. When any `--oauth-scope` value is
 given, the file's `scope` mapping is ignored as a whole rather than combined
 with it, and the same holds for `client_concurrency`. The repeatable
