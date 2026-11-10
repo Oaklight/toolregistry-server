@@ -195,6 +195,25 @@ curl -s https://auth.example.com/.well-known/oauth-authorization-server | jq
 记账仍按 principal：执行日志行与密钥计数依然带上客户端与 `sub`，因此同一客户端的两个
 用户虽然共享上限，仍可区分。等待超时的调用会以 `busy` 结果记录。
 
+## 受保护 MCP 来源的上游凭据
+
+上一节讲的是本服务器校验的方向：它接受什么。另一个方向——本服务器向需要 OAuth 的
+MCP 服务器提交的凭据——在同一个段的 `clients` 下声明，每个来源一个条目：
+
+```yaml
+oauth:
+  clients:
+    - source: "namespace:reports"        # 或 url:https://mcp.example.com/mcp
+      issuer: https://auth.example.com
+      client_id: toolregistry-reports
+      client_secret_env: MCP_REPORTS_SECRET
+      scopes: [mcp:read]
+      grant: client_credentials          # 或 authorization_code
+```
+
+第 1 阶段覆盖声明、令牌存储、两种授权方式以及连接时发送的请求头；驱动交互式授权的
+面板流程不在其中。[OAuth 参考](../reference/oauth.md#configuration-file)列出全部键。
+
 ## 故障排查
 
 | 现象 | 可能原因 | 处理 |

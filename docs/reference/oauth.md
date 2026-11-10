@@ -195,8 +195,8 @@ oauth:
 `--oauth-issuer` 完全相同。`audience` 取代推导出的 audience。`jwks`、
 `authorization_url`、`token_url` 与 `refresh_url` 覆盖对应选项的元数据发现结果。其余键
 是 `introspection_url`、`introspection_client_id`、`introspection_client_secret`、
-`introspection_cache_ttl`、`introspection_optional`、`concurrency_claim` 与
-`client_concurrency`。
+`introspection_cache_ttl`、`introspection_optional`、`concurrency_claim`、
+`client_concurrency` 与 `clients`。
 
 | 键 | 选项 | 接受的值 |
 |----|------|----------|
@@ -208,10 +208,21 @@ oauth:
 | `refresh_url` | `--oauth-refresh-url` | 字符串 |
 | `scope` | `--oauth-scope` | 从作用域到其条目的映射；每个值是一个条目列表或一个逗号分隔的字符串。也接受选项的 `[SCOPE=ENTRY[,ENTRY], ...]` 列表形式 |
 | `scopes` | `--oauth-scopes` | 字符串列表，或一个空格分隔的字符串 |
+| `clients` | — | 映射列表，每个条目对应本服务器要向其提交凭据的来源；见下文 |
 
 `scope` 的条目语法与选项相同：命名空间模式、`+tool-name`（允许单个工具）或
 `-tool-name`（拒绝单个工具）。未映射的作用域仍然不授予任何权限，因此在由文件驱动的
 部署中，最小权限由 `scope` 表达。
+
+`clients` 是同一个段的另一个方向：本服务器向它调用的接入点提交的 OAuth 凭据，
+而不是它接受的凭据。每个条目用 `namespace:<name>` 或 `url:<url>` 选定一个 HTTP(S)
+MCP 来源，并带有 `issuer` 或 `discovery_url`、`client_id`、`client_secret` 与
+`client_secret_env` 中恰好一个、可选的 `scopes`、`grant`（`client_credentials` 或
+`authorization_code`）、可选的 `token_endpoint`、`client_auth`（`client_secret_post`
+或 `client_secret_basic`）以及绝对路径的 `token_store`。两个条目不能选中同一来源；
+未知键、相对路径的 `token_store`，或来源已设置 `Authorization` 头，都会使加载失败。
+令牌保存在配置文件之外的 SQLite 中；客户端密钥从不写入其中。参见
+[部署指南](../guides/oauth-deployment.md#受保护-mcp-来源的上游凭据)。
 
 优先级是替换，而不是合并。只要给出了任何一个 `--oauth-scope` 值，文件中的 `scope`
 映射就整体被忽略，而不是与之合并；`client_concurrency` 同样如此。可重复的
