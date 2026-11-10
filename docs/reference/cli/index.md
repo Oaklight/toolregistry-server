@@ -258,6 +258,63 @@ shim 在后台重连（0.25 秒起步倍增到 5 秒）。当 hub 的工具列�
 
 与 `local-hub` 一样仅支持 POSIX。每个客户端一个 shim，共享同一个 hub。
 
+### `keys` — 管理限定作用域的客户端 API 密钥
+
+```bash
+toolregistry-server keys --db PATH <命令> [命令选项]
+```
+
+操作 `--db` 指定的 SQLite 密钥存储，即服务器用 `--keys-db` 读取的同一文件。
+`--db` 必填，且位于命令之前。作用域模型见
+[认证指南](../../guides/authentication.md#限定作用域的-api-密钥)。
+
+| 命令 | 用途 |
+|------|------|
+| `create` | 创建密钥并打印一次密钥值 |
+| `list` | 按最近使用时间排序列出密钥 |
+| `get KEY_ID` | 显示一个密钥及其用量计数 |
+| `rotate KEY_ID` | 为已有密钥签发新密钥值并打印一次 |
+| `update KEY_ID` | 修改密钥的名称、作用域、过期时间或并发上限 |
+| `revoke KEY_ID` | 立即撤销密钥 |
+| `set-concurrency KEY_ID` | 修改密钥的在途调用上限 |
+
+`list` 接受 `--limit`（默认 50）与 `--offset`。所有命令都接受 `--json`，
+输出机器可读结果。
+
+**轮换密钥。** `keys rotate KEY_ID` 为已存在的密钥签发新密钥值。密钥 id、
+名称、作用域、过期时间、并发上限与用量历史都保持不变，只有密钥值改变。新
+密钥值只打印一次，旧值在下一个请求即被拒绝。已撤销的密钥与已过期的密钥不能
+轮换：先用 `update` 延长或清除过期时间，再轮换。
+
+**修改密钥。** `keys update KEY_ID` 只改指定的字段，其余保持不变：
+
+| 选项 | 作用 |
+|------|------|
+| `--label LABEL` | 新的非空名称 |
+| `--namespace PATTERN` | 替换命名空间允许列表；可重复。`*` 允许所有命名空间，`prefix/*` 允许一个前缀 |
+| `--allow-tool NAME` | 用允许项替换按工具覆盖表；可重复 |
+| `--deny-tool NAME` | 用拒绝项替换按工具覆盖表；可重复 |
+| `--expires ISO8601` | 新的过期时间；未给时区时按 UTC 处理。与 `--clear-expiry` 互斥 |
+| `--clear-expiry` | 清除过期时间，使密钥不再过期 |
+| `--concurrency N` | 新的在途调用上限。与 `--clear-concurrency` 互斥 |
+| `--clear-concurrency` | 丢弃该覆盖，改用服务器的 `--client-concurrency` |
+
+作用域选项按类别合并，而不是整体替换。`--namespace` 只替换命名空间列表，
+`--allow-tool` 与 `--deny-tool` 合起来只定义按工具覆盖表，同时出现在两者中的
+名称按拒绝处理。未给出选项的类别保留当前值，因此
+`update KEY_ID --label build-bot-v2` 只改名称，其余不变。注意 `create` 的过期
+选项拼作 `--expires-at`，`update` 拼作 `--expires`；两者都拒绝过去的时间。
+密钥已撤销时修改会被拒绝。修改在下一个请求生效，无需重启。
+
+**用量计数。** `keys list --usage` 为每条记录附加 `usage` 对象，`keys get` 总是
+包含它。该对象包含 `calls`、`ok`、`error`、`busy`、`denied` 与
+`last_success_at`；文本输出会打印一行 `calls:`（含四种结果）与一行
+`last ok:`。计数持久化在密钥数据库中，因此重启后仍在，也不依赖内存中的执行
+日志；轮换、撤销与过期都不会清除计数。用量对象从不包含密钥值。
+
+**退出码。** 成功为 `0`。`KEY_ID` 不存在为 `1`。存储拒绝该修改——密钥已撤销、
+过期时间在过去、并发上限非法——或 `update` 没有给出任何要改的字段时为 `2`。
+
 ## 配置文件
 
 有关 JSON、JSONC 或 YAML 配置格式的详细说明，请参阅 [配置指南](../../guides/configuration.md)。
