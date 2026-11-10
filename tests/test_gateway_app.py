@@ -211,6 +211,29 @@ class TestSharedAuth:
         assert body["authorization_servers"] == ["http://127.0.0.1:9000"]
         assert body["scopes_supported"] == ["mcp"]
 
+    async def test_metadata_advertises_the_configured_oauth_issuer(self, monkeypatch):
+        from toolregistry_server.oauth import OAuthSettings
+
+        monkeypatch.setattr(
+            "toolregistry_server.oauth.verifier._JwksCache.warm", lambda self: None
+        )
+        gateway = _gateway(
+            tokens=["secret"],
+            host="127.0.0.1",
+            port=9000,
+            oauth=OAuthSettings(
+                issuer="https://idp.example.com/realms/dev",
+                audience="http://127.0.0.1:9000/mcp",
+                jwks_uri="https://idp.example.com/realms/dev/jwks",
+            ),
+        )
+        async with _client(gateway) as client:
+            response = await client.get("/.well-known/oauth-protected-resource/mcp")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["resource"] == "http://127.0.0.1:9000/mcp"
+        assert body["authorization_servers"] == ["https://idp.example.com/realms/dev"]
+
     async def test_metadata_follows_the_current_mcp_path(self):
         gateway = _gateway(tokens=["secret"], host="127.0.0.1", port=9000)
         gateway.update_frontend("mcp", path="/rpc")

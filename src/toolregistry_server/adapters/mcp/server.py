@@ -251,6 +251,7 @@ async def run_streamable_http(
     valid_tokens: set[str] | None = None,
     server_url: str | None = None,
     principal_resolver: "PrincipalResolver | None" = None,
+    authorization_servers: list[str] | None = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
@@ -283,6 +284,9 @@ async def run_streamable_http(
             apply on the next request.  Static ``valid_tokens`` keep full,
             unscoped access.  When both are ``None``, authentication is
             disabled.
+        authorization_servers: Issuers to advertise in the protected-resource
+            metadata.  When ``None``, the server advertises its own origin
+            (the pre-OAuth behaviour).
     """
     try:
         import uvicorn
@@ -351,9 +355,12 @@ async def run_streamable_http(
         resolved_url = resolve_public_url(server_url, host, port, path)
         resource_url = AnyHttpUrl(resolved_url)
 
-        # The issuer_url points to ourselves; we don't run a real AS,
-        # but it's required by the Protected Resource Metadata spec.
-        issuer_url = AnyHttpUrl(resolved_url.rsplit(path, 1)[0] or resolved_url)
+        if authorization_servers:
+            issuers = [AnyHttpUrl(issuer) for issuer in authorization_servers]
+        else:
+            # No external authorization server is configured; the metadata
+            # still needs a value, so it points at this server's origin.
+            issuers = [AnyHttpUrl(resolved_url.rsplit(path, 1)[0] or resolved_url)]
 
         resource_metadata_url = build_resource_metadata_url(resource_url)
 
@@ -379,7 +386,7 @@ async def run_streamable_http(
         routes.extend(
             create_protected_resource_routes(
                 resource_url=resource_url,
-                authorization_servers=[issuer_url],
+                authorization_servers=issuers,
                 scopes_supported=["mcp"],
             )
         )
