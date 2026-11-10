@@ -4,15 +4,21 @@ The extension route surface is here rather than in ``extension.py`` so the
 route handlers stay one statement each and the protocol work is testable on
 its own.
 
-Two rules shape the declarations this module returns:
+Three rules shape the declarations this module returns:
 
-* a secret never leaves the server.  ``headers``/``env`` values and an
-  OpenAPI ``auth.token`` are absent from the response; only the *names* of
-  the secret-bearing fields are listed, so the edit form can ask for them
-  again without showing the value it already stores;
+* a secret never leaves the server.  ``headers``/``env`` values, an OpenAPI
+  ``auth.token`` and URL userinfo (``user:password@`` in ``url`` or
+  ``base_url``) are absent from the response; only the *names* of the
+  secret-bearing fields are listed under ``secret_fields``, so the edit form
+  can ask for them again without showing the value it already stores;
 * a blank secret field in an edit keeps the stored value.  The form does not
   receive the value, so treating an absent field as "delete it" would erase a
-  credential on every save.
+  credential on every save.  A URL is restored when the submitted value is
+  the redacted form the form was given, or when the field is absent;
+* a stdio ``command`` is kept verbatim.  Its arguments are not treated as
+  secret: they are the only way to edit the declaration, and a credential
+  belongs in ``env``, whose values are withheld.  This is a deliberate
+  trade-off, not an oversight.
 """
 
 from __future__ import annotations
@@ -33,6 +39,9 @@ _HTTP_METHODS = frozenset(
 
 #: Tags that make the call tester ask for a stronger confirmation.
 DANGEROUS_TAGS = frozenset({"destructive", "privileged"})
+
+#: Declaration fields that hold a URL and can therefore carry userinfo.
+_URL_FIELDS = ("url", "base_url")
 
 
 class UnsupportedTest(ValueError):
@@ -56,6 +65,27 @@ def _as_dict(source: Any) -> dict[str, Any]:
     raise TypeError(f"cannot serialise a declaration of type {type(source).__name__}")
 
 
+def _redact_urls(data: dict[str, Any], secret_fields: list[str]) -> None:
+    """Remove URL userinfo from *data* and mark each changed field secret.
+
+    A URL such as ``https://user:pass@host/mcp`` embeds a credential.  The
+    redacted form keeps the target editable; the marker tells the edit form
+    that the stored value was withheld.
+
+    Args:
+        data: The declaration to mutate in place.
+        secret_fields: The marker list to append to.
+    """
+    for field in _URL_FIELDS:
+        value = data.get(field)
+        if not isinstance(value, str):
+            continue
+        redacted = _redact_url_userinfo(value)
+        if redacted != value:
+            data[field] = redacted
+            secret_fields.append(field)
+
+
 def public_declaration(source: Any) -> dict[str, Any]:
     """Return a declaration with every secret value removed.
 
@@ -63,10 +93,11 @@ def public_declaration(source: Any) -> dict[str, Any]:
         source: The stored declaration.
 
     Returns:
-        The config-file form with ``headers``, ``env`` values and
-        ``auth.token`` absent and their names listed under ``secret_fields``.
-        A stdio ``command`` is kept: it is the only way to edit the
-        declaration, and the source list already shows the program name.
+        The config-file form with ``headers``, ``env`` values, ``auth.token``
+        and URL userinfo absent and their names listed under
+        ``secret_fields``.  A stdio ``command`` is kept: it is the only way
+        to edit the declaration, and its arguments are a documented
+        trade-off (see the module docstring).
     """
     data = _as_dict(source)
     secret_fields: list[str] = []
@@ -84,6 +115,8 @@ def public_declaration(source: Any) -> dict[str, Any]:
     kwargs = data.pop("kwargs", None)
     if isinstance(kwargs, Mapping):
         secret_fields.extend(f"kwargs.{name}" for name in kwargs)
+
+    _redact_urls(data, secret_fields)
 
     # ``_as_dict`` is a shallow copy, so the nested ``auth`` mapping is the
     # stored object's; copy it before removing the token.
@@ -134,6 +167,31 @@ def _merge_auth(payload: dict[str, Any], source: Any) -> None:
         payload["auth"] = merged
 
 
+def _restore_urls(payload: dict[str, Any], source: Any) -> None:
+    """Restore a stored URL whose userinfo the form could not show.
+
+    The edit form receives the redacted URL and submits it back unchanged,
+    and it does not render every URL field at all.  In both cases the stored
+    URL, userinfo included, is what the operator means.  A different
+    submitted value wins.
+
+    Args:
+        payload: The operator's declaration, mutated in place.
+        source: The stored declaration being replaced.
+    """
+    stored = _as_dict(source)
+    for field in _URL_FIELDS:
+        stored_value = stored.get(field)
+        if not isinstance(stored_value, str):
+            continue
+        redacted = _redact_url_userinfo(stored_value)
+        if redacted == stored_value:
+            continue
+        submitted = payload.get(field)
+        if submitted is None or submitted == redacted:
+            payload[field] = stored_value
+
+
 def merge_secrets(payload: dict[str, Any], source: Any) -> dict[str, Any]:
     """Carry stored secrets into an edit that left them blank.
 
@@ -142,9 +200,9 @@ def merge_secrets(payload: dict[str, Any], source: Any) -> dict[str, Any]:
         source: The stored declaration being replaced.
 
     Returns:
-        *payload* with the stored ``headers``/``env`` (MCP) or ``auth``
-        (OpenAPI) restored.  ``clear_secrets: true`` removes every stored
-        secret instead, which is how an operator deletes one.
+        *payload* with the stored ``headers``/``env`` (MCP), ``auth``
+        (OpenAPI) or URL userinfo restored.  ``clear_secrets: true`` removes
+        every stored secret instead, which is how an operator deletes one.
     """
     if payload.get("clear_secrets"):
         payload.pop("clear_secrets", None)
@@ -157,6 +215,7 @@ def merge_secrets(payload: dict[str, Any], source: Any) -> dict[str, Any]:
             }
         return payload
     payload.pop("clear_secrets", None)
+    _restore_urls(payload, source)
 
     kind = payload.get("type") or payload.get("kind")
     if kind == "openapi":
@@ -239,19 +298,21 @@ def source_tools(entry: Any, registry: Any) -> list[dict[str, Any]]:
 
     Returns:
         One ``{"name", "description", "enabled"}`` record per tool name,
-        sorted by name.
+        sorted by name.  A name the registry no longer holds is reported
+        disabled: it cannot be called, whatever its stored entry says.
     """
     records: list[dict[str, Any]] = []
     for name in sorted(getattr(entry, "names", ()) or ()):
         tool = registry.get_tool(name) if registry is not None else None
         description = getattr(tool, "description", "") or ""
+        enabled = (
+            registry is not None and tool is not None and registry.is_enabled(name)
+        )
         records.append(
             {
                 "name": name,
                 "description": description,
-                "enabled": (
-                    registry.is_enabled(name) if registry is not None else True
-                ),
+                "enabled": enabled,
             }
         )
     return records
