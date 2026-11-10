@@ -658,6 +658,53 @@ class TestMutations:
         assert result.persist_error is not None
         assert "read-only" in result.persist_error
 
+    def test_persist_holds_the_shared_write_lock(self, manager, monkeypatch):
+        """A source edit must not interleave with a gateway frontend save.
+
+        Both write the same file.  The manager reads, edits and writes inside
+        one lock, so a concurrent writer cannot slip a file read between the
+        two and have its section overwritten.
+        """
+        import threading
+
+        import toolregistry_server._config_file as config_file
+
+        observed: list[bool] = []
+        real = config_file.read_config_mapping
+
+        def observed_read(*args, **kwargs):
+            # _is_owned() is the only way to ask a threading.RLock whether
+            # this thread already holds it; it is private but stable.
+            observed.append(config_file._WRITE_LOCK._is_owned())  # noqa: SLF001
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(config_file, "read_config_mapping", observed_read)
+        held: list[bool] = []
+        real_write = config_file.write_config_mapping
+
+        def observed_write(*args, **kwargs):
+            held.append(config_file._WRITE_LOCK._is_owned())  # noqa: SLF001
+            # Another writer trying to enter must block until this returns.
+            entered: list[bool] = []
+
+            def contender():
+                with config_file._WRITE_LOCK:
+                    entered.append(True)
+
+            thread = threading.Thread(target=contender)
+            thread.start()
+            thread.join(timeout=0.05)
+            assert entered == []
+            return real_write(*args, **kwargs)
+
+        monkeypatch.setattr(config_file, "write_config_mapping", observed_write)
+
+        result = manager.add(PythonSource(class_path="gamma.Gamma", namespace="gamma"))
+
+        assert result.persisted is True
+        assert observed == [True]
+        assert held == [True]
+
 
 class TestEntryPayload:
     def test_to_dict_shape_and_stable_id(self, manager, config_path):
