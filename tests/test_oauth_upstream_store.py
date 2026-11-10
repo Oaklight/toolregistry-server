@@ -184,3 +184,166 @@ def test_clock_is_injectable(store):
 
 def test_utcnow_is_aware():
     assert utcnow().tzinfo is not None
+
+
+# -- rejection counter, assumed expiry, schema migration ---------------------
+
+_OLD_SCHEMA = """
+CREATE TABLE IF NOT EXISTS oauth_client_tokens (
+    source_id TEXT PRIMARY KEY,
+    issuer TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT,
+    token_type TEXT NOT NULL DEFAULT 'Bearer',
+    expires_at TEXT,
+    updated_at TEXT NOT NULL,
+    needs_reauth INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+);
+CREATE TABLE IF NOT EXISTS oauth_client_pending (
+    state TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    code_verifier TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+"""
+
+
+def test_mark_rejected_clears_the_access_token_and_counts(tmp_path):
+    with TokenStore(":memory:", clock=lambda: NOW) as store:
+        store.put(
+            TokenRecord(
+                source_id=SOURCE,
+                issuer="https://idp.example.com",
+                client_id="toolregistry",
+                access_token="AT",
+                refresh_token="RT",
+                expires_at=NOW + timedelta(hours=1),
+                updated_at=NOW,
+            )
+        )
+        store.mark_rejected(SOURCE)
+
+        record = store.get(SOURCE)
+        assert record.access_token is None
+        assert record.expires_at is None
+        assert record.refresh_token == "RT"
+        assert record.rejections == 1
+        assert record.needs_reauth is False
+
+        store.mark_rejected(SOURCE)
+        assert store.get(SOURCE).rejections == 2
+
+
+def test_mark_rejected_leaves_a_missing_row_missing():
+    with TokenStore(":memory:") as store:
+        store.mark_rejected("namespace:absent")
+        assert store.get("namespace:absent") is None
+
+
+def test_put_carries_the_rejection_counter_forward():
+    with TokenStore(":memory:", clock=lambda: NOW) as store:
+        store.mark_rejected(SOURCE)  # creates nothing; use a real row below
+        store.put(
+            TokenRecord(
+                source_id=SOURCE,
+                issuer="https://idp.example.com",
+                client_id="toolregistry",
+                access_token="AT",
+            )
+        )
+        store.mark_rejected(SOURCE)
+        assert store.get(SOURCE).rejections == 1
+
+        store.put(
+            TokenRecord(
+                source_id=SOURCE,
+                issuer="https://idp.example.com",
+                client_id="toolregistry",
+                access_token="AT2",
+            )
+        )
+        # A successful token-endpoint call is not proof the resource server
+        # accepts it, so the counter survives until the connect path resets it.
+        assert store.get(SOURCE).rejections == 1
+        assert store.get(SOURCE).access_token == "AT2"
+
+
+def test_reset_rejections_clears_the_counter():
+    with TokenStore(":memory:", clock=lambda: NOW) as store:
+        store.put(
+            TokenRecord(
+                source_id=SOURCE,
+                issuer="https://idp.example.com",
+                client_id="toolregistry",
+                access_token="AT",
+            )
+        )
+        store.mark_rejected(SOURCE)
+        store.reset_rejections(SOURCE)
+        assert store.get(SOURCE).rejections == 0
+
+
+def test_a_token_without_expiry_expires_after_the_assumed_lifetime():
+    record = TokenRecord(
+        source_id=SOURCE,
+        issuer="https://idp.example.com",
+        client_id="toolregistry",
+        access_token="AT",
+        expires_at=None,
+        updated_at=NOW - timedelta(hours=2),
+    )
+    assert record.is_expiring(NOW, 0.0) is True
+    # The window is anchored to updated_at, so it does not slide forward.
+    assert record.is_expiring(NOW + timedelta(days=1), 0.0) is True
+    fresh = TokenRecord(
+        source_id=SOURCE,
+        issuer="https://idp.example.com",
+        client_id="toolregistry",
+        access_token="AT",
+        expires_at=None,
+        updated_at=NOW - timedelta(minutes=5),
+    )
+    assert fresh.is_expiring(NOW, 0.0) is False
+    assert fresh.is_expiring(NOW, 0.0, assumed_ttl=None) is False
+    assert fresh.is_expiring(NOW, 0.0, assumed_ttl=60.0) is True
+
+
+def test_an_old_database_gains_the_rejection_column(tmp_path):
+    """A pre-change file must keep loading, not fail on the new column."""
+    import sqlite3
+
+    path = tmp_path / "tokens.db"
+    connection = sqlite3.connect(str(path))
+    connection.executescript(_OLD_SCHEMA)
+    connection.execute(
+        """
+        INSERT INTO oauth_client_tokens (
+            source_id, issuer, client_id, scopes, access_token, refresh_token,
+            token_type, expires_at, updated_at, needs_reauth, error
+        ) VALUES (?, ?, ?, '[]', ?, ?, 'Bearer', NULL, ?, 0, NULL)
+        """,
+        (
+            SOURCE,
+            "https://idp.example.com",
+            "toolregistry",
+            "AT",
+            "RT",
+            NOW.isoformat(),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    with TokenStore(str(path), clock=lambda: NOW) as store:
+        record = store.get(SOURCE)
+        assert record is not None
+        assert record.access_token == "AT"
+        assert record.rejections == 0
+        # The new column is writable on the migrated table.
+        store.mark_rejected(SOURCE)
+        assert store.get(SOURCE).rejections == 1

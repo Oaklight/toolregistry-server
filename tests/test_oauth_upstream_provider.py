@@ -726,6 +726,270 @@ def test_echoed_refresh_token_is_redacted(store, clock):
     assert "[redacted]" in str(caught.value)
 
 
+# -- resource-server rejection, assumed expiry, moved endpoints ---------------
+
+
+def _stored(store, *, refresh="RT", expires=None):
+    return store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="REJECTED",
+            refresh_token=refresh,
+            expires_at=expires,
+            updated_at=NOW,
+        )
+    )
+
+
+def test_a_resource_server_rejection_clears_only_the_access_token(store, clock):
+    """The access token goes unconditionally; the refresh token stays."""
+    _stored(store, expires=NOW + timedelta(hours=1))
+    provider = _provider(_declaration(), FakeTransport(), store, clock)
+
+    assert provider.reject_at_resource_server(_source()) is True
+
+    record = store.get(SOURCE)
+    assert record.access_token is None
+    assert record.expires_at is None
+    assert record.refresh_token == "RT"
+    assert record.rejections == 1
+    assert record.needs_reauth is False
+
+
+def test_a_resource_server_rejection_without_a_row_is_a_no_op(store, clock):
+    provider = _provider(_declaration(), FakeTransport(), store, clock)
+    assert provider.reject_at_resource_server(_source()) is False
+    assert store.get(SOURCE) is None
+
+
+def test_rejection_cell_authorization_code_with_refresh(store, clock):
+    """access cleared, refresh kept, authorization_code -> refresh."""
+    _stored(store, expires=NOW + timedelta(hours=1))
+    transport = FakeTransport(responses=[{"access_token": "FRESH", "expires_in": 3600}])
+    provider = _provider(
+        _declaration(grant="authorization_code"), transport, store, clock
+    )
+    provider.reject_at_resource_server(_source())
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer FRESH"}
+    assert transport.posts[0][1]["grant_type"] == "refresh_token"
+    # A token-endpoint success proves nothing about the resource server, so
+    # the counter stays until the connect path accepts the token.
+    assert store.get(SOURCE).rejections == 1
+
+
+def test_rejection_cell_client_credentials_with_refresh(store, clock):
+    """access cleared, refresh kept, client_credentials -> refresh."""
+    _stored(store, expires=NOW + timedelta(hours=1))
+    transport = FakeTransport(responses=[{"access_token": "FRESH", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+    provider.reject_at_resource_server(_source())
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer FRESH"}
+    # The row carries a refresh token, so the refresh path wins over a new
+    # client-credentials fetch.
+    assert transport.posts[0][1]["grant_type"] == "refresh_token"
+
+
+def test_rejection_cell_authorization_code_without_refresh(store, clock):
+    """access cleared, no refresh, authorization_code -> reauthorize on strike 2."""
+    _stored(store, refresh=None, expires=NOW + timedelta(hours=1))
+    provider = _provider(
+        _declaration(grant="authorization_code"), FakeTransport(), store, clock
+    )
+    provider.reject_at_resource_server(_source())
+
+    # First strike: no refresh token, so there is nothing to do yet.
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+
+    # Second strike escalates, and the reason names the rejections.
+    _stored(store, refresh=None, expires=None)
+    store.mark_rejected(SOURCE)
+    with pytest.raises(ReauthorizationRequired, match="rejected by the MCP server"):
+        provider.headers_for(_source())
+    assert store.get(SOURCE).needs_reauth is True
+
+
+def test_rejection_cell_client_credentials_without_refresh(store, clock):
+    """access cleared, no refresh, client_credentials -> refetch at once.
+
+    This is the cell that pins the rule: the clear must happen on every
+    rejection, not on the second one, or this source never recovers.
+    """
+    _stored(store, refresh=None, expires=NOW + timedelta(hours=1))
+    transport = FakeTransport(responses=[{"access_token": "FRESH", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+    provider.reject_at_resource_server(_source())
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer FRESH"}
+    assert len(transport.posts) == 1
+    assert store.get(SOURCE).rejections == 1
+
+
+def test_client_credentials_restarts_after_the_rejection_bound(store, clock):
+    """At the bound a client-credentials row is dropped, then fetched again."""
+    _stored(store, refresh=None, expires=None)
+    store.mark_rejected(SOURCE)
+    store.mark_rejected(SOURCE)
+    assert store.get(SOURCE).rejections == 2
+
+    transport = FakeTransport(responses=[{"access_token": "FRESH", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer FRESH"}
+    assert store.get(SOURCE).access_token == "FRESH"
+    assert store.get(SOURCE).rejections == 0
+
+
+def test_put_preserves_the_rejection_counter(store, clock):
+    """A refresh must not reset the counter, or the bound never trips."""
+    _stored(store, refresh="RT", expires=None)
+    store.mark_rejected(SOURCE)
+    transport = FakeTransport(responses=[{"access_token": "FRESH", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+    provider.headers_for(_source())
+
+    assert store.get(SOURCE).rejections == 1
+
+
+def test_accept_at_resource_server_resets_the_counter(store, clock):
+    _stored(store, expires=None)
+    store.mark_rejected(SOURCE)
+    provider = _provider(_declaration(), FakeTransport(), store, clock)
+    provider.accept_at_resource_server(_source())
+    assert store.get(SOURCE).rejections == 0
+
+
+def test_a_token_without_an_expiry_is_assumed_to_expire(store, clock):
+    """``expires_at=None`` is bounded by the row's ``updated_at``.
+
+    ``put`` stamps ``updated_at`` from the clock, so the row is aged by
+    advancing the clock, which is exactly what a real deployment does.
+    """
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="OLD",
+            refresh_token="RT",
+            expires_at=None,
+        )
+    )
+    clock.advance(7200)
+    transport = FakeTransport(responses=[{"access_token": "NEW", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer NEW"}
+    assert transport.posts[0][1]["grant_type"] == "refresh_token"
+
+
+def test_a_fresh_token_without_an_expiry_is_still_used(store, clock):
+    """The assumption is an age limit, not a reason to refresh immediately."""
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="AT",
+            expires_at=None,
+        )
+    )
+    clock.advance(300)
+    transport = FakeTransport()
+    provider = _provider(_declaration(), transport, store, clock)
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer AT"}
+    assert transport.posts == []
+
+
+def test_the_assumed_lifetime_is_configurable(store, clock):
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="AT",
+            expires_at=None,
+        )
+    )
+    clock.advance(300)
+    provider = OAuthClientProvider(
+        (_declaration(),),
+        store=store,
+        transport=FakeTransport(),
+        clock=clock,
+        assumed_ttl=60.0,
+    )
+    with pytest.raises(ReauthorizationRequired):
+        # No refresh token and an authorization-code grant: nothing to do.
+        provider.access_token(provider.declarations[0])
+
+
+class _MovingEndpointTransport:
+    """Discover an endpoint, then move it after the first failed POST."""
+
+    def __init__(self, *, first_status=404):
+        self.first_status = first_status
+        self.gets = 0
+        self.posts: list[str] = []
+
+    def get_json(self, url, timeout):
+        self.gets += 1
+        if self.gets == 1:
+            return {"token_endpoint": "https://idp.example.com/old/token"}
+        return {"token_endpoint": "https://idp.example.com/new/token"}
+
+    def post_form(self, url, fields, headers, timeout):
+        self.posts.append(url)
+        if url.endswith("/old/token"):
+            raise OAuthHTTPError(self.first_status, None, None)
+        return {"access_token": "AT", "expires_in": 3600}
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_a_moved_discovered_endpoint_is_rediscovered_once(store, clock, status):
+    transport = _MovingEndpointTransport(first_status=status)
+    provider = _provider(_declaration(token_endpoint=None), transport, store, clock)
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer AT"}
+    assert transport.posts == [
+        "https://idp.example.com/old/token",
+        "https://idp.example.com/new/token",
+    ]
+    assert transport.gets == 2
+
+
+def test_a_second_404_from_the_discovered_endpoint_is_definitive(store, clock):
+    class Always404(_MovingEndpointTransport):
+        def post_form(self, url, fields, headers, timeout):
+            self.posts.append(url)
+            raise OAuthHTTPError(404, None, None)
+
+    transport = Always404()
+    provider = _provider(_declaration(token_endpoint=None), transport, store, clock)
+
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    # Discovered once, retried once, then classified.  The grant is
+    # client_credentials, so the rejected row is dropped rather than latched.
+    assert len(transport.posts) == 2
+    assert store.get(SOURCE) is None
+
+
+def test_an_explicit_token_endpoint_is_not_rediscovered(store, clock):
+    transport = _MovingEndpointTransport()
+    provider = _provider(_declaration(), transport, store, clock)
+
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    # An explicit endpoint is never re-discovered: nothing else could replace
+    # it, so a 404 is the operator's endpoint being wrong.
+    assert transport.gets == 0
+    assert len(transport.posts) == 1
+
+
 def test_abandoned_pending_requests_are_purged(store, clock):
     provider, _ = _authorization_provider(store, clock, [])
     first = provider.start_authorization(SOURCE, "https://gateway.example.com/callback")
