@@ -275,7 +275,7 @@ toolregistry-server gateway \
 |--------|-------------|
 | `--oauth-issuer URL` | Exact `iss` value to accept. Setting it enables OAuth verification |
 | `--oauth-audience URL` | Expected `aud` or RFC 8707 `resource` value. Defaults to the advertised MCP URL |
-| `--oauth-jwks URL` | JWKS endpoint (default: `<issuer>/.well-known/jwks.json`) |
+| `--oauth-jwks URL` | JWKS endpoint (default: discovered from the issuer's metadata) |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | Map one scope to namespace patterns; repeatable |
 | `--oauth-scopes "SCOPE ..."` | Scopes advertised in the protected-resource metadata. Omitted when empty, and by default when an issuer is set |
 
@@ -289,10 +289,18 @@ The flags are accepted by `openapi`, `mcp` (HTTP transports), `gateway` and
 - `iss` must match `--oauth-issuer` exactly. The token's `aud`, or its RFC 8707
   `resource` claim, must contain the expected audience.
 - `exp` and `nbf` are enforced with 60 seconds of clock leeway.
-- The JWKS is cached for 5 minutes. An unknown `kid` triggers one refetch,
-  which is how a rotated key is picked up without a restart.
+- The JWKS endpoint is taken from `--oauth-jwks` when given. Otherwise it is
+  read from RFC 8414 metadata
+  (`<issuer>/.well-known/oauth-authorization-server`), then OIDC discovery
+  (`<issuer>/.well-known/openid-configuration`), and finally falls back to
+  `<issuer>/.well-known/jwks.json`. A provider whose JWKS is not published
+  through either metadata document needs the explicit flag.
+- The JWKS is cached for 5 minutes. An unknown `kid` may force a refetch, but
+  at most once per 30 seconds, so random `kid` values cannot drive outbound
+  requests; a rotated key is picked up after that window.
 - A failed JWKS fetch rejects the token; startup prefetch is best-effort and
-  only logs a warning.
+  only logs a warning. A failed prefetch does not block the first request's
+  own attempt.
 
 ### Scope mapping
 
@@ -319,7 +327,10 @@ previous behaviour untouched.
 
 On MCP streamable-HTTP, the RFC 9728 protected-resource metadata advertises
 the configured issuer in `authorization_servers`, so a client can discover the
-authorization server. A hub bound to a Unix socket has no derivable URL: pass
+authorization server. A rejected request carries it directly:
+`WWW-Authenticate: Bearer resource_metadata="<metadata URL>"`, with the URL
+following the current MCP path; the standalone MCP server and the gateway
+both send that challenge. A hub bound to a Unix socket has no derivable URL: pass
 `--oauth-audience` explicitly (and `--server-url` if clients should discover
 the metadata).
 

@@ -51,7 +51,7 @@ The gateway command keeps its `--backend` choice.
 | `--execution-log` / `--no-execution-log` | on with `--keys-db` | Record every tool call in the registry execution log. See [Authentication](../guides/authentication.md#execution-log) |
 | `--oauth-issuer URL` | - | Authorization-server issuer (`iss`) to accept. Enables OAuth bearer verification; tokens are verified locally against the issuer's JWKS |
 | `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
-| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
+| `--oauth-jwks URL` | discovered from RFC 8414/OIDC metadata, else `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
 | `--oauth-scopes "SCOPE ..."` | - | Space-separated scopes advertised in protected-resource metadata. Omitted when empty, and by default when an issuer is set; without OAuth the metadata keeps advertising `mcp` |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest accepted request body. Must be positive; a larger body returns `413` with a JSON error |
@@ -90,7 +90,7 @@ toolregistry-server mcp [options]
 | `--execution-log` / `--no-execution-log` | on with `--keys-db` | Record every tool call in the registry execution log. See [Authentication](../guides/authentication.md#execution-log) |
 | `--oauth-issuer URL` | - | Authorization-server issuer (`iss`) to accept. Enables OAuth bearer verification; tokens are verified locally against the issuer's JWKS |
 | `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
-| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
+| `--oauth-jwks URL` | discovered from RFC 8414/OIDC metadata, else `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
 | `--oauth-scopes "SCOPE ..."` | - | Space-separated scopes advertised in protected-resource metadata. Omitted when empty, and by default when an issuer is set; without OAuth the metadata keeps advertising `mcp` |
 | `--server-url URL` | derived from `--host`/`--port` | Public URL advertised in OAuth protected-resource metadata (required behind a reverse proxy) |
@@ -149,7 +149,7 @@ every request. The admin panel is disabled by default.
 | `--tokens PATH` | - | File of Bearer tokens applied to every frontend. `API_BEARER_TOKEN` is read as well |
 | `--oauth-issuer URL` | - | Authorization-server issuer (`iss`) to accept. Enables OAuth bearer verification; tokens are verified locally against the issuer's JWKS |
 | `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
-| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
+| `--oauth-jwks URL` | discovered from RFC 8414/OIDC metadata, else `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
 | `--oauth-scopes "SCOPE ..."` | - | Space-separated scopes advertised in protected-resource metadata. Omitted when empty, and by default when an issuer is set; without OAuth the metadata keeps advertising `mcp` |
 | `--server-url URL` | derived from `--host`/`--port` | Public MCP URL used in protected-resource metadata |
