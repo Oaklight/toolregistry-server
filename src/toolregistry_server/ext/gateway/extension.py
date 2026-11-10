@@ -514,6 +514,35 @@ class GatewayAdminExtension:
 
     # ---- collaborators ---------------------------------------------------
 
+    def _oauth_probe_note(self, source: Any) -> str | None:
+        """Explain the probe's blind spot for an OAuth-protected source.
+
+        The connection test opens a plain MCP session with the declaration's
+        static headers.  It does not attach the token the provider would
+        resolve, so a protected source can answer 401 here and still work in
+        the registry.  Saying so in the response keeps a test click from
+        reading as a real authentication failure; the test path never touches
+        the token store or the rejection counter.
+
+        Returns:
+            The note, or ``None`` when no declaration selects the source.
+        """
+        provider = getattr(self._sources, "oauth_provider", None)
+        declaration_for = getattr(provider, "declaration_for", None)
+        if declaration_for is None:
+            return None
+        try:
+            declaration = declaration_for(source)
+        except Exception:  # noqa: BLE001 - the probe must not fail on this
+            return None
+        if declaration is None:
+            return None
+        return (
+            "This source has an OAuth declaration; the connection test does "
+            "not attach the upstream credential, so an authentication failure "
+            "here is not proof that the source is unusable."
+        )
+
     def _require(self, collaborator: Any, label: str) -> Any:
         if collaborator is None:
             raise _Unavailable(
@@ -815,14 +844,16 @@ class GatewayAdminExtension:
         """
         sources = self._require(self._sources, "source manager")
         entry = sources.get(source_id)
-        return {
-            "test": test_connection(
-                entry.source,
-                allow_private_hosts=bool(
-                    getattr(entry.source, "allow_private_hosts", False)
-                ),
-            )
-        }
+        result = test_connection(
+            entry.source,
+            allow_private_hosts=bool(
+                getattr(entry.source, "allow_private_hosts", False)
+            ),
+        )
+        note = self._oauth_probe_note(entry.source)
+        if note is not None:
+            result = {**result, "oauth_declaration": True, "note": note}
+        return {"test": result}
 
     @_guard
     def test_declaration(self, request: Any) -> dict[str, Any]:
@@ -833,12 +864,14 @@ class GatewayAdminExtension:
         if kind == "mcp":
             payload = mcp_auth_to_headers(payload)
         source = parse_source(payload)
-        return {
-            "test": test_connection(
-                source,
-                allow_private_hosts=bool(getattr(source, "allow_private_hosts", False)),
-            )
-        }
+        result = test_connection(
+            source,
+            allow_private_hosts=bool(getattr(source, "allow_private_hosts", False)),
+        )
+        note = self._oauth_probe_note(source)
+        if note is not None:
+            result = {**result, "oauth_declaration": True, "note": note}
+        return {"test": result}
 
     # ---- tools -----------------------------------------------------------
 

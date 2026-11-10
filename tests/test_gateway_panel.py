@@ -791,10 +791,20 @@ class TestConnectionTest:
     def test_a_test_click_never_touches_the_rejection_path(
         self, panel, sources, monkeypatch
     ) -> None:
-        """Testing a source must not increment rejections or latch it."""
+        """Testing a source must not increment rejections or latch it.
+
+        The response must also tell the operator that the probe does not
+        attach the upstream credential, so a 401 here is not presented as a
+        real authentication failure of equal standing.
+        """
         calls: list[str] = []
 
         class Recorder:
+            declared = True
+
+            def declaration_for(self, source):
+                return object() if self.declared else None
+
             def reject_at_resource_server(self, source):
                 calls.append("reject")
 
@@ -803,24 +813,30 @@ class TestConnectionTest:
 
         # The extension never receives the provider; the recorder proves the
         # panel path cannot reach it even when a manager carries one.
-        sources.oauth_provider = Recorder()
+        recorder = Recorder()
+        sources.oauth_provider = recorder
 
         def _fail(source, **kwargs):
             raise ValueError("HTTP 401 from the MCP server")
 
         monkeypatch.setattr(panel_sources, "_probe_mcp", _fail)
         status, body = _request(
-            f"{panel.url}/ext/gateway/sources/test",
-            method="POST",
-            data={
-                "type": "mcp",
-                "transport": "streamable-http",
-                "url": "https://mcp.example.test/mcp",
-            },
+            f"{panel.url}/ext/gateway/sources/s1/test", method="POST"
         )
 
         assert status == 200
-        assert _json(body)["test"]["ok"] is False
+        result = _json(body)["test"]
+        assert result["ok"] is False
+        assert result["oauth_declaration"] is True
+        assert "does not attach the upstream credential" in result["note"]
+
+        # A source with no declaration gets the plain failure, no caveat.
+        recorder.declared = False
+        status, body = _request(
+            f"{panel.url}/ext/gateway/sources/s1/test", method="POST"
+        )
+        assert status == 200
+        assert "oauth_declaration" not in _json(body)["test"]
         assert calls == []
 
     def test_openapi_success(self, panel, monkeypatch) -> None:

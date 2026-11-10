@@ -1372,3 +1372,47 @@ def test_a_noop_reconnect_keeps_the_minted_token(store, clock):
         assert provider.headers_for(_source()) == {"Authorization": "Bearer ACAT"}
     assert len(transport.posts) == 1
     assert store.get(SOURCE).needs_reauth is False
+
+
+def test_a_dead_refresh_token_does_not_loop_after_a_secret_change(store, clock):
+    """A corrected secret gets one attempt; a dead grant then re-latches."""
+    provider, transport = _authorization_provider(
+        store,
+        clock,
+        [
+            {"access_token": "NEW", "refresh_token": "RT", "expires_in": 1},
+            OAuthHTTPError(400, "invalid_grant", "revoked"),
+            OAuthHTTPError(400, "invalid_grant", "revoked"),
+        ],
+    )
+    request = provider.start_authorization(
+        _source(), "https://gateway.example.com/callback"
+    )
+    provider.complete_authorization("CODE", request.state)
+    clock.advance(10)
+
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    assert store.get(SOURCE).needs_reauth is True
+    assert store.get(SOURCE).refresh_token == "RT"
+
+    provider.replace_declarations(
+        (
+            _declaration(
+                grant="authorization_code",
+                client_secret="corrected-secret",
+                token_endpoint=None,
+                discovery_url=None,
+            ),
+        )
+    )
+    # One refresh attempt with the dead token, then the new latch holds.
+    with pytest.raises(ReauthorizationRequired, match="invalid_grant"):
+        provider.headers_for(_source())
+    assert store.get(SOURCE).needs_reauth is True
+    assert len(transport.posts) == 3
+
+    # The same corrected credential must not clear the new verdict again.
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    assert len(transport.posts) == 3
