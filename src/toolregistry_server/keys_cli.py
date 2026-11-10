@@ -286,6 +286,9 @@ def _dispatch_rotate(parsed: argparse.Namespace) -> int:
         except KeyError:
             print(f"Key not found: {parsed.key_id}", file=sys.stderr)
             return 1
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     if parsed.json:
         print(json.dumps(rotated.to_dict(), sort_keys=True))
     else:
