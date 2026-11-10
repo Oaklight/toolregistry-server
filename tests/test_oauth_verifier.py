@@ -15,6 +15,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from toolregistry_server.adapters.mcp.server import _prm_scopes
 from toolregistry_server.cli import CLI, _oauth_settings
 from toolregistry_server.keystore import PrincipalResolver
 from toolregistry_server.oauth import (
@@ -251,6 +252,8 @@ class TestCliFlags:
             JWKS_URL,
             "--oauth-scope",
             "tools:read=calculator,web",
+            "--oauth-scopes",
+            "openid profile email offline_access",
         )
 
         settings = _oauth_settings(parsed, default_audience=None)
@@ -259,6 +262,32 @@ class TestCliFlags:
         assert settings.audience == AUDIENCE
         assert settings.jwks_url == JWKS_URL
         assert settings.scope_map["tools:read"] == ("calculator", "web")
+        assert settings.scopes_supported == (
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
+        )
+
+    def test_advertised_scopes_default_to_omitted(self):
+        parsed = self._parsed("openapi", "--oauth-issuer", ISSUER)
+        settings = _oauth_settings(parsed, default_audience=AUDIENCE)
+
+        assert settings is not None
+        assert settings.scopes_supported is None
+
+    def test_an_empty_scope_list_omits_the_field(self):
+        parsed = self._parsed("openapi", "--oauth-issuer", ISSUER, "--oauth-scopes", "")
+        settings = _oauth_settings(parsed, default_audience=AUDIENCE)
+
+        assert settings is not None
+        assert settings.scopes_supported == ()
+
+    def test_advertised_scopes_require_an_issuer(self):
+        parsed = self._parsed("openapi", "--oauth-scopes", "openid")
+
+        with pytest.raises(ValueError, match="--oauth-issuer"):
+            _oauth_settings(parsed, default_audience=AUDIENCE)
 
     def test_gateway_options_carry_the_settings(self):
         parsed = self._parsed(
@@ -294,3 +323,18 @@ class TestCliFlags:
 
         with pytest.raises(ValueError, match="--oauth-issuer"):
             _oauth_settings(parsed, default_audience=AUDIENCE)
+
+
+class TestPrmScopes:
+    def test_an_external_issuer_makes_the_field_opt_in(self):
+        assert _prm_scopes(["https://idp.example.com"], None) is None
+        assert _prm_scopes(["https://idp.example.com"], ()) is None
+
+    def test_explicit_scopes_are_advertised(self):
+        assert _prm_scopes(["https://idp.example.com"], ("openid", "profile")) == [
+            "openid",
+            "profile",
+        ]
+
+    def test_no_issuer_keeps_the_generic_scope(self):
+        assert _prm_scopes(None, None) == ["mcp"]

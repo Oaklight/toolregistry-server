@@ -243,6 +243,22 @@ def resolve_public_url(
     return advertised
 
 
+def _prm_scopes(
+    authorization_servers: list[str] | None,
+    scopes_supported: "list[str] | tuple[str, ...] | None",
+) -> list[str] | None:
+    """Return the ``scopes_supported`` value for the PRM document.
+
+    An external authorization server validates the scopes it issues, so its
+    resource metadata must not advertise a scope the server may reject.  With
+    an external issuer the field is therefore opt-in; without one the
+    historical ``["mcp"]`` value is kept.
+    """
+    if authorization_servers:
+        return list(scopes_supported) if scopes_supported else None
+    return list(scopes_supported) if scopes_supported else ["mcp"]
+
+
 async def run_streamable_http(
     server: "Server",
     host: str = "127.0.0.1",
@@ -252,6 +268,7 @@ async def run_streamable_http(
     server_url: str | None = None,
     principal_resolver: "PrincipalResolver | None" = None,
     authorization_servers: list[str] | None = None,
+    scopes_supported: "list[str] | tuple[str, ...] | None" = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
@@ -287,6 +304,9 @@ async def run_streamable_http(
         authorization_servers: Issuers to advertise in the protected-resource
             metadata.  When ``None``, the server advertises its own origin
             (the pre-OAuth behaviour).
+        scopes_supported: Scopes to advertise in the protected-resource
+            metadata.  With an external issuer, ``None`` or an empty list
+            omits the field; without one, the default stays ``["mcp"]``.
     """
     try:
         import uvicorn
@@ -387,7 +407,7 @@ async def run_streamable_http(
             create_protected_resource_routes(
                 resource_url=resource_url,
                 authorization_servers=issuers,
-                scopes_supported=["mcp"],
+                scopes_supported=_prm_scopes(authorization_servers, scopes_supported),
             )
         )
 
