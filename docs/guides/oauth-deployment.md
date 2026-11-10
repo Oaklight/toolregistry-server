@@ -199,7 +199,9 @@ introspection endpoint when that window is too long:
   `introspection_url`, `introspection_client_id`,
   `introspection_client_secret`, `introspection_cache_ttl` and
   `introspection_optional`, with per-client limits under
-  `client_concurrency`. A flag wins over the file.
+  `client_concurrency`. A flag wins over the file. An unknown key in that
+  section is rejected at startup rather than ignored, and a bad per-client
+  limit names its source (`oauth.client_concurrency['reports-bot']`).
 
 The introspection endpoint needs a client credential of its own; it is not
 the client the end user authorized. Keep that secret out of the command line
@@ -217,9 +219,19 @@ it per client with either of:
 ```
 
 A positive integer in the claim wins over the static entry. An invalid claim
-is ignored rather than rejecting the token. The limit is applied per OAuth
-client, so two clients acting for one user never share a budget, and a call
-that waits too long is recorded with outcome `busy`.
+is ignored rather than rejecting the token.
+
+The budget belongs to the OAuth client, not to one of its users: every `sub`
+that the same client acts for shares one in-flight limit, keyed
+`oauth:<client_id>`. The budget is monotonically non-increasing per client —
+a token whose claim is wider than the limit already in force does not raise
+it, while a narrower claim lowers it — so one user cannot enlarge what the
+others share. Two different clients never share a budget.
+
+Accounting stays per principal: the execution-log row and the key counters
+still carry the client and the `sub`, so two users of one client remain
+distinguishable even though they share its limit. A call that waits too long
+is recorded with outcome `busy`.
 
 ## Troubleshooting
 
@@ -234,7 +246,7 @@ that waits too long is recorded with outcome `busy`.
 | Client says dynamic registration is unsupported | DCR is disabled at the AS, or the client needs CIMD | Enable DCR or CIMD at the AS, or pre-register the client and enter its credentials manually |
 | Swagger "Authorize" does nothing | The document has no OAuth2 scheme | Confirm `--oauth-issuer` is set and the endpoints are resolvable; the scheme is omitted with a warning otherwise |
 | Swagger ends on a 404 after the AS callback | The AS redirect URI does not match the served redirect page | Register `<public origin><openapi path>/oauth2-redirect.html`; the page moves with `--openapi-path` |
-| Every token is rejected after enabling introspection | The endpoint is unreachable, or its client id and secret are wrong | Check the startup log and the endpoint; `--oauth-introspection-optional` confirms the diagnosis by falling back to local verification |
+| Every token is rejected after enabling introspection | The endpoint is unreachable, or its client id and secret are wrong | Check the startup log and the endpoint; `--oauth-introspection-optional` confirms the diagnosis by falling back to local verification. The failure is cached for the TTL, so the next probe is one TTL away, not the next request |
 | A revoked token still works | No introspection endpoint is configured, or the cache TTL has not elapsed | Configure `--oauth-introspection-url`, and shorten `--oauth-introspection-cache-ttl` (default 5 seconds) |
 
 ## See also

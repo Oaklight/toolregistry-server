@@ -119,6 +119,11 @@ wrapper, and the standalone route is exempt from its token check.
     loads no external asset, holds no secret, and only hands the
     authorization response back to the Swagger UI window that opened it.
 
+The page mirrors the parsing of the upstream `swagger-ui-dist` redirect
+script: it percent-decodes each callback parameter, accepts a hash form with a
+leading `?` (`#?code=...`), and recognises the flow names `accessCode`,
+`authorizationCode` and `authorization_code`.
+
 Register the redirect URI at the authorization server as the public URL of
 this page — `<public origin>/oauth2-redirect.html` for the standalone server,
 `<public origin><openapi path>/oauth2-redirect.html` for a gateway.
@@ -150,7 +155,8 @@ toolregistry-server gateway --config config.yaml \
   cache and introspects on every request.
 - An endpoint failure rejects the token. `--oauth-introspection-optional`
   falls back to the local result instead, trading revocation latency for
-  availability.
+  availability. The failure is cached for the same TTL, so an outage costs
+  one probe per TTL rather than one timed-out request per call.
 - The token and the request body are never logged; a failure logs the
   endpoint and the exception type only.
 - Setting the URL without a client id and secret is a startup error.
@@ -168,14 +174,20 @@ authorization layer behaves the same on every frontend:
 - **Label** — the `sub` claim, else `client_id`/`azp`, else `oauth`.
 - **Client** — `client_id`, else `azp`. It is kept apart from `sub`, so two
   clients acting for one user are separate principals with separate scopes,
-  concurrency budgets and execution-log rows.
+  execution-log rows and counters.
 - **Scopes** — the `--oauth-scope` mapping only. An unmapped scope grants
   nothing, and tool overrides from `+tool`/`-tool` entries apply on top of the
   namespaces.
 - **Concurrency** — `--oauth-concurrency-claim` or
   `--oauth-client-concurrency`; it narrows the process
-  `--client-concurrency` and never raises it. Two clients for one user never
-  share a budget, and the accounting key is `oauth:<client_id>:<label>`.
+  `--client-concurrency` and never raises it. The budget belongs to the OAuth
+  client, so every user that client acts for shares one in-flight limit; the
+  limiter key is `oauth:<client_id>`. The budget is monotonically
+  non-increasing: a token whose claim is wider than the limit already in
+  force never raises it, while a narrower claim lowers it. Accounting stays
+  per principal: the execution-log row and the counters carry the client and
+  the `sub` (`oauth:<client_id>:<label>`), so two users of one client remain
+  distinguishable.
 - **Listing** — `tools/list` on MCP and `/tools` and `/openapi.json` on the
   OpenAPI frontends show only the tools the token may call.
 - **Execution log** — each call records `client_id` (the OAuth client) and
@@ -209,7 +221,14 @@ oauth:
 ```
 
 The issuer, audience and scope mapping remain command-line options, so OAuth
-still requires the corresponding flags.
+still requires the corresponding flags. The section is checked: a key the
+server does not read is rejected at startup, because a typo such as
+`introspection_ur1` would otherwise leave a security control silently off.
+The accepted keys are `introspection_url`, `introspection_client_id`,
+`introspection_client_secret`, `introspection_cache_ttl`,
+`introspection_optional`, `concurrency_claim` and `client_concurrency`. A bad
+per-client limit names its source, for example
+`oauth.client_concurrency['reports-bot'] must be a positive integer`.
 
 On the standalone `openapi` command, OAuth needs PyJWT with a crypto backend:
 install `toolregistry-server[openapi]`. The base install stays free of

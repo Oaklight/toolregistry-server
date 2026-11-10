@@ -57,7 +57,7 @@ The gateway command keeps its `--backend` choice.
 | `--oauth-authorization-url URL` | from AS metadata | Authorization endpoint for the OpenAPI `authorizationCode` flow |
 | `--oauth-token-url URL` | from AS metadata | Token endpoint for the OpenAPI `authorizationCode` flow |
 | `--oauth-refresh-url URL` | - | Optional `refreshUrl`; omitted unless set |
-| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | Token claim that may carry a client's in-flight call limit; a non-positive or non-integer value is ignored |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | Token claim that may carry a client's in-flight call limit; a non-positive or non-integer value is ignored, and a wider value never raises the client's current budget |
 | `--oauth-client-concurrency CLIENT=LIMIT` | - | Static in-flight call limit for one OAuth client; repeatable. A valid concurrency claim wins |
 | `--oauth-introspection-url URL` | - | RFC 7662 introspection endpoint; every locally verified token is confirmed with it |
 | `--oauth-introspection-client-id ID` | - | Client id for the introspection endpoint (HTTP Basic); required with the URL |
@@ -106,7 +106,7 @@ toolregistry-server mcp [options]
 | `--oauth-authorization-url URL` | from AS metadata | Authorization endpoint for the OpenAPI `authorizationCode` flow |
 | `--oauth-token-url URL` | from AS metadata | Token endpoint for the OpenAPI `authorizationCode` flow |
 | `--oauth-refresh-url URL` | - | Optional `refreshUrl`; omitted unless set |
-| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | Token claim that may carry a client's in-flight call limit; a non-positive or non-integer value is ignored |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | Token claim that may carry a client's in-flight call limit; a non-positive or non-integer value is ignored, and a wider value never raises the client's current budget |
 | `--oauth-client-concurrency CLIENT=LIMIT` | - | Static in-flight call limit for one OAuth client; repeatable. A valid concurrency claim wins |
 | `--oauth-introspection-url URL` | - | RFC 7662 introspection endpoint; every locally verified token is confirmed with it |
 | `--oauth-introspection-client-id ID` | - | Client id for the introspection endpoint (HTTP Basic); required with the URL |
@@ -175,7 +175,7 @@ every request. The admin panel is disabled by default.
 | `--oauth-authorization-url URL` | from AS metadata | Authorization endpoint for the OpenAPI `authorizationCode` flow |
 | `--oauth-token-url URL` | from AS metadata | Token endpoint for the OpenAPI `authorizationCode` flow |
 | `--oauth-refresh-url URL` | - | Optional `refreshUrl`; omitted unless set |
-| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | Token claim that may carry a client's in-flight call limit; a non-positive or non-integer value is ignored |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | Token claim that may carry a client's in-flight call limit; a non-positive or non-integer value is ignored, and a wider value never raises the client's current budget |
 | `--oauth-client-concurrency CLIENT=LIMIT` | - | Static in-flight call limit for one OAuth client; repeatable. A valid concurrency claim wins |
 | `--oauth-introspection-url URL` | - | RFC 7662 introspection endpoint; every locally verified token is confirmed with it |
 | `--oauth-introspection-client-id ID` | - | Client id for the introspection endpoint (HTTP Basic); required with the URL |
