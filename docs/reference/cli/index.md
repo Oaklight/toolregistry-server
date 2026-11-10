@@ -190,6 +190,13 @@ toolregistry-server local-hub [run|ensure|stop|status] --config config.yaml --na
 schema 与一组缓存。仅支持 POSIX；Windows 上动作会被拒绝并提示改用 `gateway`。见
 [本地 Hub 指南](../../guides/local-hub.md)。
 
+由 `ensure` 或 shim 拉起的 hub 以 `toolregistry-server local-hub run ...` 启动。
+设置 `TOOLREGISTRY_LOCAL_HUB_COMMAND` 可改用其他启动器——Hub 部署把它设为
+`TOOLREGISTRY_LOCAL_HUB_COMMAND=toolregistry-hub`，让常驻进程保留 Hub 启动器的
+注册表策略。该值按 shell 命令拆分并原样使用，因此可以指定包装脚本或其他解释器。
+优先级：变量包含非空白文本时使用它，其次使用 `PATH` 上的 `toolregistry-server`，
+最后使用当前解释器执行包内引导代码。被拉起的 hub 会继承该变量。
+
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `action` | `run` | `run` 前台运行；`ensure` 复用已运行的 hub 或拉起 detached 进程并打印 endpoint；`stop` 通知属主；`status` 报告状态 |

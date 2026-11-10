@@ -6,6 +6,10 @@
 
 ## [未发布]
 
+### 新增
+
+- **常驻 hub 可以由启动器拉起**：`local-hub ensure` 与 stdio shim 在 `TOOLREGISTRY_LOCAL_HUB_COMMAND` 包含非空白文本时，按 shell 命令拆分并用它替代 `toolregistry-server` 拉起 hub。Hub 部署把它指向 `toolregistry-hub`，按需启动的 hub 因此保留 Hub 启动器的注册表策略（预设默认值、configurable 钩子、管理面板）。未设置或为空白时沿用原有查找顺序：`PATH` 上的 `toolregistry-server`，然后是当前解释器执行包内引导代码。被拉起的 hub 会继承该变量；只有 shim 的密钥会从环境中移除。
+
 ## [0.9.0] - 2026-11-09
 
 ### 新增
