@@ -708,8 +708,18 @@ class OAuthClientProvider:
             message,
             issuer=self._issuer_for(declaration),
             client_id=declaration.client_id,
+            **self._credential_fields(declaration),
         )
         raise ReauthorizationRequired(message)
+
+    def _credential_fields(self, declaration: OAuthClientConfig) -> dict[str, Any]:
+        """Return the declaration fields a latch records with its verdict."""
+        return {
+            "grant": declaration.grant,
+            "token_endpoint": declaration.token_endpoint or "",
+            "requested_scopes": tuple(declaration.scopes),
+            "secret_digest": _secret_digest(declaration),
+        }
 
     def _record_compatible(
         self,
@@ -977,6 +987,7 @@ class OAuthClientProvider:
             message,
             issuer=self._issuer_for(declaration),
             client_id=declaration.client_id,
+            **self._credential_fields(declaration),
         )
         raise ReauthorizationRequired(message) from None
 

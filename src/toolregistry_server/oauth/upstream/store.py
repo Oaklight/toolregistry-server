@@ -416,6 +416,10 @@ class TokenStore:
         *,
         issuer: str = "",
         client_id: str = "",
+        grant: str = "",
+        token_endpoint: str = "",
+        requested_scopes: tuple[str, ...] | None = None,
+        secret_digest: str = "",
     ) -> None:
         """Record that *source_id* must be authorized again.
 
@@ -427,26 +431,51 @@ class TokenStore:
         again.  The row is inserted when it does not exist yet, so a failure
         on the very first fetch is visible too.
 
+        The declaration fields are refreshed on every latch, so the same
+        credential that produced this verdict no longer reads as "changed":
+        without that, a corrected secret followed by a dead refresh token
+        would clear the latch and retry forever.
+
         Args:
             source_id: Selector the declaration is written under.
             error: Redacted failure text.
             issuer: Issuer to record when the row is new.
             client_id: Client id to record when the row is new.
+            grant: Grant that produced the verdict.
+            token_endpoint: Explicit token endpoint, or empty.
+            requested_scopes: Scopes the declaration asked for.
+            secret_digest: Fingerprint of the credential that failed.
         """
+        scopes_text = json.dumps(list(requested_scopes or ()), separators=(",", ":"))
         with self._lock:
             self._connection.execute(
                 """
                 INSERT INTO oauth_client_tokens (
                     source_id, issuer, client_id, scopes, updated_at,
-                    needs_reauth, error
-                ) VALUES (?, ?, ?, '[]', ?, 1, ?)
+                    needs_reauth, error, grant, token_endpoint,
+                    requested_scopes, secret_digest
+                ) VALUES (?, ?, ?, '[]', ?, 1, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     access_token = NULL,
                     needs_reauth = 1,
                     error = excluded.error,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    grant = excluded.grant,
+                    token_endpoint = excluded.token_endpoint,
+                    requested_scopes = excluded.requested_scopes,
+                    secret_digest = excluded.secret_digest
                 """,
-                (source_id, issuer, client_id, _format_time(self._clock()), error),
+                (
+                    source_id,
+                    issuer,
+                    client_id,
+                    _format_time(self._clock()),
+                    error,
+                    grant,
+                    token_endpoint,
+                    scopes_text,
+                    secret_digest,
+                ),
             )
             self._connection.commit()
 
