@@ -323,6 +323,55 @@ def test_update_can_clear_expiry_and_concurrency(tmp_path, capsys):
     assert payload["max_concurrency"] is None
 
 
+def test_update_merges_scope_categories(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse(
+        "keys",
+        "--db",
+        database,
+        "create",
+        "--label",
+        "bot",
+        "--namespace",
+        "web",
+        "--deny-tool",
+        "web-dangerous",
+        "--json",
+    )
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+
+    only_namespace = _parse(
+        "keys",
+        "--db",
+        database,
+        "update",
+        key_id,
+        "--namespace",
+        "web2",
+        "--json",
+    )
+    assert dispatch_keys(only_namespace) == 0
+    merged = json.loads(capsys.readouterr().out)
+    assert merged["scopes"]["namespaces"] == ["web2"]
+    assert merged["scopes"]["tools"] == {"web-dangerous": False}
+
+    only_tool = _parse(
+        "keys",
+        "--db",
+        database,
+        "update",
+        key_id,
+        "--deny-tool",
+        "other-tool",
+        "--json",
+    )
+    assert dispatch_keys(only_tool) == 0
+    merged = json.loads(capsys.readouterr().out)
+    assert merged["scopes"]["namespaces"] == ["web2"]
+    assert merged["scopes"]["tools"] == {"other-tool": False}
+
+
 def test_update_refuses_a_revoked_key(tmp_path, capsys):
     database = str(tmp_path / "keys.db")
     create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")

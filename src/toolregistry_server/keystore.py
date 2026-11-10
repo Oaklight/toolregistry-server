@@ -844,20 +844,26 @@ class ApiKeyStore:
         secret = SECRET_PREFIX + secrets.token_urlsafe(32)
         digest = _sha256_hex(secret)
         hashed = _hash_secret(secret)
+        now = self._now()
         with self._lock:
-            row = self._select_id(key_id)
-            if row is None:
-                raise KeyError(key_id)
-            if row["revoked_at"] is not None:
-                raise ValueError(f"key {key_id!r} is revoked and cannot be rotated")
-            if not _row_is_active(row, self._now()):
+            cursor = self._connection.execute(
+                "UPDATE api_keys SET secret_digest = ?, secret_hash = ? "
+                "WHERE id = ? AND revoked_at IS NULL "
+                "AND (expires_at IS NULL OR expires_at > ?)",
+                (digest, hashed, key_id, now),
+            )
+            if cursor.rowcount == 0:
+                # The write is the check: a revoke or expiry that landed
+                # after the caller decided to rotate makes it match no row.
+                self._connection.rollback()
+                row = self._select_id(key_id)
+                if row is None:
+                    raise KeyError(key_id)
+                if row["revoked_at"] is not None:
+                    raise ValueError(f"key {key_id!r} is revoked and cannot be rotated")
                 raise ValueError(
                     f"key {key_id!r} has expired; update expires_at before rotating"
                 )
-            self._connection.execute(
-                "UPDATE api_keys SET secret_digest = ?, secret_hash = ? WHERE id = ?",
-                (digest, hashed, key_id),
-            )
             self._connection.commit()
             # A cached digest must not survive the secret it belongs to.
             self._forget(key_id)
