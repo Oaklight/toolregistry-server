@@ -93,9 +93,11 @@ class App:
         #: loaded.  Downstream code (admin extensions) uses it to change the
         #: live source list.
         self.source_manager = None
-        #: Upstream OAuth client provider built from the config, when the
-        #: file declares one.  Kept so the stores can be closed and so an
-        #: embedder can reach the panel-facing interface.
+        #: Upstream OAuth client provider built from the config.  Always
+        #: present once a config file was loaded, even with no
+        #: ``oauth.clients`` entry, so it can reconcile the token store.  Kept
+        #: so the stores can be closed and so an embedder can reach the
+        #: panel-facing interface.
         self.oauth_client_provider = None
         #: The running config watcher, when ``config_reload`` is enabled.
         self.config_watcher = None
@@ -140,14 +142,23 @@ class App:
             from toolregistry import ToolRegistry as _ToolRegistry
 
             from .oauth.upstream.config import load_oauth_clients
-            from .oauth.upstream.provider import OAuthClientProvider
+            from .oauth.upstream.provider import OAuthClientProvider, OAuthStoreError
 
             config = load_config(config_path)
             registry = _ToolRegistry()
             declarations = load_oauth_clients(config_path, config)
-            self.oauth_client_provider = (
-                OAuthClientProvider(declarations) if declarations else None
-            )
+            # Always build the provider, even with no declarations: the
+            # reconciliation below is how a whole ``oauth.clients`` section
+            # removed while the server was stopped takes its rows with it.
+            # With no declarations it opens the default store only when that
+            # database already exists.
+            self.oauth_client_provider = OAuthClientProvider(declarations)
+            try:
+                self.oauth_client_provider.reconcile_stored_tokens()
+            except OAuthStoreError as exc:
+                # A locked or unreadable store must not stop the server; each
+                # source that needs a token reports the failure itself.
+                logger.warning(f"Could not reconcile stored OAuth tokens: {exc}")
             # The manager owns the source list from startup: it registers the
             # sources, records which names each produced, and is the object a
             # runtime add/remove/replace mutates.

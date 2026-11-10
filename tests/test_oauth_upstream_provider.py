@@ -941,9 +941,17 @@ class _MovingEndpointTransport:
 
     def get_json(self, url, timeout):
         self.gets += 1
+        # Discovery is rejected unless the document names the configured
+        # issuer (RFC 8414 section 3.3), so every document carries it.
         if self.gets == 1:
-            return {"token_endpoint": "https://idp.example.com/old/token"}
-        return {"token_endpoint": "https://idp.example.com/new/token"}
+            return {
+                "issuer": "https://idp.example.com",
+                "token_endpoint": "https://idp.example.com/old/token",
+            }
+        return {
+            "issuer": "https://idp.example.com",
+            "token_endpoint": "https://idp.example.com/new/token",
+        }
 
     def post_form(self, url, fields, headers, timeout):
         self.posts.append(url)
@@ -1416,3 +1424,155 @@ def test_a_dead_refresh_token_does_not_loop_after_a_secret_change(store, clock):
     with pytest.raises(ReauthorizationRequired):
         provider.headers_for(_source())
     assert len(transport.posts) == 3
+
+
+# -- metadata TTL, expiry parsing, and the declaration manifest --------------
+
+
+@pytest.mark.parametrize(
+    ("stated", "expected"),
+    [(3599.5, 3599), (3600.0, 3600), (7.9, 7), ("7200", 7200), (0.4, 0)],
+)
+def test_a_float_expires_in_is_rounded_down(store, clock, stated, expected):
+    """#271: providers do send ``expires_in`` as a JSON float."""
+    transport = FakeTransport(responses=[{"access_token": "AT", "expires_in": stated}])
+    provider = _provider(_declaration(), transport, store, clock)
+
+    provider.headers_for(_source())
+
+    assert store.get(SOURCE).expires_at == NOW + timedelta(seconds=expected)
+
+
+@pytest.mark.parametrize("stated", [float("nan"), float("inf"), -1.0, -0.5])
+def test_a_non_positive_or_non_finite_expires_in_is_treated_as_absent(
+    store, clock, stated
+):
+    transport = FakeTransport(responses=[{"access_token": "AT", "expires_in": stated}])
+    provider = _provider(_declaration(), transport, store, clock)
+
+    provider.headers_for(_source())
+
+    assert store.get(SOURCE).expires_at is None
+
+
+class _MovingMetadata:
+    """Serve one metadata document whose token endpoint can be moved."""
+
+    def __init__(self, endpoint: str | None) -> None:
+        self.endpoint = endpoint
+        self.gets = 0
+        self.posts: list[str] = []
+
+    def get_json(self, url, timeout):
+        self.gets += 1
+        if self.endpoint is None:
+            raise OAuthHTTPError(503, None, None)
+        return {"issuer": "https://idp.example.com", "token_endpoint": self.endpoint}
+
+    def post_form(self, url, fields, headers, timeout):
+        self.posts.append(url)
+        return {"access_token": "AT", "expires_in": 3600}
+
+
+def _ttl_provider(transport, store, clock, ttl=60.0):
+    return OAuthClientProvider(
+        (_declaration(token_endpoint=None),),
+        store=store,
+        transport=transport,
+        clock=clock,
+        metadata_ttl=ttl,
+    )
+
+
+def test_metadata_is_fetched_again_after_the_ttl(store, clock):
+    """#269: a moved endpoint must be seen without a restart."""
+    transport = _MovingMetadata("https://idp.example.com/one/token")
+    provider = _ttl_provider(transport, store, clock)
+
+    provider.headers_for(_source())
+    assert transport.gets == 1
+    store.clear(SOURCE)
+
+    clock.advance(61)
+    transport.endpoint = "https://idp.example.com/two/token"
+    provider.headers_for(_source())
+
+    assert transport.gets == 2
+    assert transport.posts[-1] == "https://idp.example.com/two/token"
+
+
+def test_metadata_is_reused_within_the_ttl(store, clock):
+    transport = _MovingMetadata("https://idp.example.com/one/token")
+    provider = _ttl_provider(transport, store, clock)
+
+    provider.headers_for(_source())
+    store.clear(SOURCE)
+    clock.advance(30)
+    transport.endpoint = "https://idp.example.com/two/token"
+    provider.headers_for(_source())
+
+    assert transport.gets == 1
+    assert transport.posts[-1] == "https://idp.example.com/one/token"
+
+
+def test_a_failed_refresh_serves_the_cached_metadata(store, clock):
+    """An unreachable identity provider must not stop a working token."""
+    transport = _MovingMetadata("https://idp.example.com/one/token")
+    provider = _ttl_provider(transport, store, clock)
+
+    provider.headers_for(_source())
+    store.clear(SOURCE)
+
+    clock.advance(61)
+    transport.endpoint = None  # every discovery attempt now answers 503
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer AT"}
+    assert transport.posts[-1] == "https://idp.example.com/one/token"
+
+
+def test_a_removed_declaration_takes_its_row_with_it_across_a_restart(tmp_path, clock):
+    """#268: a section removed while stopped must not leave a usable row."""
+    database = str(tmp_path / "tokens.db")
+    with TokenStore(database, clock=clock) as seeded:
+        seeded.put(
+            TokenRecord(
+                source_id=SOURCE,
+                issuer="https://idp.example.com",
+                client_id="toolregistry",
+                access_token="AT",
+            )
+        )
+
+    declaration = _declaration(token_store=database)
+    first = OAuthClientProvider(
+        (declaration,), default_token_store=database, clock=clock
+    )
+    assert first.reconcile_stored_tokens() == ()
+
+    # The whole ``oauth.clients`` section is gone on the next start.
+    second = OAuthClientProvider((), default_token_store=database, clock=clock)
+    assert second.reconcile_stored_tokens() == (SOURCE,)
+    with TokenStore(database, clock=clock) as check:
+        assert check.get(SOURCE) is None
+
+    first.close()
+    second.close()
+
+
+def test_reconcile_leaves_a_row_it_never_declared(tmp_path, clock):
+    """A row written by another configuration sharing the store is kept."""
+    database = str(tmp_path / "tokens.db")
+    with TokenStore(database, clock=clock) as seeded:
+        seeded.put(
+            TokenRecord(
+                source_id="namespace:other",
+                issuer="https://idp.example.com",
+                client_id="toolregistry",
+                access_token="AT",
+            )
+        )
+
+    provider = OAuthClientProvider((), default_token_store=database, clock=clock)
+    assert provider.reconcile_stored_tokens() == ()
+    with TokenStore(database, clock=clock) as check:
+        assert check.get("namespace:other") is not None
+    provider.close()

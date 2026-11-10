@@ -1132,19 +1132,36 @@ class SourceManager:
             return False
         try:
             config = load_config(target)
-            self._reload_oauth_declarations(target, config)
         except Exception as exc:  # noqa: BLE001 - a bad edit must not kill the watcher
-            with self._lock:
-                self.last_reload_error = _safe_error(exc)
-            logger.warning(
-                f"Config reload skipped; keeping the current registry: "
-                f"{_safe_error(exc)}"
-            )
-            return False
+            return self._reload_failed(exc)
+        # The declaration swap and the source diff run under one lock: a
+        # panel mutation that persists and then syncs declarations must not
+        # interleave with a reload that swaps them, or the provider can end
+        # up holding a mix of the file and the in-memory config.
         with self._lock:
+            try:
+                self._reload_oauth_declarations(target, config)
+            except Exception as exc:  # noqa: BLE001 - a bad edit must not kill
+                return self._reload_failed(exc)
             self._apply_diff(config)
             self.last_reload_error = None
         return True
+
+    def _reload_failed(self, exc: BaseException) -> bool:
+        """Record and log a skipped reload.
+
+        Args:
+            exc: The failure that aborted the reload.
+
+        Returns:
+            ``False``, so a caller can ``return self._reload_failed(exc)``.
+        """
+        with self._lock:
+            self.last_reload_error = _safe_error(exc)
+        logger.warning(
+            f"Config reload skipped; keeping the current registry: {_safe_error(exc)}"
+        )
+        return False
 
     def _reload_oauth_declarations(self, path: str, config: ToolConfig) -> None:
         """Reload ``oauth.clients`` and hand it to the provider.
@@ -1162,12 +1179,21 @@ class SourceManager:
             toolregistry.config.ConfigError: If the section is invalid.
         """
         from .oauth.upstream.config import load_oauth_clients
-        from .oauth.upstream.provider import OAuthClientProvider
+        from .oauth.upstream.provider import OAuthClientProvider, OAuthStoreError
 
         declarations = load_oauth_clients(path, config)
         if self.oauth_provider is None:
             if declarations:
-                self.oauth_provider = OAuthClientProvider(declarations)
+                provider = OAuthClientProvider(declarations)
+                try:
+                    provider.reconcile_stored_tokens()
+                except OAuthStoreError as exc:
+                    # A store that cannot be read must not stop OAuth from
+                    # being enabled; the source reports the failure itself.
+                    logger.warning(
+                        f"Could not reconcile stored OAuth tokens: {_safe_error(exc)}"
+                    )
+                self.oauth_provider = provider
             return
         previous = self.oauth_provider.declarations
         # A declaration that left the file must take its stored token with it;
@@ -1544,6 +1570,12 @@ class SourceManager:
 
         An excluded source that never registered, and any failed source, still
         needs a full attempt; otherwise only the scope can have moved.
+
+        ``reauth_required`` is cleared when the source leaves scope.  It
+        describes the credential of a source that is in use, and the panel
+        must not offer "Re-authorize" for one the operator has excluded.  The
+        verdict is not lost: the token store keeps the latch, and the next
+        connect of a re-enabled source reads it again.
         """
         included = _in_scope(source, new_config)
         if entry.status is SourceStatus.FAILED or (
@@ -1557,6 +1589,7 @@ class SourceManager:
             dataclasses.replace(
                 entry,
                 status=(SourceStatus.APPLIED if included else SourceStatus.EXCLUDED),
+                reauth_required=entry.reauth_required and included,
             ),
             set(),
         )
