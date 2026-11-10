@@ -251,7 +251,7 @@ discovery for the same flags. The remaining keys are `introspection_url`,
 | `refresh_url` | `--oauth-refresh-url` | string |
 | `scope` | `--oauth-scope` | mapping from a scope to its entries; each value is a list of entries or one comma-separated string. The flag's `[SCOPE=ENTRY[,ENTRY], ...]` list is accepted too |
 | `scopes` | `--oauth-scopes` | list of strings, or one space-separated string |
-| `clients` | — | list of mappings, one per source this server presents a credential to; see below |
+| `clients` | no flag | list of mappings, one per source this server presents a credential to; file-only, there is no command-line equivalent |
 
 The `scope` entries use the same grammar as the flag: a namespace pattern,
 `+tool-name` to allow one tool, or `-tool-name` to deny it. An unmapped scope
@@ -268,7 +268,10 @@ of `client_secret` and `client_secret_env`, optional `scopes`, `grant`
 absolute `token_store` path. Two entries cannot select the same source, and an
 unknown key, a relative `token_store` or an existing `Authorization` header on
 the source fails the load. Tokens are kept in SQLite outside the
-configuration file; the client secret is never written there. See
+configuration file. The client secret itself is never written there; a
+salted, iterated fingerprint of it is, so rotating the secret discards a stale
+re-authorization verdict without storing the secret. The start/complete pair
+is embedder-only in stage 1: no panel route calls it yet. See
 [the deployment guide](../guides/oauth-deployment.md#upstream-credentials-for-a-protected-mcp-source).
 
 A stored token is reused until the MCP server refuses it. An HTTP 401 or 403
@@ -281,6 +284,28 @@ and waits for the operator. A second consecutive rejection latches an
 and retry the current secret. The counter resets only after a connect succeeds
 end to end, so a token fetched at the token endpoint is not trusted until the
 source accepts it.
+
+The row records the source URL, grant, requested scopes, token endpoint and a
+fingerprint of the client credential it was minted with. A token is presented
+only to the URL it was minted for; repointing a selector at another host mints
+a new token instead of replaying the old one. A definitive grant rejection
+stays latched until the operator re-authorizes or corrects the client
+credentials in the file: issuer, client id, token endpoint, grant, scopes,
+secret or client authentication method. An issuer, client-id, grant or target
+change discards the row outright.
+
+Discovered metadata is used only when its `issuer` equals the configured
+issuer (RFC 8414 section 3.3), or, for a bare `discovery_url`, when it names an
+issuer at all. Its endpoints must be absolute `http` or `https` URLs, and a
+document without a usable `token_endpoint` is not cached, so the next
+discovery candidate can still answer.
+
+A panel edit that would make an `oauth.clients` selector name no source, or
+several, is rejected before it is written; a failed write leaves the token
+rows in place. Error text is redacted: URL userinfo, credential-shaped
+parameters, the client secret and the base64 HTTP Basic credential. A secret
+shorter than six characters is not replaced in free text, because replacing it
+would rewrite ordinary words.
 
 A token response without `expires_in` is assumed to last one hour, measured
 from the stored row's `updated_at`. An identity provider that omits the field
