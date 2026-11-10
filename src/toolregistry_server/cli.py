@@ -134,6 +134,16 @@ def _oauth_settings(parsed: argparse.Namespace, *, default_audience: str | None)
     return settings_from_args(parsed, default_audience=default_audience or "")
 
 
+def _drop_unset(options: dict[str, Any], key: str) -> None:
+    """Remove *key* from *options* when it is ``None``.
+
+    A serving command called without a feature's flags keeps its historical
+    call signature; ``None`` is the adapter default anyway.
+    """
+    if options.get(key) is None:
+        options.pop(key, None)
+
+
 # ---------------------------------------------------------------------------
 # CLI class
 # ---------------------------------------------------------------------------
@@ -473,6 +483,7 @@ class CLI:
             }
             if keys_db is not None:
                 options["keys_db"] = keys_db
+            _drop_unset(options, "oauth")
             self.app.serve_openapi(**options)
         elif parsed.command == "mcp":
             from .adapters.mcp.server import resolve_public_url
@@ -511,6 +522,7 @@ class CLI:
             }
             if keys_db is not None:
                 options["keys_db"] = keys_db
+            _drop_unset(options, "oauth")
             self.app.serve_mcp(**options)
         elif parsed.command == "gateway":
             self.app.serve_gateway(**self._gateway_options(config_path, parsed))
@@ -575,6 +587,7 @@ class CLI:
         keys_db = getattr(parsed, "keys_db", None)
         if keys_db is not None:
             options["keys_db"] = keys_db
+        _drop_unset(options, "oauth")
         return options
 
     def _dispatch_local_hub(self, parsed: argparse.Namespace) -> None:
