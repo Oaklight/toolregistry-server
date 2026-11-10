@@ -9,10 +9,12 @@ and truncation behaviour under test is urllib's.
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.server
 import json
 import socket
 import socketserver
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -27,6 +29,7 @@ from toolregistry_server.oauth.upstream.provider import (
     OAuthClientProvider,
     OAuthHTTPError,
     OAuthStateError,
+    OAuthStoreError,
     ReauthorizationRequired,
     TransientOAuthError,
     UrllibTransport,
@@ -199,7 +202,8 @@ def test_invalid_grant_marks_reauth_and_clears_tokens(store, clock):
     stored = store.get(SOURCE)
     assert stored.needs_reauth is True
     assert stored.access_token is None
-    assert stored.refresh_token is None
+    # The refresh token is kept: a corrected secret can recover the row.
+    assert stored.refresh_token == "RT"
 
     # A later connect fails fast, without another request.
     with pytest.raises(ReauthorizationRequired):
@@ -995,12 +999,14 @@ def test_an_explicit_token_endpoint_is_not_rediscovered(store, clock):
     transport = Always404()
     provider = _provider(_declaration(), transport, store, clock)
 
-    with pytest.raises(ReauthorizationRequired):
+    with pytest.raises(TransientOAuthError):
         provider.headers_for(_source())
     # An explicit endpoint is never re-discovered: nothing else could replace
-    # it, so a 404 is the operator's endpoint being wrong.
+    # it, so a 404 is the operator's endpoint being wrong -- a config fault,
+    # not a verdict on the grant, and it must not latch the source.
     assert transport.gets == 0
     assert transport.posts == ["https://idp.example.com/token"]
+    assert store.get(SOURCE) is None
 
 
 def test_abandoned_pending_requests_are_purged(store, clock):
@@ -1011,3 +1017,358 @@ def test_abandoned_pending_requests_are_purged(store, clock):
 
     with pytest.raises(OAuthStateError, match="unknown or already used"):
         provider.complete_authorization("CODE", first.state)
+
+
+# -- token binding, latch recovery, metadata, redaction ----------------------
+
+
+def test_a_token_is_not_reused_for_another_source_url(store, clock):
+    """A repointed source must not be served the old host's token."""
+    transport = FakeTransport(
+        responses=[
+            {"access_token": "A", "expires_in": 3600},
+            {"access_token": "B", "expires_in": 3600},
+        ]
+    )
+    provider = _provider(_declaration(), transport, store, clock)
+
+    first = provider.headers_for(_source(url="https://a.example.com/mcp"))
+    again = provider.headers_for(_source(url="https://a.example.com/mcp"))
+    moved = provider.headers_for(_source(url="https://b.example.com/mcp"))
+
+    assert first == {"Authorization": "Bearer A"}
+    assert again == first
+    assert moved == {"Authorization": "Bearer B"}
+    assert len(transport.posts) == 2
+    assert store.get(SOURCE).source_url == "https://b.example.com/mcp"
+
+
+def test_the_minted_token_records_its_target(store, clock):
+    transport = FakeTransport(responses=[{"access_token": "A", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+    provider.headers_for(_source(url="https://mint.example.com/mcp"))
+
+    record = store.get(SOURCE)
+    assert record.source_url == "https://mint.example.com/mcp"
+    assert record.grant == "client_credentials"
+    assert record.token_endpoint == TOKEN_URL
+    assert record.requested_scopes == ("read",)
+    assert record.secret_digest.startswith("pbkdf2_sha256$")
+
+
+def test_a_credential_change_clears_the_latch_with_one_refresh(store, clock):
+    """Correcting the secret must recover without a new authorization."""
+    provider, transport = _authorization_provider(
+        store,
+        clock,
+        [
+            {"access_token": "NEW", "refresh_token": "RT", "expires_in": 1},
+            OAuthHTTPError(401, "invalid_client", "bad secret"),
+            {"access_token": "FIXED", "expires_in": 3600},
+        ],
+    )
+    request = provider.start_authorization(
+        _source(), "https://gateway.example.com/callback"
+    )
+    provider.complete_authorization("CODE", request.state)
+    clock.advance(10)
+
+    with pytest.raises(ReauthorizationRequired, match="invalid_client"):
+        provider.headers_for(_source())
+    assert store.get(SOURCE).needs_reauth is True
+    assert store.get(SOURCE).refresh_token == "RT"
+
+    # Only the secret changes.
+    provider.replace_declarations(
+        (
+            _declaration(
+                grant="authorization_code",
+                client_secret="corrected-secret",
+                token_endpoint=None,
+                discovery_url=None,
+            ),
+        )
+    )
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer FIXED"}
+    assert store.get(SOURCE).needs_reauth is False
+    # One refresh after the change, not a full re-authorization.
+    assert len(transport.posts) == 3
+
+
+def test_an_unchanged_declaration_keeps_the_latch(store, clock):
+    provider, transport = _authorization_provider(
+        store,
+        clock,
+        [
+            {"access_token": "NEW", "refresh_token": "RT", "expires_in": 1},
+            OAuthHTTPError(400, "invalid_grant", "revoked"),
+        ],
+    )
+    request = provider.start_authorization(
+        _source(), "https://gateway.example.com/callback"
+    )
+    provider.complete_authorization("CODE", request.state)
+    clock.advance(10)
+
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+
+    provider.replace_declarations(provider.declarations)
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    assert len(transport.posts) == 2
+
+
+@pytest.mark.parametrize("status", [408, 425])
+def test_request_timeout_statuses_are_transient(store, clock, status):
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="OLD",
+            refresh_token="RT",
+            expires_at=NOW - timedelta(seconds=1),
+            updated_at=NOW,
+        )
+    )
+    transport = FakeTransport(responses=[OAuthHTTPError(status, None, "timeout")])
+    provider = _provider(
+        _declaration(grant="authorization_code"), transport, store, clock
+    )
+
+    with pytest.raises(TransientOAuthError):
+        provider.headers_for(_source())
+    assert store.get(SOURCE).needs_reauth is False
+
+
+class _SequenceMetadata:
+    """Return one scripted metadata document per GET, then repeat the last."""
+
+    def __init__(self, documents):
+        self.documents = list(documents)
+        self.gets = 0
+
+    def get_json(self, url, timeout):
+        index = min(self.gets, len(self.documents) - 1)
+        self.gets += 1
+        return self.documents[index]
+
+    def post_form(self, url, fields, headers, timeout):
+        self.posts = getattr(self, "posts", [])
+        self.posts.append(url)
+        return {"access_token": "AT", "expires_in": 3600}
+
+
+def test_metadata_for_another_issuer_is_rejected(store, clock):
+    transport = _SequenceMetadata(
+        [
+            {
+                "issuer": "https://evil.example.com",
+                "token_endpoint": "https://evil.example.com/token",
+            }
+        ]
+    )
+    provider = _provider(_declaration(token_endpoint=None), transport, store, clock)
+
+    with pytest.raises(TransientOAuthError, match="could not discover"):
+        provider.headers_for(_source())
+    assert not hasattr(transport, "posts") or transport.posts == []
+
+
+def test_metadata_endpoint_must_be_http(store, clock):
+    transport = _SequenceMetadata(
+        [
+            {
+                "issuer": "https://idp.example.com",
+                "token_endpoint": "file:///etc/passwd",
+            }
+        ]
+    )
+    provider = _provider(_declaration(token_endpoint=None), transport, store, clock)
+
+    with pytest.raises(TransientOAuthError, match="could not discover"):
+        provider.headers_for(_source())
+
+
+def test_an_unusable_metadata_document_is_not_cached(store, clock):
+    """A partial document must not stop the next candidate from answering."""
+    transport = _SequenceMetadata(
+        [
+            {},
+            {
+                "issuer": "https://idp.example.com",
+                "token_endpoint": "https://idp.example.com/token",
+            },
+        ]
+    )
+    provider = _provider(_declaration(token_endpoint=None), transport, store, clock)
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer AT"}
+    assert transport.gets == 2
+
+
+def test_a_one_character_secret_does_not_rewrite_the_message():
+    assert redact("OAuth request rejected", "r") == "OAuth request rejected"
+
+
+def test_the_basic_credential_is_redacted_from_an_error(store, clock):
+    credential = base64.b64encode(b"toolregistry:client-secret").decode("ascii")
+    transport = FakeTransport(
+        responses=[
+            OAuthHTTPError(
+                401, "invalid_client", f"credential Basic {credential} refused"
+            )
+        ]
+    )
+    provider = _provider(
+        _declaration(client_auth="client_secret_basic"), transport, store, clock
+    )
+
+    with pytest.raises(ReauthorizationRequired) as caught:
+        provider.headers_for(_source())
+
+    message = str(caught.value)
+    assert credential not in message
+    assert "[redacted]" in message
+
+
+def test_complete_authorization_holds_the_token_lock(store, clock):
+    """The exchange and the write must be atomic against a refresh."""
+    provider, transport = _authorization_provider(store, clock, [])
+    observed: dict[str, bool] = {}
+
+    def post_form(url, fields, headers, timeout):
+        observed["locked"] = provider._token_lock(SOURCE).locked()
+        return {"access_token": "ACAT", "refresh_token": "ACRT", "expires_in": 3600}
+
+    transport.post_form = post_form
+    request = provider.start_authorization(
+        _source(), "https://gateway.example.com/callback"
+    )
+    record = provider.complete_authorization("CODE", request.state)
+
+    assert observed["locked"] is True
+    assert record["has_access_token"] is True
+    assert store.get(SOURCE).source_url == "https://mcp.example.com/mcp"
+
+
+class _LockedStore:
+    """A store whose every read fails the way a locked database does."""
+
+    def get(self, source_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    def put(self, record):  # pragma: no cover - the read fails first
+        raise AssertionError("put must not run")
+
+    def clear(self, source_id):  # pragma: no cover - the read fails first
+        raise AssertionError("clear must not run")
+
+
+def test_a_store_failure_is_a_typed_transient_error(store, clock):
+    provider = _provider(_declaration(), FakeTransport(), _LockedStore(), clock)
+
+    with pytest.raises(OAuthStoreError) as caught:
+        provider.headers_for(_source())
+
+    assert isinstance(caught.value, TransientOAuthError)
+    assert caught.value.reauth_required is False
+
+
+def test_a_stored_token_survives_a_temporary_store_failure(store, clock):
+    transport = FakeTransport(responses=[{"access_token": "A", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer A"}
+
+    provider._store = _LockedStore()
+    with pytest.raises(OAuthStoreError):
+        provider.headers_for(_source())
+
+    provider._store = store
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer A"}
+    assert len(transport.posts) == 1
+
+
+def test_the_secret_fingerprint_is_salted_and_iterated():
+    """A store reader must not recover a low-entropy client secret cheaply."""
+    from toolregistry_server.oauth.upstream.provider import (
+        _secret_digest,
+        _secret_digest_matches,
+    )
+
+    declaration = _declaration(client_secret="x", client_secret_env="MCP_SECRET")
+    fingerprint = _secret_digest(declaration)
+    algorithm, iterations, _salt, _digest = fingerprint.split("$")
+
+    assert algorithm == "pbkdf2_sha256"
+    assert int(iterations) >= 50_000
+    # Not a single fast hash of the secret or of a component.
+    for component in ("x", "MCP_SECRET", "client_secret_post"):
+        assert hashlib.sha256(component.encode()).hexdigest() not in fingerprint
+    assert fingerprint != hashlib.sha256(b"x").hexdigest()
+    # Two mints of the same declaration differ: the salt is per store row.
+    assert _secret_digest(declaration) != fingerprint
+
+    # Verification re-derives with the stored salt, so it is deterministic
+    # even though the stored strings differ.
+    assert _secret_digest_matches(declaration, fingerprint)
+    assert _secret_digest_matches(declaration, fingerprint)
+    assert not _secret_digest_matches(_declaration(client_secret="y"), fingerprint)
+    assert not _secret_digest_matches(
+        declaration.__class__(
+            source=declaration.source,
+            client_id=declaration.client_id,
+            issuer=declaration.issuer,
+            client_secret="x",
+            client_secret_env=None,
+            scopes=declaration.scopes,
+            token_endpoint=declaration.token_endpoint,
+        ),
+        fingerprint,
+    )
+    # A legacy row has no fingerprint; nothing to compare.
+    assert _secret_digest_matches(declaration, "")
+
+
+def test_the_secret_never_appears_in_a_raw_row(tmp_path):
+    """The amended store contract, asserted against the database itself."""
+    store = TokenStore(str(tmp_path / "tokens.db"), clock=lambda: NOW)
+    secret = "super-secret-value-123"
+    try:
+        transport = FakeTransport(
+            responses=[{"access_token": "AT", "expires_in": 3600}]
+        )
+        provider = _provider(
+            _declaration(client_secret=secret), transport, store, lambda: NOW
+        )
+        provider.headers_for(_source())
+    finally:
+        store.close()
+
+    connection = sqlite3.connect(str(tmp_path / "tokens.db"))
+    try:
+        rows = connection.execute("SELECT * FROM oauth_client_tokens").fetchall()
+    finally:
+        connection.close()
+    assert rows
+    for row in rows:
+        assert secret not in "|".join(str(value) for value in row)
+
+
+def test_a_noop_reconnect_keeps_the_minted_token(store, clock):
+    """The fingerprint check must not discard a token on an ordinary read."""
+    provider, transport = _authorization_provider(
+        store,
+        clock,
+        [{"access_token": "ACAT", "refresh_token": "ACRT", "expires_in": 3600}],
+    )
+    request = provider.start_authorization(
+        _source(), "https://gateway.example.com/callback"
+    )
+    provider.complete_authorization("CODE", request.state)
+
+    for _ in range(2):
+        assert provider.headers_for(_source()) == {"Authorization": "Bearer ACAT"}
+    assert len(transport.posts) == 1
+    assert store.get(SOURCE).needs_reauth is False

@@ -22,7 +22,7 @@ from toolregistry_server.oauth.upstream.provider import (
     ReauthorizationRequired,
     TransientOAuthError,
 )
-from toolregistry_server.oauth.upstream.store import TokenRecord
+from toolregistry_server.oauth.upstream.store import TokenRecord, TokenStore
 from toolregistry_server.source_manager import (
     _CORE_CONFIG_KEYS,
     SourceManager,
@@ -798,3 +798,258 @@ def test_oauth_failure_message_is_redacted(monkeypatch, tmp_path):
     )
     entry = manager.apply_initial()[0]
     assert "pass" not in (entry.error or "")
+
+
+# -- panel mutations, guard layer, persistence ordering ---------------------
+
+OAUTH_URL_SECTION = """\
+oauth:
+  clients:
+    - source: "url:https://mcp.example.com/mcp"
+      issuer: https://idp.example.com
+      client_id: toolregistry
+      client_secret: literal-secret
+      token_endpoint: https://idp.example.com/token
+"""
+
+
+class _NoNetwork:
+    """A transport that fails the test if anything reaches it."""
+
+    def __init__(self) -> None:
+        self.posts: list[str] = []
+
+    def get_json(self, url, timeout):
+        raise AssertionError(f"unexpected discovery request to {url}")
+
+    def post_form(self, url, fields, headers, timeout):
+        self.posts.append(url)
+        raise AssertionError(f"unexpected token request to {url}")
+
+
+def _seeded_provider(path, config, store, transport):
+    """Build a real provider whose one declaration is already satisfied."""
+    declarations = load_oauth_clients(path, config)
+    return OAuthClientProvider(declarations, store=store, transport=transport)
+
+
+def test_a_url_selected_source_cannot_be_moved_without_the_declaration(
+    monkeypatch, tmp_path
+):
+    """Reject, not warn: the alternative is a silently unauthenticated source."""
+    from toolregistry.config import ConfigError
+
+    _patch_registration(monkeypatch)
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_URL_SECTION)
+    config = _config(path)
+    manager = SourceManager(
+        ToolRegistry(), config, config_path=path, oauth_provider=FakeProvider()
+    )
+    manager.apply_initial()
+    key = manager.list()[0].key
+    before = path.read_text(encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        manager.replace(
+            key,
+            MCPSource(
+                transport="streamable-http",
+                url="https://other.example.com/mcp",
+                namespace="example",
+            ),
+        )
+
+    # Nothing moved: the registry, the config and the file are unchanged.
+    assert manager.list()[0].source.url == "https://mcp.example.com/mcp"
+    assert manager.config.tools[0].url == "https://mcp.example.com/mcp"
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_adding_a_source_that_shadows_a_namespace_selector_is_rejected(
+    monkeypatch, tmp_path
+):
+    from toolregistry.config import ConfigError
+
+    _patch_registration(monkeypatch)
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    config = _config(path)
+    manager = SourceManager(
+        ToolRegistry(), config, config_path=path, oauth_provider=FakeProvider()
+    )
+    manager.apply_initial()
+
+    with pytest.raises(ConfigError):
+        manager.add(
+            MCPSource(
+                transport="streamable-http",
+                url="https://second.example.com/mcp",
+                namespace="example",
+            )
+        )
+    assert len(manager.config.tools) == 1
+
+
+def test_removing_and_re_adding_a_source_mints_nothing(monkeypatch, tmp_path):
+    """A removed declaration must leave the provider, or a re-add reuses it."""
+    _patch_registration(monkeypatch)
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    config = _config(path)
+    store = TokenStore(":memory:")
+    store.put(
+        TokenRecord(
+            source_id="namespace:example",
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="AT",
+            expires_at=None,
+        )
+    )
+    transport = _NoNetwork()
+    provider = _seeded_provider(path, config, store, transport)
+    manager = SourceManager(
+        ToolRegistry(), config, config_path=path, oauth_provider=provider
+    )
+    manager.apply_initial()
+    assert len(provider.declarations) == 1
+
+    key = manager.list()[0].key
+    manager.remove(key)
+    assert provider.declarations == ()
+    assert store.get("namespace:example") is None
+
+    manager.add(
+        MCPSource(
+            transport="streamable-http",
+            url="https://mcp.example.com/mcp",
+            namespace="example",
+        )
+    )
+    assert provider.declarations == ()
+    assert transport.posts == []
+
+
+def test_a_failed_write_keeps_the_token_row(monkeypatch, tmp_path):
+    """A failed panel edit must not destroy a credential the file declares."""
+    import toolregistry_server._config_file as config_file
+
+    _patch_registration(monkeypatch)
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    config = _config(path)
+    store = TokenStore(":memory:")
+    store.put(
+        TokenRecord(
+            source_id="namespace:example",
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="AT",
+            expires_at=None,
+        )
+    )
+    provider = _seeded_provider(path, config, store, _NoNetwork())
+    manager = SourceManager(
+        ToolRegistry(), config, config_path=path, oauth_provider=provider
+    )
+    manager.apply_initial()
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr(config_file, "write_config_mapping", refuse)
+    result = manager.remove(manager.list()[0].key)
+
+    assert result.persisted is False
+    record = store.get("namespace:example")
+    assert record is not None
+    assert record.access_token == "AT"
+
+
+def test_a_headers_for_failure_cannot_desynchronise_the_manager(monkeypatch, tmp_path):
+    """One source must never abort a mutation or leave stale tool names."""
+    from toolregistry.tool import Tool
+
+    def fake_register(registry, source, *, oauth_headers=None):
+        registry.register(
+            Tool(
+                name="example-one",
+                description="One example tool.",
+                parameters={"type": "object", "properties": {}},
+                callable=lambda: "one",
+            )
+        )
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", fake_register)
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    config = _config(path)
+    provider = FakeProvider()
+    manager = SourceManager(
+        ToolRegistry(), config, config_path=path, oauth_provider=provider
+    )
+    manager.apply_initial()
+    first = manager.list()[0]
+    assert first.status is SourceStatus.APPLIED
+    assert "example-one" in manager.registry._tools
+
+    provider.error = RuntimeError("boom")
+    result = manager.replace(
+        first.key,
+        MCPSource(
+            transport="streamable-http",
+            url="https://other.example.com/mcp",
+            namespace="example",
+        ),
+    )
+
+    assert result.entry.status is SourceStatus.FAILED
+    assert result.entry.reauth_required is False
+    assert "RuntimeError" in (result.entry.error or "")
+    for entry in manager.list():
+        for name in entry.names:
+            assert name in manager.registry._tools
+    assert [entry.source for entry in manager.list()] == list(manager.config.tools)
+
+
+def test_a_store_failure_at_startup_is_a_failed_source(monkeypatch, tmp_path):
+    """A typed store error is recorded; startup continues."""
+    from toolregistry_server.oauth.upstream.provider import OAuthStoreError
+
+    class BrokenProvider(FakeProvider):
+        def headers_for(self, source):
+            raise OAuthStoreError("token store unavailable")
+
+    _patch_registration(monkeypatch)
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        oauth_provider=BrokenProvider(),
+    )
+
+    entry = manager.apply_initial()[0]
+
+    assert entry.status is SourceStatus.FAILED
+    assert entry.reauth_required is False
+    assert "token store unavailable" in (entry.error or "")
+
+
+def test_close_oauth_clients_drops_a_reload_created_provider():
+    """Registration cannot depend on a startup provider existing."""
+    from toolregistry_server.app import App
+
+    closed: list[bool] = []
+
+    class Provider:
+        def close(self):
+            closed.append(True)
+
+    class Manager:
+        oauth_provider: Provider | None = Provider()
+
+    app = App()
+    app.source_manager = Manager()
+    app.oauth_client_provider = None
+
+    app.close_oauth_clients()
+
+    assert closed == [True]
+    assert app.source_manager.oauth_provider is None

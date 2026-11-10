@@ -21,6 +21,17 @@ SOURCE = "namespace:example"
 NOW = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
 
 
+def _source_for_store():
+    """A parsed source whose URL the provider binds a token to."""
+    from toolregistry.config import MCPSource
+
+    return MCPSource(
+        transport="streamable-http",
+        namespace="example",
+        url="https://mcp.example.com/mcp",
+    )
+
+
 @pytest.fixture
 def store():
     with TokenStore(":memory:", clock=lambda: NOW) as opened:
@@ -37,6 +48,11 @@ def _record(**overrides):
         "refresh_token": "refresh-token",
         "expires_at": NOW + timedelta(hours=1),
         "updated_at": NOW,
+        "source_url": "https://mcp.example.com/mcp",
+        "grant": "authorization_code",
+        "token_endpoint": "https://idp.example.com/token",
+        "requested_scopes": ("read", "write"),
+        "secret_digest": "digest-value",
     }
     values.update(overrides)
     return TokenRecord(**values)
@@ -52,6 +68,11 @@ def test_round_trip(store):
     assert stored.expires_at == NOW + timedelta(hours=1)
     assert stored.needs_reauth is False
     assert stored.error is None
+    assert stored.source_url == "https://mcp.example.com/mcp"
+    assert stored.grant == "authorization_code"
+    assert stored.token_endpoint == "https://idp.example.com/token"
+    assert stored.requested_scopes == ("read", "write")
+    assert stored.secret_digest == "digest-value"
 
 
 def test_missing_row_returns_none(store):
@@ -68,14 +89,25 @@ def test_put_clears_a_previous_reauth_marker(store):
     assert stored.access_token == "access-token"
 
 
-def test_mark_reauth_inserts_a_row_and_clears_tokens(store):
+def test_mark_reauth_clears_the_access_token_and_keeps_the_refresh(store):
+    """The refresh token survives, so a corrected secret can recover."""
     store.put(_record())
     store.mark_reauth(SOURCE, "revoked")
     stored = store.get(SOURCE)
     assert stored.needs_reauth is True
     assert stored.error == "revoked"
     assert stored.access_token is None
-    assert stored.refresh_token is None
+    assert stored.refresh_token == "refresh-token"
+
+
+def test_clear_latch_keeps_the_row_and_its_refresh_token(store):
+    store.put(_record())
+    store.mark_reauth(SOURCE, "invalid_client")
+    store.clear_latch(SOURCE)
+    stored = store.get(SOURCE)
+    assert stored.needs_reauth is False
+    assert stored.error is None
+    assert stored.refresh_token == "refresh-token"
 
 
 def test_mark_reauth_on_a_missing_row(store):
@@ -123,6 +155,7 @@ def test_pending_authorization_round_trip(store):
         redirect_uri="https://gateway.example.com/callback",
         created_at=NOW,
         expires_at=NOW + timedelta(minutes=10),
+        source_url="https://mcp.example.com/mcp",
     )
     store.put_pending(pending)
     popped = store.pop_pending("state-value")
@@ -343,7 +376,66 @@ def test_an_old_database_gains_the_rejection_column(tmp_path):
         record = store.get(SOURCE)
         assert record is not None
         assert record.access_token == "AT"
+        # Every column added after the first release is present and read
+        # back with its default on a row written by the old code.
         assert record.rejections == 0
-        # The new column is writable on the migrated table.
+        assert record.source_url == ""
+        assert record.grant == ""
+        assert record.token_endpoint == ""
+        assert record.requested_scopes == ()
+        assert record.secret_digest == ""
+
+        # A legacy row is compatible: no recorded target or grant means
+        # nothing to compare, so the first connect after an upgrade reuses
+        # the token instead of discarding it.  The transport would fail the
+        # test if a request were made.
+        from toolregistry_server.oauth.upstream.config import OAuthClientConfig
+        from toolregistry_server.oauth.upstream.provider import OAuthClientProvider
+
+        class NoRequest:
+            posts: list[str] = []
+
+            def get_json(self, url, timeout):  # pragma: no cover - not reached
+                raise AssertionError("no discovery expected")
+
+            def post_form(self, url, fields, headers, timeout):  # pragma: no cover
+                self.posts.append(url)
+                raise AssertionError("the legacy row must be reused")
+
+        provider = OAuthClientProvider(
+            (
+                OAuthClientConfig(
+                    source=SOURCE,
+                    issuer="https://idp.example.com",
+                    client_id="toolregistry",
+                    client_secret="secret",
+                    token_endpoint="https://idp.example.com/token",
+                    token_store=str(path),
+                ),
+            ),
+            store=store,
+            transport=NoRequest(),
+            clock=lambda: NOW,
+        )
+        assert provider.headers_for(_source_for_store()) == {
+            "Authorization": "Bearer AT"
+        }
+
+        # The new columns are writable on the migrated table.
         store.mark_rejected(SOURCE)
         assert store.get(SOURCE).rejections == 1
+        store.put(
+            _record(
+                source_url="https://mcp.example.com/mcp",
+                grant="client_credentials",
+                token_endpoint="https://idp.example.com/token",
+                requested_scopes=("read",),
+                secret_digest="digest",
+            )
+        )
+        migrated = store.get(SOURCE)
+        assert migrated.source_url == "https://mcp.example.com/mcp"
+        assert migrated.grant == "client_credentials"
+        assert migrated.token_endpoint == "https://idp.example.com/token"
+        assert migrated.requested_scopes == ("read",)
+        assert migrated.secret_digest == "digest"

@@ -9,8 +9,11 @@ Security notes:
 
 * the database file is created ``0600`` and its directory ``0700``; the WAL
   and shared-memory sidecars are restricted the same way;
-* the OAuth client secret is never stored here.  It stays in the
-  configuration file (preferably behind ``client_secret_env``);
+* the OAuth client secret itself is never stored here.  A salted,
+  iterated fingerprint of it (PBKDF2-HMAC-SHA256) is stored so a rotation can
+  be detected and a stale re-authorization verdict discarded.  The
+  fingerprint is protected by the file permissions, exactly like the tokens:
+  it does not add a second boundary;
 * access and refresh tokens must be replayed, so they cannot be hashed.
   They are protected by file permissions, not by a hash.  A value that only
   needs verification, such as an API key, belongs in
@@ -52,7 +55,12 @@ CREATE TABLE IF NOT EXISTS oauth_client_tokens (
     updated_at TEXT NOT NULL,
     needs_reauth INTEGER NOT NULL DEFAULT 0,
     error TEXT,
-    rejections INTEGER NOT NULL DEFAULT 0
+    rejections INTEGER NOT NULL DEFAULT 0,
+    source_url TEXT NOT NULL DEFAULT '',
+    grant TEXT NOT NULL DEFAULT '',
+    token_endpoint TEXT NOT NULL DEFAULT '',
+    requested_scopes TEXT NOT NULL DEFAULT '[]',
+    secret_digest TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS oauth_client_pending (
     state TEXT PRIMARY KEY,
@@ -60,7 +68,8 @@ CREATE TABLE IF NOT EXISTS oauth_client_pending (
     code_verifier TEXT NOT NULL,
     redirect_uri TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    source_url TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -70,6 +79,12 @@ CREATE TABLE IF NOT EXISTS oauth_client_pending (
 #: added explicitly or the first statement that names it fails at upgrade time.
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("oauth_client_tokens", "rejections", "INTEGER NOT NULL DEFAULT 0"),
+    ("oauth_client_tokens", "source_url", "TEXT NOT NULL DEFAULT ''"),
+    ("oauth_client_tokens", "grant", "TEXT NOT NULL DEFAULT ''"),
+    ("oauth_client_tokens", "token_endpoint", "TEXT NOT NULL DEFAULT ''"),
+    ("oauth_client_tokens", "requested_scopes", "TEXT NOT NULL DEFAULT '[]'"),
+    ("oauth_client_tokens", "secret_digest", "TEXT NOT NULL DEFAULT ''"),
+    ("oauth_client_pending", "source_url", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -142,6 +157,18 @@ class TokenRecord:
         rejections: Consecutive resource-server rejections since the
             credential was last known to work.  Reset when a connect
             succeeds, never by :meth:`TokenStore.put` alone.
+        source_url: URL of the MCP source the token was minted for, so a
+            token is never presented to another host after the declaration
+            is repointed.  Empty on a row written before the column existed.
+        grant: Grant that produced the token.  A change clears the row.
+        token_endpoint: Explicit token endpoint at mint time, or empty.
+        requested_scopes: Scopes the declaration asked for, which may differ
+            from the granted :attr:`scopes`.  A change clears the row.
+        secret_digest: Salted, iterated PBKDF2 fingerprint of the client
+            credential the token was minted with, so correcting a secret
+            clears a latched row without storing the secret.  It covers the
+            env-var name and the client authentication method too, and the
+            algorithm, iteration count and salt are stored in the value.
     """
 
     source_id: str
@@ -156,6 +183,11 @@ class TokenRecord:
     needs_reauth: bool = False
     error: str | None = None
     rejections: int = 0
+    source_url: str = ""
+    grant: str = ""
+    token_endpoint: str = ""
+    requested_scopes: tuple[str, ...] = ()
+    secret_digest: str = ""
 
     def is_expiring(
         self,
@@ -193,6 +225,8 @@ class TokenRecord:
             "needs_reauth": self.needs_reauth,
             "error": self.error,
             "rejections": self.rejections,
+            "source_url": self.source_url,
+            "grant": self.grant,
             "has_access_token": bool(self.access_token),
             "has_refresh_token": bool(self.refresh_token),
         }
@@ -209,6 +243,8 @@ class PendingAuthorization:
         redirect_uri: Redirect URI sent with the authorization request.
         created_at: When the request started.
         expires_at: After this instant the request is refused.
+        source_url: URL of the source being authorized, when the caller
+            supplied the parsed source.  The completed token is bound to it.
     """
 
     state: str
@@ -217,6 +253,7 @@ class PendingAuthorization:
     redirect_uri: str
     created_at: datetime
     expires_at: datetime
+    source_url: str = ""
 
 
 def _prepare_directory(database: str) -> None:
@@ -334,6 +371,11 @@ class TokenStore:
             updated_at=self._clock(),
             needs_reauth=False,
             error=None,
+            source_url=record.source_url,
+            grant=record.grant,
+            token_endpoint=record.token_endpoint,
+            requested_scopes=tuple(record.requested_scopes),
+            secret_digest=record.secret_digest,
         )
         with self._lock:
             self._connection.execute(
@@ -341,8 +383,9 @@ class TokenStore:
                 INSERT INTO oauth_client_tokens (
                     source_id, issuer, client_id, scopes, access_token,
                     refresh_token, token_type, expires_at, updated_at,
-                    needs_reauth, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                    needs_reauth, error, source_url, grant, token_endpoint,
+                    requested_scopes, secret_digest
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     issuer = excluded.issuer,
                     client_id = excluded.client_id,
@@ -354,7 +397,12 @@ class TokenStore:
                     updated_at = excluded.updated_at,
                     needs_reauth = 0,
                     error = NULL,
-                    rejections = oauth_client_tokens.rejections
+                    rejections = oauth_client_tokens.rejections,
+                    source_url = excluded.source_url,
+                    grant = excluded.grant,
+                    token_endpoint = excluded.token_endpoint,
+                    requested_scopes = excluded.requested_scopes,
+                    secret_digest = excluded.secret_digest
                 """,
                 _record_values(stored),
             )
@@ -371,10 +419,13 @@ class TokenStore:
     ) -> None:
         """Record that *source_id* must be authorized again.
 
-        The access and refresh tokens are cleared.  Keeping either would let
-        a later connect fall back to a credential the server has already
-        rejected.  The row is inserted when it does not exist yet, so a
-        failure on the very first fetch is visible too.
+        The access token is cleared.  The refresh token is kept: a rejection
+        such as ``invalid_client`` says the client credential is wrong, not
+        that the refresh token is dead, and keeping it lets a corrected
+        secret recover with one refresh instead of a full re-authorization.
+        A rejection of the refresh token itself retries it once and latches
+        again.  The row is inserted when it does not exist yet, so a failure
+        on the very first fetch is visible too.
 
         Args:
             source_id: Selector the declaration is written under.
@@ -391,12 +442,33 @@ class TokenStore:
                 ) VALUES (?, ?, ?, '[]', ?, 1, ?)
                 ON CONFLICT(source_id) DO UPDATE SET
                     access_token = NULL,
-                    refresh_token = NULL,
                     needs_reauth = 1,
                     error = excluded.error,
                     updated_at = excluded.updated_at
                 """,
                 (source_id, issuer, client_id, _format_time(self._clock()), error),
+            )
+            self._connection.commit()
+
+    def clear_latch(self, source_id: str) -> None:
+        """Clear the re-authorization latch after a credential change.
+
+        Called when a credential-affecting declaration change makes the old
+        verdict stale.  The row and its refresh token stay; the next resolve
+        refreshes with the corrected settings.
+
+        Args:
+            source_id: Selector the declaration is written under.
+        """
+        with self._lock:
+            self._connection.execute(
+                """
+                UPDATE oauth_client_tokens
+                   SET needs_reauth = 0,
+                       error = NULL
+                 WHERE source_id = ?
+                """,
+                (source_id,),
             )
             self._connection.commit()
 
@@ -462,8 +534,8 @@ class TokenStore:
                 """
                 INSERT OR REPLACE INTO oauth_client_pending (
                     state, source_id, code_verifier, redirect_uri,
-                    created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    created_at, expires_at, source_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pending.state,
@@ -472,6 +544,7 @@ class TokenStore:
                     pending.redirect_uri,
                     _format_time(pending.created_at),
                     _format_time(pending.expires_at),
+                    pending.source_url,
                 ),
             )
             self._connection.commit()
@@ -518,6 +591,11 @@ def _record_values(record: TokenRecord) -> tuple[Any, ...]:
         record.token_type,
         _format_time(record.expires_at),
         _format_time(record.updated_at),
+        record.source_url,
+        record.grant,
+        record.token_endpoint,
+        json.dumps(list(record.requested_scopes), separators=(",", ":")),
+        record.secret_digest,
     )
 
 
@@ -536,6 +614,11 @@ def _record_from_row(row: sqlite3.Row) -> TokenRecord:
         needs_reauth=bool(row["needs_reauth"]),
         error=row["error"],
         rejections=int(row["rejections"] or 0),
+        source_url=row["source_url"] or "",
+        grant=row["grant"] or "",
+        token_endpoint=row["token_endpoint"] or "",
+        requested_scopes=tuple(json.loads(row["requested_scopes"] or "[]")),
+        secret_digest=row["secret_digest"] or "",
     )
 
 
@@ -548,4 +631,5 @@ def _pending_from_row(row: sqlite3.Row) -> PendingAuthorization:
         redirect_uri=row["redirect_uri"],
         created_at=_parse_time(row["created_at"]) or utcnow(),
         expires_at=_parse_time(row["expires_at"]) or utcnow(),
+        source_url=row["source_url"] or "",
     )

@@ -43,6 +43,7 @@ import http.client
 import json
 import re
 import secrets
+import sqlite3
 import threading
 import urllib.error
 import urllib.request
@@ -79,6 +80,7 @@ __all__ = [
     "OAuthClientProvider",
     "OAuthHTTPError",
     "OAuthStateError",
+    "OAuthStoreError",
     "OAuthTransport",
     "ReauthorizationRequired",
     "TransientOAuthError",
@@ -104,6 +106,105 @@ _TOKEN_PARAM = re.compile(
     r"(?i)\b(access_token|refresh_token|id_token|client_secret|code)=([^&\s]+)"
 )
 
+#: A secret shorter than this is not replaced in free text: replacing a
+#: one-character secret would rewrite every occurrence of that character,
+#: including inside the diagnostic word.  Parameter-shaped occurrences are
+#: still replaced by :data:`_TOKEN_PARAM` regardless of length.
+_MIN_REDACT_LENGTH = 6
+
+
+#: PBKDF2 work factor for the client-credential fingerprint.  The cost is
+#: paid only when a token is minted and when a latched row is compared, both
+#: of which are rare; it makes an offline guess of a low-entropy client
+#: secret expensive rather than instant.
+_SECRET_FINGERPRINT_ITERATIONS = 120_000
+
+_SECRET_FINGERPRINT_ALGORITHM = "pbkdf2_sha256"
+
+
+def _secret_material(declaration: OAuthClientConfig) -> bytes:
+    """Return the credential material a fingerprint covers.
+
+    The environment-variable name, the client authentication method and the
+    resolved secret all participate, so correcting any of them changes the
+    fingerprint.
+    """
+    return "\0".join(
+        (
+            declaration.client_secret_env or "",
+            declaration.client_auth,
+            declaration.client_secret or "",
+        )
+    ).encode("utf-8")
+
+
+def _secret_digest(declaration: OAuthClientConfig) -> str:
+    """Return a salted, iterated fingerprint of the client credential.
+
+    The secret itself is never stored.  A plain hash would be recoverable by
+    an offline dictionary attack on a human-chosen secret; a per-row random
+    salt plus a real PBKDF2 work factor makes that expensive.  The protection
+    is still bounded by the store's file permissions.
+    """
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        _secret_material(declaration),
+        salt,
+        _SECRET_FINGERPRINT_ITERATIONS,
+    )
+    return "$".join(
+        (
+            _SECRET_FINGERPRINT_ALGORITHM,
+            str(_SECRET_FINGERPRINT_ITERATIONS),
+            base64.b64encode(salt).decode("ascii"),
+            base64.b64encode(digest).decode("ascii"),
+        )
+    )
+
+
+def _secret_digest_matches(declaration: OAuthClientConfig, stored: str) -> bool:
+    """Whether *stored* was derived from the declaration's current credential.
+
+    An empty value means the row predates the column, so there is nothing to
+    compare and the caller treats it as a match.
+    """
+    if not stored:
+        return True
+    try:
+        algorithm, iterations, salt_text, digest_text = stored.split("$")
+        if algorithm != _SECRET_FINGERPRINT_ALGORITHM:
+            return False
+        salt = base64.b64decode(salt_text)
+        expected = base64.b64decode(digest_text)
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", _secret_material(declaration), salt, int(iterations)
+        )
+    except (ValueError, TypeError):
+        return False
+    return secrets.compare_digest(actual, expected)
+
+
+def _basic_credential(declaration: OAuthClientConfig) -> str:
+    """Return the base64 credential sent for ``client_secret_basic``."""
+    return base64.b64encode(
+        f"{declaration.client_id}:{declaration.client_secret or ''}".encode()
+    ).decode("ascii")
+
+
+def _source_url(source: ToolSource) -> str:
+    """Return the URL an MCP source connects to, or an empty string."""
+    url = getattr(source, "url", "")
+    return url if isinstance(url, str) else ""
+
+
+def _is_http_url(value: Any) -> bool:
+    """Whether *value* is an absolute ``http`` or ``https`` URL."""
+    if not isinstance(value, str) or not value:
+        return False
+    parsed = urlsplit(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
 
 class OAuthClientError(Exception):
     """Base error for an upstream OAuth failure.
@@ -123,6 +224,15 @@ class ReauthorizationRequired(OAuthClientError):
 
 class TransientOAuthError(OAuthClientError):
     """A transport, timeout or server-side failure worth retrying."""
+
+
+class OAuthStoreError(TransientOAuthError):
+    """The token store could not be read or written.
+
+    The caller keeps the stored grant and retries, so this is transient, but
+    it is a distinct type so a panel can say "token store" rather than
+    "authorization server" that failed.
+    """
 
 
 class OAuthStateError(ReauthorizationRequired):
@@ -262,7 +372,7 @@ def redact(text: str, *secrets: str | None) -> str:
     cleaned = _URL_USERINFO.sub(r"\1", text)
     cleaned = _TOKEN_PARAM.sub(r"\1=[redacted]", cleaned)
     for secret in secrets:
-        if secret:
+        if secret and len(secret) >= _MIN_REDACT_LENGTH:
             cleaned = cleaned.replace(secret, "[redacted]")
     return cleaned
 
@@ -458,7 +568,7 @@ class OAuthClientProvider:
         declaration = self.declaration_for(source)
         if declaration is None:
             return None
-        record = self.access_token(declaration)
+        record = self.access_token(declaration, source_url=_source_url(source))
         if not record.access_token:
             raise ReauthorizationRequired(
                 f"{declaration.source} has no access token; authorize it"
@@ -466,8 +576,16 @@ class OAuthClientProvider:
         token_type = record.token_type or "Bearer"
         return {"Authorization": f"{token_type} {record.access_token}"}
 
-    def access_token(self, declaration: OAuthClientConfig) -> TokenRecord:
+    def access_token(
+        self, declaration: OAuthClientConfig, *, source_url: str = ""
+    ) -> TokenRecord:
         """Return a usable token, refreshing or fetching one as needed.
+
+        Args:
+            declaration: The declaration to resolve.
+            source_url: URL of the source asking for the token.  A stored
+                token minted for another URL is discarded, so repointing a
+                source cannot present the old host's credential.
 
         An expired token is never returned.  A stored ``needs_reauth`` flag
         short-circuits every attempt until a new authorization succeeds, or,
@@ -493,19 +611,22 @@ class OAuthClientProvider:
             TransientOAuthError: When the authorization server could not be
                 reached or answered with a retryable error.
         """
-        store = self._store_for(declaration)
+        store = self._store_call(self._store_for, declaration)
         with self._token_lock(declaration.source):
-            record = self._live_record(declaration, store)
+            record = self._live_record(declaration, store, source_url)
             if record is not None:
                 return record
             if declaration.grant == "client_credentials":
-                return self._client_credentials(declaration, store)
+                return self._client_credentials(declaration, store, source_url)
         raise ReauthorizationRequired(
             f"{declaration.source} has no usable token; authorize it"
         )
 
     def _live_record(
-        self, declaration: OAuthClientConfig, store: TokenStore
+        self,
+        declaration: OAuthClientConfig,
+        store: TokenStore,
+        source_url: str,
     ) -> TokenRecord | None:
         """Return a stored record that can be used as it stands.
 
@@ -520,27 +641,35 @@ class OAuthClientProvider:
             ReauthorizationRequired: When the row says a new authorization is
                 needed, or repeated rejections exhaust the retry bound.
         """
-        record = store.get(declaration.source)
-        if record is not None and not self._record_matches(declaration, record):
-            store.clear(declaration.source)
+        record = self._store_call(store.get, declaration.source)
+        if record is not None and not self._record_compatible(
+            declaration, record, source_url
+        ):
+            self._store_call(store.clear, declaration.source)
             record = None
+        if record is not None and record.needs_reauth:
+            if declaration.grant == "client_credentials":
+                # No interactive path: a corrected secret is retried.
+                pass
+            elif self._credential_changed(declaration, record):
+                # The verdict was reached with the old credential.  Clearing
+                # the latch (not the row) lets the refresh token recover it.
+                self._store_call(store.clear_latch, record.source_id)
+                record = self._store_call(store.get, record.source_id)
+            else:
+                raise ReauthorizationRequired(
+                    record.error or f"{declaration.source} requires re-authorization"
+                )
         if record is None:
             return None
-        if record.needs_reauth and declaration.grant != "client_credentials":
-            # A ``client_credentials`` row can carry the flag from an older
-            # release; that grant has no interactive path, so it is retried
-            # rather than latched.
-            raise ReauthorizationRequired(
-                record.error or f"{declaration.source} requires re-authorization"
-            )
         if record.rejections >= MAX_REJECTIONS:
-            return self._escalate_rejections(declaration, store, record)
+            return self._escalate_rejections(declaration, store, record, source_url)
         if record.access_token and not record.is_expiring(
             self._clock(), self._skew, assumed_ttl=self._assumed_ttl
         ):
             return record
         if record.refresh_token:
-            return self._refresh(declaration, store, record)
+            return self._refresh(declaration, store, record, source_url)
         return None
 
     def _escalate_rejections(
@@ -548,6 +677,7 @@ class OAuthClientProvider:
         declaration: OAuthClientConfig,
         store: TokenStore,
         record: TokenRecord,
+        source_url: str,
     ) -> TokenRecord:
         """Stop retrying a credential the resource server keeps rejecting.
 
@@ -566,13 +696,14 @@ class OAuthClientProvider:
         if declaration.grant == "client_credentials":
             # No interactive authorization exists for this grant, so the only
             # escape is a clean row: the operator may have fixed the secret.
-            store.clear(declaration.source)
-            return self._client_credentials(declaration, store)
+            self._store_call(store.clear, declaration.source)
+            return self._client_credentials(declaration, store, source_url)
         message = (
             f"{declaration.source} was rejected by the MCP server "
             f"{record.rejections} times; authorize it again"
         )
-        store.mark_reauth(
+        self._store_call(
+            store.mark_reauth,
             declaration.source,
             message,
             issuer=self._issuer_for(declaration),
@@ -580,34 +711,68 @@ class OAuthClientProvider:
         )
         raise ReauthorizationRequired(message)
 
-    def _record_matches(
-        self, declaration: OAuthClientConfig, record: TokenRecord
+    def _record_compatible(
+        self,
+        declaration: OAuthClientConfig,
+        record: TokenRecord,
+        source_url: str,
     ) -> bool:
-        """Whether *record* was minted for the declaration's current client.
+        """Whether *record* belongs to this client and this source.
 
-        The store is keyed by the selector, which survives an ``issuer`` or
-        ``client_id`` edit.  A token minted for the old authorization server
-        must not be presented to the new one, so a mismatch reads as no
-        record at all.
+        These fields identify the credential's audience: a change means the
+        old token must not be presented at all, so a mismatch reads as no
+        record.
         """
         if record.issuer != self._issuer_for(declaration):
             return False
-        return not record.client_id or record.client_id == declaration.client_id
+        if record.client_id and record.client_id != declaration.client_id:
+            return False
+        # An empty column means the row predates it; only a recorded value is
+        # compared, so an upgrade does not discard a live token.
+        if record.source_url and record.source_url != source_url:
+            return False
+        return not (record.grant and record.grant != declaration.grant)
+
+    def _credential_changed(
+        self, declaration: OAuthClientConfig, record: TokenRecord
+    ) -> bool:
+        """Whether a credential-affecting setting changed since *record*.
+
+        The set is the token endpoint, the requested scopes and the client
+        credential (env-var name, authentication method and a digest of the
+        secret).  A change to one of these makes a stored re-authorization
+        verdict stale, so the latch is cleared and the refresh token is
+        retried.  An unrelated edit cannot reach here: the source's other
+        fields are not part of the declaration.
+        """
+        if record.token_endpoint and record.token_endpoint != (
+            declaration.token_endpoint or ""
+        ):
+            return True
+        if record.requested_scopes and tuple(record.requested_scopes) != tuple(
+            declaration.scopes
+        ):
+            return True
+        return bool(
+            record.secret_digest
+            and not _secret_digest_matches(declaration, record.secret_digest)
+        )
 
     def _client_credentials(
-        self, declaration: OAuthClientConfig, store: TokenStore
+        self, declaration: OAuthClientConfig, store: TokenStore, source_url: str
     ) -> TokenRecord:
         """Fetch a client-credentials token and persist it."""
         fields = {"grant_type": "client_credentials"}
         if declaration.scopes:
             fields["scope"] = " ".join(declaration.scopes)
-        return self._exchange(declaration, store, fields)
+        return self._exchange(declaration, store, fields, source_url=source_url)
 
     def _refresh(
         self,
         declaration: OAuthClientConfig,
         store: TokenStore,
         record: TokenRecord,
+        source_url: str,
     ) -> TokenRecord:
         """Refresh *record* and persist the result."""
         fields = {
@@ -618,6 +783,7 @@ class OAuthClientProvider:
             declaration,
             store,
             fields,
+            source_url=source_url,
             fallback_refresh=record.refresh_token,
         )
 
@@ -627,6 +793,7 @@ class OAuthClientProvider:
         store: TokenStore,
         fields: dict[str, str],
         *,
+        source_url: str = "",
         fallback_refresh: str | None = None,
     ) -> TokenRecord:
         """POST one token request, persist the result, and map failures.
@@ -642,9 +809,12 @@ class OAuthClientProvider:
         except OAuthHTTPError as exc:
             payload = self._retry_moved_endpoint(declaration, store, fields, exc)
         record = self._record_from_payload(
-            declaration, payload, fallback_refresh=fallback_refresh
+            declaration,
+            payload,
+            source_url=source_url,
+            fallback_refresh=fallback_refresh,
         )
-        return store.put(record)
+        return self._store_call(store.put, record)
 
     def _retry_moved_endpoint(
         self,
@@ -705,10 +875,7 @@ class OAuthClientProvider:
         body = dict(fields)
         secret = declaration.client_secret or ""
         if declaration.client_auth == "client_secret_basic":
-            credential = base64.b64encode(
-                f"{declaration.client_id}:{secret}".encode()
-            ).decode("ascii")
-            headers["Authorization"] = f"Basic {credential}"
+            headers["Authorization"] = f"Basic {_basic_credential(declaration)}"
         else:
             body["client_id"] = declaration.client_id
             body["client_secret"] = secret
@@ -725,6 +892,7 @@ class OAuthClientProvider:
         declaration: OAuthClientConfig,
         payload: Mapping[str, Any],
         *,
+        source_url: str = "",
         fallback_refresh: str | None,
     ) -> TokenRecord:
         """Build a :class:`TokenRecord` from a token response."""
@@ -754,6 +922,11 @@ class OAuthClientProvider:
                 now + timedelta(seconds=expires_in) if expires_in is not None else None
             ),
             updated_at=now,
+            source_url=source_url,
+            grant=declaration.grant,
+            token_endpoint=declaration.token_endpoint or "",
+            requested_scopes=tuple(declaration.scopes),
+            secret_digest=_secret_digest(declaration),
         )
 
     def _record_failure(
@@ -778,15 +951,28 @@ class OAuthClientProvider:
                 next connect fetches a new token with the current secret.
         """
         message = self._error_message(declaration, exc, fields=fields)
-        if 300 <= exc.status < 400 or exc.status == 429 or exc.status >= 500:
+        # 404/410 on an endpoint the operator set explicitly is a wrong
+        # endpoint, not a verdict on the grant: treating it as definitive
+        # would latch an authorization-code source that a config fix should
+        # recover.
+        undeclared_move = (
+            exc.status in _MOVED_ENDPOINT_STATUSES and declaration.token_endpoint
+        )
+        if (
+            300 <= exc.status < 400
+            or exc.status in (408, 425, 429)
+            or exc.status >= 500
+            or undeclared_move
+        ):
             raise TransientOAuthError(message) from None
         if declaration.grant == "client_credentials":
             # No interactive grant to wait for: the operator can fix the
             # client secret and the next connect tries it.  Clearing the row
             # keeps the corrected attempt from hitting a stale error.
-            store.clear(declaration.source)
+            self._store_call(store.clear, declaration.source)
             raise ReauthorizationRequired(message) from None
-        store.mark_reauth(
+        self._store_call(
+            store.mark_reauth,
             declaration.source,
             message,
             issuer=self._issuer_for(declaration),
@@ -810,6 +996,9 @@ class OAuthClientProvider:
         code = exc.error or f"HTTP {exc.status}"
         detail = f": {exc.description}" if exc.description else ""
         secrets = [declaration.client_secret]
+        if declaration.client_auth == "client_secret_basic":
+            # The Authorization header carries base64, not the raw secret.
+            secrets.append(_basic_credential(declaration))
         if fields:
             secrets.append(fields.get("refresh_token"))
         return redact(f"OAuth token request rejected ({code}{detail})", *secrets)
@@ -839,6 +1028,7 @@ class OAuthClientProvider:
                 discovered.
         """
         declaration = self._resolve_declaration(source)
+        source_url = "" if isinstance(source, str) else _source_url(source)
         if declaration.grant != "authorization_code":
             raise OAuthClientError(
                 f"{declaration.source} uses the client-credentials grant; "
@@ -866,6 +1056,7 @@ class OAuthClientProvider:
                 redirect_uri=redirect_uri,
                 created_at=now,
                 expires_at=expires_at,
+                source_url=source_url,
             )
         )
         params = {
@@ -925,7 +1116,16 @@ class OAuthClientProvider:
             "redirect_uri": pending.redirect_uri,
             "code_verifier": pending.code_verifier,
         }
-        record = self._exchange(declaration, self._store_for(declaration), fields)
+        with self._token_lock(declaration.source):
+            # The exchange and the write must not interleave with a concurrent
+            # access_token: a refresh holding the old refresh token could
+            # otherwise write after this completion and clobber the new grant.
+            record = self._exchange(
+                declaration,
+                self._store_call(self._store_for, declaration),
+                fields,
+                source_url=pending.source_url,
+            )
         return record.to_public_dict()
 
     def _resolve_declaration(self, source: str | ToolSource) -> OAuthClientConfig:
@@ -986,13 +1186,46 @@ class OAuthClientProvider:
                 document = self._transport.get_json(url, self._timeout)
             except (OAuthHTTPError, TransientOAuthError):
                 continue
-            if isinstance(document, dict):
+            usable = self._usable_metadata(declaration, document)
+            if usable is not None:
                 with self._lock:
-                    self._metadata[key] = document
-                return document
+                    self._metadata[key] = usable
+                return usable
         raise TransientOAuthError(
             f"could not discover OAuth metadata for {redact(key)}"
         )
+
+    def _usable_metadata(
+        self, declaration: OAuthClientConfig, document: Any
+    ) -> dict[str, Any] | None:
+        """Return *document* when it can drive a token exchange, else ``None``.
+
+        RFC 8414 section 3.3 requires the document's ``issuer`` to equal the
+        configured issuer; a bare ``discovery_url`` has no configured issuer
+        to compare, so it must still name one.  Endpoints must be absolute
+        ``http``/``https`` URLs, so a metadata document cannot point a token
+        request at ``file:`` or a relative path.  A document missing a usable
+        ``token_endpoint`` is not cached, so the next discovery candidate can
+        still supply one.
+        """
+        if not isinstance(document, dict):
+            return None
+        issuer = document.get("issuer")
+        if declaration.issuer:
+            if issuer != declaration.issuer:
+                logger.warning(
+                    f"OAuth metadata for {redact(declaration.issuer)} names "
+                    f"issuer {redact(str(issuer))}; ignoring it"
+                )
+                return None
+        elif not isinstance(issuer, str) or not issuer:
+            return None
+        if not _is_http_url(document.get("token_endpoint")):
+            return None
+        endpoint = document.get("authorization_endpoint")
+        if endpoint is not None and not _is_http_url(endpoint):
+            return None
+        return document
 
     def _issuer_for(self, declaration: OAuthClientConfig) -> str:
         """Return the issuer to record, without forcing discovery."""
@@ -1006,6 +1239,24 @@ class OAuthClientProvider:
         return ""  # pragma: no cover - config validation requires one
 
     # -- stores ------------------------------------------------------------
+
+    def _store_call(
+        self, operation: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any:
+        """Run a store operation, mapping an I/O failure to a typed error.
+
+        The grant is kept: a locked database, a missing directory or a corrupt
+        ``scopes`` cell says nothing about the credential, so the next attempt
+        may succeed.  ``RuntimeError`` covers ``Path.home`` when the process
+        has no resolvable home directory.
+        """
+        try:
+            return operation(*args, **kwargs)
+        except (sqlite3.Error, OSError, json.JSONDecodeError, RuntimeError) as exc:
+            raise OAuthStoreError(
+                f"token store unavailable ({type(exc).__name__}); "
+                "the stored grant was kept"
+            ) from exc
 
     def _store_for(self, declaration: OAuthClientConfig) -> TokenStore:
         """Return the store for *declaration*."""
