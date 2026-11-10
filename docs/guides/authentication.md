@@ -290,6 +290,49 @@ toolregistry-server gateway \
 
 `--oauth-scopes ""` 会省略该字段。未配置 `--oauth-issuer` 时，元数据仍像以前一样公布 `mcp`。
 
+### OpenAPI 安全方案
+
+配置 issuer 后，对外提供的 OpenAPI 文档会描述授权码流程，生成的客户端或文档界面据此知道
+该把用户送到哪里：
+
+```json
+{
+  "components": {
+    "securitySchemes": {
+      "OAuth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://idp.example.com/realms/dev/authorize",
+            "tokenUrl": "https://idp.example.com/realms/dev/token",
+            "scopes": {"openid": "", "profile": "", "email": ""}
+          }
+        }
+      }
+    }
+  },
+  "security": [{"OAuth2": []}]
+}
+```
+
+`authorizationUrl` 与 `tokenUrl` 来自 issuer 的 RFC 8414 或 OIDC 元数据
+（`authorization_endpoint` / `token_endpoint`）。显式的 `--oauth-authorization-url` 与
+`--oauth-token-url` 优先于发现结果；`--oauth-refresh-url` 可添加可选的 `refreshUrl`。
+若覆盖值和元数据都无法提供完整的两个端点，OAuth2 方案会被省略并记录警告，而不是发布一个
+不完整的方案。
+
+`scopes` 对象使用 `--oauth-scopes` 列表，与受保护资源元数据公布的是同一份列表。空列表是允许的，
+会发布空的 `scopes` 对象。
+
+同时接受 API 密钥或静态令牌时，文档级 `security` 列出两种凭据，表示「或」：客户端可以发送
+OAuth 访问令牌或 Bearer 密钥。
+
+```json
+"security": [{"OAuth2": []}, {"HTTPBearer": []}]
+```
+
+没有密钥或令牌时只列出 OAuth2。未配置 `--oauth-issuer` 时，文档与之前完全一致。
+
 ### 限制
 
 未实现令牌内省（RFC 7662）：部署方必须签发服务器可离线校验的 JWT。只签发不透明令牌的

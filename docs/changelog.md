@@ -10,6 +10,9 @@
 
 - **常驻 hub 可以由启动器拉起**：`local-hub ensure` 与 stdio shim 在 `TOOLREGISTRY_LOCAL_HUB_COMMAND` 包含非空白文本时，按 shell 命令拆分并用它替代 `toolregistry-server` 拉起 hub。Hub 部署把它指向 `toolregistry-hub`，按需启动的 hub 因此保留 Hub 启动器的注册表策略（预设默认值、configurable 钩子、管理面板）。未设置或为空白时沿用原有查找顺序：`PATH` 上的 `toolregistry-server`，然后是当前解释器执行包内引导代码。被拉起的 hub 会继承该变量；只有 shim 的密钥会从环境中移除。
 
+- **OAuth 2.0 资源服务器基础**（#234）：`openapi`、`mcp`（HTTP 传输）、`gateway` 与 `local-hub` 接受 `--oauth-issuer`、`--oauth-audience`、`--oauth-jwks` 以及可重复的 `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]`。由外部授权服务器签发的 Bearer 令牌在本地用该服务器的 JWKS 校验（仅 RS256/ES256、精确 `iss`、`aud`/RFC 8707 `resource`、`exp`/`nbf` 允许 60 秒偏差；JWKS 端点优先取 `--oauth-jwks`，否则依次从 RFC 8414/OIDC 元数据、`<issuer>/.well-known/jwks.json` 获取，并缓存 5 分钟；未知 `kid` 最多每 30 秒触发一次重新拉取）。作用域映射显式且遵循最小权限：未映射的作用域不授予任何权限。先尝试 API 密钥和静态令牌，再尝试 OAuth，因此省略 `--oauth-issuer` 时行为不变。MCP 受保护资源元数据在 `authorization_servers` 中公布配置的 issuer；被拒绝的请求在独立服务器与 gateway 上都携带 `WWW-Authenticate: Bearer resource_metadata="<元数据 URL>"`（跟随当前 MCP 路径）；绑定 Unix socket 的 hub 必须显式提供 `--oauth-audience`。未实现令牌内省（RFC 7662）；`PyJWT`（含 `crypto`）成为 `gateway` extra 的新依赖。配置外部 issuer 后，受保护资源元数据不再公布 `scopes_supported`，因为授权服务器可能在 authorize 阶段拒绝通用的 `mcp` 作用域：`--oauth-scopes "openid profile email offline_access"` 指定要公布的作用域，空值则省略该字段，未配置 OAuth 的服务器保持原来的 `["mcp"]`。
+- **OpenAPI 文档描述 OAuth2 流程**（#235）：配置 `--oauth-issuer` 后，对外文档新增 `components.securitySchemes.OAuth2`，使用 `authorizationCode` 流程。`authorizationUrl` 与 `tokenUrl` 来自 issuer 的 RFC 8414 或 OIDC 元数据，可用 `--oauth-authorization-url` / `--oauth-token-url` 覆盖；`--oauth-refresh-url` 可添加可选的 `refreshUrl`。`scopes` 即 `--oauth-scopes` 列表（允许为空）。同时接受 API 密钥或静态令牌时，文档级 `security` 为 `[{"OAuth2": []}, {"HTTPBearer": []}]`，表示「或」；仅 OAuth 的部署只列出 OAuth2；未配置 OAuth 时文档不变。端点无法确定时省略该方案并记录警告。独立服务器与 gateway 的两套 OpenAPI 组装共用同一个构建器。即使没有密钥存储，静态 `--tokens` 现在也会与 OAuth 并存。
+
 ## [0.9.0] - 2026-11-09
 
 ### 新增
@@ -39,8 +42,6 @@
 - **共享 hub 上的客户端按密钥隔离**（#145、#223）：声称身份、工作目录或环境的请求头（`x-client-id`、`x-client-identity`、`x-client-cwd`、`x-client-env`、`x-client-environment`、`x-forwarded-user`、`x-remote-user`）会在认证之后以 `400` 拒绝，并连同调用方密钥记录日志，因此身份只能来自凭据。每次调用都按 principal 计数：`--client-concurrency`（默认 8）限制在途调用，`--concurrency-timeout`（默认 30 秒）限制等待时间；密钥上可空的 `max_concurrency`（用 `keys create --concurrency` 设置、`keys set-concurrency` 修改）只能收紧进程值；等待超过超时的调用返回 MCP `-32000`「too many concurrent calls」。每次调用都会记录 `key_id` 与 `client_id`，`/ext/gateway/clients`（面板的 Clients 页）按客户端报告实时计数。`hub-shim` 新增 `--key-file` / `TOOLREGISTRY_HUB_KEY` 与 `--keys-db`，用于拉起需要密钥的 hub。
 
 - **独立 MCP 服务器拥有同样的按客户端配额**（#223 后续）：`mcp` 在 `sse` 与 `streamable-http` 上接受 `--client-concurrency`（默认 8）与 `--concurrency-timeout`（默认 30 秒），按密钥收紧的规则与 gateway 相同，繁忙时同样返回 `-32000`。`stdio` 会校验这两个值但不限流，因为它只服务一个客户端且没有按客户端的凭据。管理面板的 Keys 表单也接受 `max_concurrency`，与 `keys create --concurrency` 一致。
-
-- **OAuth 2.0 资源服务器基础**（#234）：`openapi`、`mcp`（HTTP 传输）、`gateway` 与 `local-hub` 接受 `--oauth-issuer`、`--oauth-audience`、`--oauth-jwks` 以及可重复的 `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]`。由外部授权服务器签发的 Bearer 令牌在本地用该服务器的 JWKS 校验（仅 RS256/ES256、精确 `iss`、`aud`/RFC 8707 `resource`、`exp`/`nbf` 允许 60 秒偏差；JWKS 端点优先取 `--oauth-jwks`，否则依次从 RFC 8414/OIDC 元数据、`<issuer>/.well-known/jwks.json` 获取，并缓存 5 分钟；未知 `kid` 最多每 30 秒触发一次重新拉取）。作用域映射显式且遵循最小权限：未映射的作用域不授予任何权限。先尝试 API 密钥和静态令牌，再尝试 OAuth，因此省略 `--oauth-issuer` 时行为不变。MCP 受保护资源元数据在 `authorization_servers` 中公布配置的 issuer；被拒绝的请求在独立服务器与 gateway 上都携带 `WWW-Authenticate: Bearer resource_metadata="<元数据 URL>"`（跟随当前 MCP 路径）；绑定 Unix socket 的 hub 必须显式提供 `--oauth-audience`。未实现令牌内省（RFC 7662）；`PyJWT`（含 `crypto`）成为 `gateway` extra 的新依赖。配置外部 issuer 后，受保护资源元数据不再公布 `scopes_supported`，因为授权服务器可能在 authorize 阶段拒绝通用的 `mcp` 作用域：`--oauth-scopes "openid profile email offline_access"` 指定要公布的作用域，空值则省略该字段，未配置 OAuth 的服务器保持原来的 `["mcp"]`。
 
 ### 变更
 
