@@ -257,6 +257,81 @@ toolregistry-server mcp \
 
 Clients connect with a standard `Authorization: Bearer <token>` header.
 
+## OAuth 2.0 Resource Server
+
+The server can accept access tokens minted by an external authorization
+server instead of issuing its own credentials. Verification is local: the
+token signature is checked against the issuer's JWKS, and no token is ever
+introspected or logged per request.
+
+```bash
+toolregistry-server gateway \
+  --config config.yaml \
+  --oauth-issuer https://idp.example.com/realms/dev \
+  --oauth-scope tools:read=calculator,web
+```
+
+| Option | Description |
+|--------|-------------|
+| `--oauth-issuer URL` | Exact `iss` value to accept. Setting it enables OAuth verification |
+| `--oauth-audience URL` | Expected `aud` or RFC 8707 `resource` value. Defaults to the advertised MCP URL |
+| `--oauth-jwks URL` | JWKS endpoint (default: `<issuer>/.well-known/jwks.json`) |
+| `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | Map one scope to namespace patterns; repeatable |
+
+The flags are accepted by `openapi`, `mcp` (HTTP transports), `gateway` and
+`local-hub`.
+
+### Verification rules
+
+- Signature algorithms are limited to RS256 and ES256. `none` and HMAC
+  algorithms are rejected, and so is a token whose `kid` is not published.
+- `iss` must match `--oauth-issuer` exactly. The token's `aud`, or its RFC 8707
+  `resource` claim, must contain the expected audience.
+- `exp` and `nbf` are enforced with 60 seconds of clock leeway.
+- The JWKS is cached for 5 minutes. An unknown `kid` triggers one refetch,
+  which is how a rotated key is picked up without a restart.
+- A failed JWKS fetch rejects the token; startup prefetch is best-effort and
+  only logs a warning.
+
+### Scope mapping
+
+The mapping is least privilege: a token whose scopes are not listed in
+`--oauth-scope` maps to an empty scope and can call no tool. Each entry grants
+the namespaces on the right-hand side, using the same pattern rules as API key
+scopes (`*`, `web/*`, exact names):
+
+```bash
+toolregistry-server mcp \
+  --config config.json \
+  --transport streamable-http \
+  --oauth-issuer https://idp.example.com/realms/dev \
+  --oauth-scope tools:read=calculator,web \
+  --oauth-scope tools:admin=admin
+```
+
+### Credential precedence
+
+API keys from `--keys-db` and static `--tokens` are tried first, then OAuth
+tokens. A request credential is therefore only resolved as an OAuth token when
+it does not match a key or static token. Omitting `--oauth-issuer` leaves the
+previous behaviour untouched.
+
+On MCP streamable-HTTP, the RFC 9728 protected-resource metadata advertises
+the configured issuer in `authorization_servers`, so a client can discover the
+authorization server. A hub bound to a Unix socket has no derivable URL: pass
+`--oauth-audience` explicitly (and `--server-url` if clients should discover
+the metadata).
+
+### Limitations
+
+Token introspection (RFC 7662) is not implemented: the deployment must issue
+JWTs the server can verify offline. An opaque-token authorization server needs
+a proxy that introspects, or `--keys-db` instead.
+
+The Python API is available in process: `OAuthSettings`, `OAuthTokenVerifier`
+and `build_resolver()` in `toolregistry_server.oauth` build the same verifier
+and composite resolver the CLI wires up.
+
 ## Making Authenticated Requests
 
 Include the Bearer token in the `Authorization` header:

@@ -49,6 +49,10 @@ The gateway command keeps its `--backend` choice.
 | `--port PORT` | `8000` | Bind port |
 | `--tokens PATH` | - | File of Bearer tokens, one per line (`#` starts a comment). Tokens are compared in constant time; `API_BEARER_TOKEN` (comma-separated) is read as well |
 | `--execution-log` / `--no-execution-log` | on with `--keys-db` | Record every tool call in the registry execution log. See [Authentication](../guides/authentication.md#execution-log) |
+| `--oauth-issuer URL` | - | Authorization-server issuer (`iss`) to accept. Enables OAuth bearer verification; tokens are verified locally against the issuer's JWKS |
+| `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
+| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
+| `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest accepted request body. Must be positive; a larger body returns `413` with a JSON error |
 | `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
 | `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes (requires the `regex` extra). `0` disables execution |
@@ -83,6 +87,10 @@ toolregistry-server mcp [options]
 | `--client-concurrency N` | `8` | In-flight calls one client may run at once on `sse`/`streamable-http`; a key can lower it but never raise it |
 | `--concurrency-timeout SECONDS` | `30` | How long a call waits for a slot before it returns `-32000` |
 | `--execution-log` / `--no-execution-log` | on with `--keys-db` | Record every tool call in the registry execution log. See [Authentication](../guides/authentication.md#execution-log) |
+| `--oauth-issuer URL` | - | Authorization-server issuer (`iss`) to accept. Enables OAuth bearer verification; tokens are verified locally against the issuer's JWKS |
+| `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
+| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
+| `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
 | `--server-url URL` | derived from `--host`/`--port` | Public URL advertised in OAuth protected-resource metadata (required behind a reverse proxy) |
 | `--tools-list-ttl-ms MS` | `300000` | `ttlMs` cache hint for `tools/list`; `0` disables caching |
 | `--tools-list-cache-scope {public,private}` | `private` | `cacheScope` hint for `tools/list` |
@@ -137,6 +145,10 @@ every request. The admin panel is disabled by default.
 | `--port PORT` | `8000` | Bind port |
 | `--socket PATH` | - | Bind a Unix domain socket instead of `--host`/`--port` (POSIX only; takes precedence). Clients need a UDS-capable HTTP transport |
 | `--tokens PATH` | - | File of Bearer tokens applied to every frontend. `API_BEARER_TOKEN` is read as well |
+| `--oauth-issuer URL` | - | Authorization-server issuer (`iss`) to accept. Enables OAuth bearer verification; tokens are verified locally against the issuer's JWKS |
+| `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
+| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
+| `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
 | `--server-url URL` | derived from `--host`/`--port` | Public MCP URL used in protected-resource metadata |
 | `--backend {fastapi,httpserver}` | `fastapi` | Multiple frontends require `fastapi`; `httpserver` can serve only the openapi frontend |
 | `--openapi-path PATH` | `/openapi` | OpenAPI mount path (rejected with `--backend httpserver`, which serves at the listener root) |
