@@ -180,6 +180,7 @@ def _scope_refusal(
     current: Any,
     tool_name: str,
     principal_resolver: Any | None,
+    registry: Any,
 ) -> Response | None:
     """Return the ``403`` response when the route is outside the scope."""
     if principal_resolver is None:
@@ -187,10 +188,9 @@ def _scope_refusal(
     principal = getattr(request.state, "principal", None)
     if principal_resolver.allows_route(principal, current):
         return None
-    return _error(
-        403,
-        f"Tool '{tool_name}' is not permitted for this credential",
-    )
+    message = f"Tool '{tool_name}' is not permitted for this credential"
+    _record_denial(registry, tool_name, {}, principal, message)
+    return _error(403, message)
 
 
 def _proxy_refusal(
@@ -211,9 +211,26 @@ def _proxy_refusal(
     )
     if target is None:
         return None
-    return _error(
-        403,
-        f"Tool '{target}' is not permitted for this credential",
+    message = f"Tool '{target}' is not permitted for this credential"
+    _record_denial(registry, target, arguments, principal, message)
+    return _error(403, message)
+
+
+def _record_denial(
+    registry: Any,
+    tool_name: str,
+    arguments: Any,
+    principal: Any,
+    message: str,
+) -> None:
+    """Record one refused call so the key's usage counts it."""
+    record_tool_call(
+        registry,
+        tool_name,
+        arguments,
+        principal=principal,
+        error=ValueError(message),
+        outcome="denied",
     )
 
 
@@ -232,7 +249,16 @@ async def _authorisation_refusal(
     if refusal is not None:
         return refusal
     message = await policy_refusal(registry, route, arguments)
-    return None if message is None else _error(403, message)
+    if message is None:
+        return None
+    _record_denial(
+        registry,
+        tool_name,
+        arguments,
+        getattr(request.state, "principal", None),
+        message,
+    )
+    return _error(403, message)
 
 
 def _filtered_result(
@@ -300,7 +326,9 @@ def _make_tool_handler(
         if current is None or not current.enabled:
             return _error(503, f"Tool '{tool_name}' is currently disabled")
 
-        refusal = _scope_refusal(request, current, tool_name, principal_resolver)
+        refusal = _scope_refusal(
+            request, current, tool_name, principal_resolver, route_table.registry
+        )
         if refusal is not None:
             return refusal
 

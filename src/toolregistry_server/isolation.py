@@ -578,12 +578,23 @@ def record_tool_call(
     result: Any = None,
     error: BaseException | None = None,
     duration_ms: float = 0.0,
+    outcome: str | None = None,
 ) -> None:
     """Append one attributed entry to the registry log, if it is enabled.
 
     The entry keeps core's shape and adds ``key_id``/``client_id`` under
-    ``metadata``; the identity stays out of ``arguments``.  A disabled log is
-    a no-op, so a caller need not check first.
+    ``metadata``; the identity stays out of ``arguments``.  A refusal
+    (``busy`` or ``denied``) also stores its outcome in ``metadata`` so the
+    Keys page can separate it from a handler error.  An executed call derives
+    ``ok`` or ``error`` from *error* and keeps the historical metadata shape.
+
+    The same call updates the key's persisted usage counters through the
+    principal's store, so the Keys page and ``keys list --usage`` agree
+    without scanning the log on every request.
+
+    A disabled log skips the entry but still charges the usage counter: the
+    counters are cheap, and an operator who turned the log off to save memory
+    keeps the Keys page working.
 
     Args:
         registry: The live ``ToolRegistry`` the frontends serve.
@@ -593,30 +604,55 @@ def record_tool_call(
         result: The handler's result, kept only for a successful call.
         error: The exception that ended the call, if it failed.
         duration_ms: Wall-clock duration of the handler call.
+        outcome: ``"ok"``, ``"error"``, ``"busy"`` or ``"denied"``.  ``None``
+            derives ``ok`` or ``error`` from *error*.
     """
     getter = getattr(registry, "get_execution_log", None)
     log = getter() if getter is not None else None
-    if log is None:
-        return
-    from toolregistry.admin import ExecutionLogEntry, ExecutionStatus
+    resolved = outcome or ("error" if error is not None else "ok")
+    if log is not None:
+        metadata: dict[str, Any] = {
+            "key_id": getattr(principal, "key_id", None),
+            "client_id": principal_client_id(principal),
+        }
+        if resolved in ("busy", "denied"):
+            metadata["outcome"] = resolved
+        from toolregistry.admin import ExecutionLogEntry, ExecutionStatus
 
-    log.add(
-        ExecutionLogEntry.create(
-            tool_name=tool_name,
-            status=(
-                ExecutionStatus.ERROR if error is not None else ExecutionStatus.SUCCESS
-            ),
-            duration_ms=duration_ms,
-            arguments=dict(arguments),
-            result=None if error is not None else _result_text(result),
-            error=None if error is None else str(error),
-            exception_type=None if error is None else type(error).__qualname__,
-            metadata={
-                "key_id": getattr(principal, "key_id", None),
-                "client_id": principal_client_id(principal),
-            },
+        log.add(
+            ExecutionLogEntry.create(
+                tool_name=tool_name,
+                status=(
+                    ExecutionStatus.ERROR
+                    if error is not None
+                    else ExecutionStatus.SUCCESS
+                ),
+                duration_ms=duration_ms,
+                arguments=dict(arguments),
+                result=None if error is not None else _result_text(result),
+                error=None if error is None else str(error),
+                exception_type=None if error is None else type(error).__qualname__,
+                metadata=metadata,
+            )
         )
-    )
+    _record_usage(principal, resolved)
+
+
+def _record_usage(principal: Any, outcome: str) -> None:
+    """Charge one call to the principal's key, if it has one.
+
+    A usage write must never fail the call it describes: a locked or
+    read-only database keeps the tool serving and only loses a counter.
+    """
+    store = getattr(principal, "store", None)
+    key_id = getattr(principal, "key_id", None)
+    record = getattr(store, "record_usage", None) if store is not None else None
+    if not key_id or record is None:
+        return
+    try:
+        record(key_id, outcome)
+    except Exception:  # pragma: no cover - a broken store must not break a call
+        logger.warning("Failed to record key usage", key_id=key_id, exc_info=True)
 
 
 def _result_text(result: Any) -> str | None:

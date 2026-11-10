@@ -66,11 +66,13 @@ from types import MappingProxyType
 from typing import Any
 
 from .isolation import validate_concurrency
+from .usage import OUTCOMES, KeyUsage
 
 __all__ = [
     "ApiKeyRecord",
     "ApiKeyStore",
     "CreatedKey",
+    "KeyUsage",
     "Principal",
     "PrincipalResolver",
     "SCOPE_TRANSPARENT_TOOLS",
@@ -88,6 +90,10 @@ DEFAULT_PAGE_SIZE = 50
 
 #: Upper bound on ``limit``.  A larger page would not be a page.
 MAX_PAGE_SIZE = 500
+
+#: Marker for :meth:`ApiKeyStore.update` fields the caller did not name.  A
+#: plain ``None`` clears an optional field, so it cannot double as "keep".
+_UNSET: Any = object()
 
 #: Tools that invoke another tool by name and cannot make their own scope
 #: decision.  Empty today: ``call_deferred`` checks its target with this
@@ -131,6 +137,16 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_last_used
     ON api_keys(last_used_at DESC);
+CREATE TABLE IF NOT EXISTS api_key_usage (
+    key_id TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL DEFAULT 0,
+    ok INTEGER NOT NULL DEFAULT 0,
+    error INTEGER NOT NULL DEFAULT 0,
+    busy INTEGER NOT NULL DEFAULT 0,
+    denied INTEGER NOT NULL DEFAULT 0,
+    last_success_at TEXT,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -507,6 +523,9 @@ class Principal:
             ``--tokens`` credentials map here.
         max_concurrency: The key's in-flight call limit, or ``None`` for the
             process default.  A static operator token has no override.
+        store: The store the key was verified against, used only to record
+            usage for the next call.  It is excluded from ``to_dict`` and
+            from equality.
     """
 
     key_id: str | None = None
@@ -514,6 +533,7 @@ class Principal:
     scopes: ScopeSpec = field(default_factory=ScopeSpec)
     unrestricted: bool = False
     max_concurrency: int | None = None
+    store: Any = field(default=None, repr=False, compare=False)
 
     @classmethod
     def operator(cls, label: str = "operator") -> Principal:
@@ -799,6 +819,200 @@ class ApiKeyStore:
         assert row is not None
         return _row_to_record(row)
 
+    def rotate(self, key_id: str) -> CreatedKey:
+        """Issue a new secret for an existing key and return it once.
+
+        The key id, label, scopes, expiry, concurrency and history stay the
+        same.  ``secret_digest`` and ``secret_hash`` are replaced in one
+        statement, so a concurrent :meth:`verify` reads either the old pair or
+        the new pair, never a mix.  The old secret fails on its next request.
+
+        Rotating a revoked or expired key is refused: the new secret would
+        inherit a state that already fails :meth:`verify`.  Extend or clear
+        the expiry with :meth:`update` first, then rotate.
+
+        Args:
+            key_id: The key to rotate.
+
+        Returns:
+            The unchanged record and the new plaintext secret.
+
+        Raises:
+            KeyError: If *key_id* is unknown.
+            ValueError: If the key is revoked or expired.
+        """
+        secret = SECRET_PREFIX + secrets.token_urlsafe(32)
+        digest = _sha256_hex(secret)
+        hashed = _hash_secret(secret)
+        with self._lock:
+            row = self._select_id(key_id)
+            if row is None:
+                raise KeyError(key_id)
+            if row["revoked_at"] is not None:
+                raise ValueError(f"key {key_id!r} is revoked and cannot be rotated")
+            if not _row_is_active(row, self._now()):
+                raise ValueError(
+                    f"key {key_id!r} has expired; update expires_at before rotating"
+                )
+            self._connection.execute(
+                "UPDATE api_keys SET secret_digest = ?, secret_hash = ? WHERE id = ?",
+                (digest, hashed, key_id),
+            )
+            self._connection.commit()
+            # A cached digest must not survive the secret it belongs to.
+            self._forget(key_id)
+            row = self._select_id(key_id)
+        assert row is not None
+        return CreatedKey(record=_row_to_record(row), secret=secret)
+
+    def update(
+        self,
+        key_id: str,
+        *,
+        label: Any = _UNSET,
+        scopes: Any = _UNSET,
+        expires_at: Any = _UNSET,
+        max_concurrency: Any = _UNSET,
+    ) -> ApiKeyRecord:
+        """Change a key's label, scopes, expiry or concurrency.
+
+        A field left at :data:`_UNSET` keeps its current value.  Passing
+        ``None`` for *expires_at* or *max_concurrency* clears it.  The change
+        is one statement and applies to the next request, because
+        :meth:`verify` re-reads the row every time.
+
+        Args:
+            key_id: The key to change.
+            label: New non-empty label.
+            scopes: New scope specification; ``None`` means "can call
+                nothing".  See :meth:`ScopeSpec.coerce`.
+            expires_at: New expiry timestamp, or ``None`` for no expiry.  A
+                time already past is refused, matching :meth:`create`.
+            max_concurrency: New positive in-flight limit, or ``None`` for the
+                process default.
+
+        Returns:
+            The updated record.
+
+        Raises:
+            KeyError: If *key_id* is unknown.
+            ValueError: If the key is revoked, a supplied field is invalid, or
+                *expires_at* is not in the future.
+        """
+        with self._lock:
+            row = self._select_id(key_id)
+            if row is None:
+                raise KeyError(key_id)
+            if row["revoked_at"] is not None:
+                raise ValueError(f"key {key_id!r} is revoked and cannot be updated")
+
+        assignments, parameters = _update_assignments(
+            self._clock(),
+            label=label,
+            scopes=scopes,
+            expires_at=expires_at,
+            max_concurrency=max_concurrency,
+        )
+        if not assignments:
+            return _row_to_record(row)
+
+        with self._lock:
+            # Re-read under the write lock: the first read only validated the
+            # input, and a concurrent revoke must not turn into an update of a
+            # key that is already dead.
+            current = self._select_id(key_id)
+            if current is None:
+                raise KeyError(key_id)
+            if current["revoked_at"] is not None:
+                raise ValueError(f"key {key_id!r} is revoked and cannot be updated")
+            self._connection.execute(
+                f"UPDATE api_keys SET {', '.join(assignments)} WHERE id = ?",
+                (*parameters, key_id),
+            )
+            self._connection.commit()
+            updated = self._select_id(key_id)
+        assert updated is not None
+        return _row_to_record(updated)
+
+    # -- usage -------------------------------------------------------------
+
+    def record_usage(
+        self,
+        key_id: str,
+        outcome: str,
+        *,
+        timestamp: datetime | str | None = None,
+    ) -> None:
+        """Add one call to a key's usage counters.
+
+        The increment is one ``INSERT ... ON CONFLICT`` statement, so
+        concurrent callers cannot lose an update and the panel and the CLI
+        read the same row.  Usage is cumulative for the database: it is not
+        cleared by rotation, revocation or expiry.
+
+        Args:
+            key_id: The key the call was charged to.
+            outcome: One of ``ok``, ``error``, ``busy`` or ``denied``.
+            timestamp: When the call happened.  Defaults to the store clock.
+
+        Raises:
+            ValueError: If *outcome* is not one of :data:`OUTCOMES`.
+        """
+        if outcome not in OUTCOMES:
+            raise ValueError(
+                f"outcome must be one of {sorted(OUTCOMES)}, got {outcome!r}"
+            )
+        moment = _normalize_timestamp(
+            timestamp if timestamp is not None else self._clock()
+        )
+        success = moment if outcome == "ok" else None
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO api_key_usage "
+                "(key_id, calls, ok, error, busy, denied, last_success_at, updated_at) "
+                "VALUES (?, 1, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(key_id) DO UPDATE SET "
+                "calls = calls + 1, "
+                "ok = ok + excluded.ok, "
+                "error = error + excluded.error, "
+                "busy = busy + excluded.busy, "
+                "denied = denied + excluded.denied, "
+                "last_success_at = COALESCE("
+                "excluded.last_success_at, last_success_at), "
+                "updated_at = excluded.updated_at",
+                (
+                    key_id,
+                    int(outcome == "ok"),
+                    int(outcome == "error"),
+                    int(outcome == "busy"),
+                    int(outcome == "denied"),
+                    success,
+                    moment,
+                ),
+            )
+            self._connection.commit()
+
+    def usage(self, key_id: str) -> KeyUsage:
+        """Return one key's usage, with zeros when it has none.
+
+        Args:
+            key_id: The key to read.
+
+        Returns:
+            The counters.  A key with no recorded call yields a zero record.
+        """
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM api_key_usage WHERE key_id = ?", (key_id,)
+            ).fetchone()
+        return _row_to_usage(row) if row is not None else KeyUsage.empty(key_id)
+
+    def usage_all(self) -> dict[str, KeyUsage]:
+        """Return every recorded usage row, keyed by key id."""
+        with self._lock:
+            rows = self._connection.execute("SELECT * FROM api_key_usage").fetchall()
+        return {row["key_id"]: _row_to_usage(row) for row in rows}
+
     # -- authentication ----------------------------------------------------
 
     def verify(self, secret: str | None) -> Principal | None:
@@ -854,6 +1068,7 @@ class ApiKeyStore:
             label=record.label,
             scopes=record.scopes,
             max_concurrency=record.max_concurrency,
+            store=self,
         )
 
     # Alias with the verb used by the existing authentication module.
@@ -905,6 +1120,62 @@ def _json_scopes(specification: ScopeSpec) -> str:
     return json.dumps(specification.to_dict(), sort_keys=True, separators=(",", ":"))
 
 
+def _update_assignments(
+    now: datetime,
+    *,
+    label: Any,
+    scopes: Any,
+    expires_at: Any,
+    max_concurrency: Any,
+) -> tuple[list[str], list[Any]]:
+    """Build the ``SET`` assignments for :meth:`ApiKeyStore.update`.
+
+    The column names come from this fixed set, never from the caller, so the
+    joined statement is safe.  Validation lives here to keep ``update``
+    small; the caller re-reads the row under the write lock before using the
+    result.
+
+    Args:
+        now: The current time, used to refuse a past expiry.
+        label: The requested label, or :data:`_UNSET`.
+        scopes: The requested scopes, or :data:`_UNSET`.
+        expires_at: The requested expiry, or :data:`_UNSET`.
+        max_concurrency: The requested limit, or :data:`_UNSET`.
+
+    Returns:
+        The assignments and their positional parameters, in matching order.
+
+    Raises:
+        ValueError: If a supplied field is invalid.
+    """
+    assignments: list[str] = []
+    parameters: list[Any] = []
+    if label is not _UNSET:
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError("label must not be empty")
+        assignments.append("label = ?")
+        parameters.append(label.strip())
+    if scopes is not _UNSET:
+        assignments.append("scopes = ?")
+        parameters.append(_json_scopes(ScopeSpec.coerce(scopes)))
+    if expires_at is not _UNSET:
+        moment = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        expires = _normalize_timestamp(expires_at) if expires_at is not None else None
+        if expires is not None and _parse_timestamp(expires) <= moment:
+            raise ValueError("expires_at must be in the future")
+        assignments.append("expires_at = ?")
+        parameters.append(expires)
+    if max_concurrency is not _UNSET:
+        limit = (
+            validate_concurrency(max_concurrency, label="max_concurrency")
+            if max_concurrency is not None
+            else None
+        )
+        assignments.append("max_concurrency = ?")
+        parameters.append(limit)
+    return assignments, parameters
+
+
 def _row_is_active(row: sqlite3.Row, now: str) -> bool:
     """Whether a row is neither revoked nor expired at canonical time *now*."""
     if row["revoked_at"] is not None:
@@ -924,6 +1195,19 @@ def _row_to_record(row: sqlite3.Row) -> ApiKeyRecord:
         revoked_at=row["revoked_at"],
         last_used_at=row["last_used_at"],
         max_concurrency=row["max_concurrency"],
+    )
+
+
+def _row_to_usage(row: sqlite3.Row) -> KeyUsage:
+    """Convert one ``api_key_usage`` row into a usage record."""
+    return KeyUsage(
+        key_id=row["key_id"],
+        calls=row["calls"],
+        ok=row["ok"],
+        error=row["error"],
+        busy=row["busy"],
+        denied=row["denied"],
+        last_success_at=row["last_success_at"],
     )
 
 

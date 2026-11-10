@@ -407,7 +407,11 @@ def _tool_result_response(result: Any) -> "Response":
 
 
 def _require_route_scope(
-    request: Any, route: RouteEntry, tool_name: str, principal_resolver: Any
+    request: Any,
+    route: RouteEntry,
+    tool_name: str,
+    principal_resolver: Any,
+    registry: Any,
 ) -> None:
     """Refuse a route outside the caller's key scope.
 
@@ -421,6 +425,8 @@ def _require_route_scope(
         tool_name: The route's tool name, used in the message.
         principal_resolver: The configured resolver, or ``None`` when key
             scoping is off.
+        registry: The live registry, used to record the refusal in the
+            execution log so the key's usage shows it.
 
     Raises:
         fastapi.HTTPException: ``403`` when the principal may not call the
@@ -433,9 +439,31 @@ def _require_route_scope(
         return
     from fastapi import HTTPException
 
-    raise HTTPException(
+    error = HTTPException(
         status_code=403,
         detail=f"Tool '{tool_name}' is not permitted for this credential",
+    )
+    _record_denial(registry, tool_name, {}, principal, error)
+    raise error
+
+
+def _record_denial(
+    registry: Any,
+    tool_name: str,
+    arguments: Any,
+    principal: Any,
+    error: BaseException,
+    started: float | None = None,
+) -> None:
+    """Record one refused OpenAPI call with the caller's key."""
+    record_tool_call(
+        registry,
+        tool_name,
+        arguments,
+        principal=principal,
+        error=error,
+        duration_ms=(0.0 if started is None else (time.monotonic() - started) * 1000),
+        outcome="denied",
     )
 
 
@@ -464,7 +492,26 @@ def _filtered_result(
     return result
 
 
-async def _require_policy(route: Any, arguments: Any, registry: Any) -> None:
+def _require_policy_sync(
+    route: Any, arguments: Any, registry: Any, principal: Any = None
+) -> None:
+    """Synchronous counterpart of :func:`_require_policy`.
+
+    Raises:
+        fastapi.HTTPException: ``403`` with the policy's message.
+    """
+    from fastapi import HTTPException
+
+    message = policy_refusal_sync(registry, route, arguments)
+    if message is not None:
+        error = HTTPException(status_code=403, detail=message)
+        _record_denial(registry, _route_name(route), arguments, principal, error)
+        raise error
+
+
+async def _require_policy(
+    route: Any, arguments: Any, registry: Any, principal: Any = None
+) -> None:
     """Refuse a call the process permission policy denies.
 
     Raises:
@@ -474,16 +521,14 @@ async def _require_policy(route: Any, arguments: Any, registry: Any) -> None:
 
     message = await policy_refusal(registry, route, arguments)
     if message is not None:
-        raise HTTPException(status_code=403, detail=message)
+        error = HTTPException(status_code=403, detail=message)
+        _record_denial(registry, _route_name(route), arguments, principal, error)
+        raise error
 
 
-def _require_policy_sync(route: Any, arguments: Any, registry: Any) -> None:
-    """Synchronous counterpart of :func:`_require_policy`."""
-    from fastapi import HTTPException
-
-    message = policy_refusal_sync(registry, route, arguments)
-    if message is not None:
-        raise HTTPException(status_code=403, detail=message)
+def _route_name(route: Any) -> str:
+    """Return the tool name to record for a refused route."""
+    return str(getattr(route, "tool_name", getattr(route, "name", "tool")))
 
 
 async def _invoke_tool(
@@ -584,10 +629,12 @@ def _require_proxy_target(
         return
     from fastapi import HTTPException
 
-    raise HTTPException(
+    error = HTTPException(
         status_code=403,
         detail=f"Tool '{target}' is not permitted for this credential",
     )
+    _record_denial(registry, target, arguments, principal, error)
+    raise error
 
 
 def _add_route_from_entry(
@@ -682,7 +729,9 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                _require_route_scope(request, current_route, tname, principal_resolver)
+                _require_route_scope(
+                    request, current_route, tname, principal_resolver, rt.registry
+                )
                 matcher = mf() if mf is not None else None
                 # Validation is CPU-bound; keep this loop free while it runs,
                 # the same way the httpserver handler does.
@@ -696,7 +745,7 @@ def _add_route_from_entry(
                 _require_proxy_target(
                     tname, arguments, rt.registry, principal_resolver, principal
                 )
-                await _require_policy(current_route, arguments, rt.registry)
+                await _require_policy(current_route, arguments, rt.registry, principal)
                 try:
                     result = await _invoke_tool(
                         rt.registry, tname, h, arguments, principal
@@ -737,7 +786,9 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
-                _require_route_scope(request, current_route, tname, principal_resolver)
+                _require_route_scope(
+                    request, current_route, tname, principal_resolver, rt.registry
+                )
                 matcher = mf() if mf is not None else None
                 arguments = _validate_arguments(
                     current_route, data, pattern_matcher=matcher
@@ -746,7 +797,7 @@ def _add_route_from_entry(
                 _require_proxy_target(
                     tname, arguments, rt.registry, principal_resolver, principal
                 )
-                _require_policy_sync(current_route, arguments, rt.registry)
+                _require_policy_sync(current_route, arguments, rt.registry, principal)
                 try:
                     result = _invoke_tool_sync(
                         rt.registry, tname, h, arguments, principal

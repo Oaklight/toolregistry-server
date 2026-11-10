@@ -70,7 +70,12 @@ class FakeKeyStore:
 
     def __init__(self) -> None:
         self._records: dict[str, FakeKeyRecord] = {}
+        self._usage: dict[str, dict[str, Any]] = {}
         self._created = 0
+
+    def _next_id(self) -> str:
+        self._created += 1
+        return f"key_{self._created}"
 
     def create(
         self,
@@ -80,8 +85,7 @@ class FakeKeyStore:
         expires_at: str | None = None,
         max_concurrency: int | None = None,
     ) -> FakeCreatedKey:
-        self._created += 1
-        key_id = f"key_{self._created}"
+        key_id = self._next_id()
         secret = f"gw_secret_{self._created}"
         if isinstance(scopes, Mapping):
             normalized = {
@@ -103,12 +107,61 @@ class FakeKeyStore:
     def list(self) -> Sequence[FakeKeyRecord]:
         return list(self._records.values())
 
+    def get(self, key_id: str) -> FakeKeyRecord | None:
+        return self._records.get(key_id)
+
     def revoke(self, key_id: str) -> FakeKeyRecord:
         record = self._records.get(key_id)
         if record is None:
             raise KeyError(key_id)
         record.revoked_at = "2026-11-08T01:00:00Z"
         return record
+
+    def rotate(self, key_id: str) -> FakeCreatedKey:
+        record = self._records.get(key_id)
+        if record is None:
+            raise KeyError(key_id)
+        if record.revoked_at is not None:
+            raise ValueError(f"key {key_id!r} is revoked and cannot be rotated")
+        self._created += 1
+        return FakeCreatedKey(record=record, secret=f"gw_secret_{self._created}")
+
+    def update(self, key_id: str, **changes: Any) -> FakeKeyRecord:
+        record = self._records.get(key_id)
+        if record is None:
+            raise KeyError(key_id)
+        if record.revoked_at is not None:
+            raise ValueError(f"key {key_id!r} is revoked and cannot be updated")
+        if "label" in changes:
+            record.label = changes["label"]
+        if "scopes" in changes:
+            scopes = changes["scopes"]
+            record.scopes = {
+                "namespaces": list(scopes.get("namespaces", [])),
+                "tools": dict(scopes.get("tools", {})),
+            }
+        if "expires_at" in changes:
+            record.expires_at = changes["expires_at"]
+        if "max_concurrency" in changes:
+            record.max_concurrency = changes["max_concurrency"]
+        return record
+
+    def usage(self, key_id: str) -> dict[str, Any]:
+        return self._usage.get(
+            key_id,
+            {
+                "key_id": key_id,
+                "calls": 0,
+                "ok": 0,
+                "error": 0,
+                "busy": 0,
+                "denied": 0,
+                "last_success_at": None,
+            },
+        )
+
+    def usage_all(self) -> dict[str, dict[str, Any]]:
+        return dict(self._usage)
 
 
 class FakeClients:
@@ -294,6 +347,25 @@ def host():
         admin.stop()
 
 
+@pytest.fixture()
+def host_with_store():
+    """A running panel plus the fake key store the extension uses."""
+    store = FakeKeyStore()
+    extension = GatewayAdminExtension(
+        key_store=store,
+        frontends=FakeFrontends(),
+        sources=FakeSources(),
+        parse_source=lambda payload: payload,
+        clients=FakeClients(),
+    )
+    admin = AdminServer(ToolRegistry(), port=0, extensions=[extension])
+    info = admin.start()
+    try:
+        yield info, store
+    finally:
+        admin.stop()
+
+
 class TestManifest:
     def test_manifest_advertises_the_extension(self, host) -> None:
         status, body, _ = _request(f"{host.url}/api/extensions")
@@ -447,6 +519,212 @@ class TestKeys:
             f"{host.url}/ext/gateway/keys/missing/revoke", method="POST"
         )
         assert status == 404
+
+    def test_rotate_returns_the_secret_once_and_keeps_the_identity(self, host) -> None:
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "ci", "scopes": ["default"]},
+        )
+        assert status == 201
+        created = json.loads(body)
+
+        status, body, headers = _request(
+            f"{host.url}/ext/gateway/keys/{created['id']}/rotate", method="POST"
+        )
+
+        assert status == 200
+        assert headers.get("Cache-Control") == "no-store"
+        rotated = json.loads(body)
+        assert rotated["id"] == created["id"]
+        assert rotated["label"] == created["label"]
+        assert rotated["secret"].startswith("gw_secret_")
+        assert rotated["secret"] != created["secret"]
+        assert "secret_hash" not in rotated
+        assert "secret_digest" not in rotated
+
+        status, body, _ = _request(f"{host.url}/ext/gateway/keys")
+        assert status == 200
+        [record] = json.loads(body)["keys"]
+        assert "secret" not in record
+
+    def test_rotate_refuses_a_revoked_key(self, host) -> None:
+        _, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "ci", "scopes": ["default"]},
+        )
+        key_id = json.loads(body)["id"]
+        _request(f"{host.url}/ext/gateway/keys/{key_id}/revoke", method="POST")
+
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys/{key_id}/rotate", method="POST"
+        )
+
+        assert status == 400
+        assert "revoked" in json.loads(body)["message"]
+
+    def test_rotate_of_an_unknown_key_is_a_404(self, host) -> None:
+        status, _, _ = _request(
+            f"{host.url}/ext/gateway/keys/missing/rotate", method="POST"
+        )
+        assert status == 404
+
+    def test_update_changes_the_named_fields(self, host) -> None:
+        _, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "old", "scopes": ["default"]},
+        )
+        key_id = json.loads(body)["id"]
+
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys/{key_id}",
+            method="PATCH",
+            data={
+                "label": "new",
+                "scopes": {"namespaces": ["web"], "tools": {"web-x": False}},
+                "max_concurrency": 2,
+                "expires_at": None,
+            },
+        )
+
+        assert status == 200
+        updated = json.loads(body)["key"]
+        assert updated["label"] == "new"
+        assert updated["scopes"]["namespaces"] == ["web"]
+        assert updated["scopes"]["tools"] == {"web-x": False}
+        assert updated["max_concurrency"] == 2
+        assert updated["expires_at"] is None
+        assert "secret_digest" not in updated
+
+    def test_update_refuses_a_revoked_key(self, host) -> None:
+        _, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "ci", "scopes": ["default"]},
+        )
+        key_id = json.loads(body)["id"]
+        _request(f"{host.url}/ext/gateway/keys/{key_id}/revoke", method="POST")
+
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys/{key_id}",
+            method="PATCH",
+            data={"label": "again"},
+        )
+
+        assert status == 400
+        assert "revoked" in json.loads(body)["message"]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"label": ""},
+            {"scopes": "default"},
+            {"max_concurrency": 0},
+            {"expires_at": 5},
+            {"unknown": 1},
+        ],
+    )
+    def test_update_refuses_an_invalid_payload(self, host, payload) -> None:
+        _, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "ci", "scopes": ["default"]},
+        )
+        key_id = json.loads(body)["id"]
+
+        status, body, _ = _request(
+            f"{host.url}/ext/gateway/keys/{key_id}",
+            method="PATCH",
+            data=payload,
+        )
+
+        assert status == 400
+        assert json.loads(body)["error"] == "Bad Request"
+
+    def test_update_of_an_unknown_key_is_a_404(self, host) -> None:
+        status, _, _ = _request(
+            f"{host.url}/ext/gateway/keys/missing",
+            method="PATCH",
+            data={"label": "x"},
+        )
+        assert status == 404
+
+    def test_get_returns_the_record_and_usage(self, host_with_store) -> None:
+        host, store = host_with_store
+        _, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "ci", "scopes": ["default"]},
+        )
+        key_id = json.loads(body)["id"]
+        store._usage[key_id] = {
+            "key_id": key_id,
+            "calls": 3,
+            "ok": 2,
+            "error": 0,
+            "busy": 1,
+            "denied": 0,
+            "last_success_at": "2026-11-08T00:00:00Z",
+        }
+
+        status, body, _ = _request(f"{host.url}/ext/gateway/keys/{key_id}")
+
+        assert status == 200
+        key = json.loads(body)["key"]
+        assert key["id"] == key_id
+        assert key["usage"]["calls"] == 3
+        assert key["usage"]["busy"] == 1
+        assert "secret" not in key
+        assert "secret_digest" not in key
+
+    def test_get_of_an_unknown_key_is_a_404(self, host) -> None:
+        status, _, _ = _request(f"{host.url}/ext/gateway/keys/missing")
+        assert status == 404
+
+    def test_list_includes_usage_and_never_a_secret(self, host_with_store) -> None:
+        host, store = host_with_store
+        _, body, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "ci", "scopes": ["default"]},
+        )
+        key_id = json.loads(body)["id"]
+        store._usage[key_id] = {
+            "key_id": key_id,
+            "calls": 4,
+            "ok": 3,
+            "error": 1,
+            "busy": 0,
+            "denied": 0,
+            "last_success_at": "2026-11-08T00:00:00Z",
+        }
+
+        status, body, _ = _request(f"{host.url}/ext/gateway/keys")
+
+        assert status == 200
+        [record] = json.loads(body)["keys"]
+        assert record["usage"]["calls"] == 4
+        assert record["usage"]["error"] == 1
+        assert "secret" not in record
+        assert "secret_digest" not in record
+        assert "secret_hash" not in record
+
+    def test_list_gives_an_unused_key_zero_usage(self, host) -> None:
+        _, _, _ = _request(
+            f"{host.url}/ext/gateway/keys",
+            method="POST",
+            data={"label": "ci", "scopes": ["default"]},
+        )
+
+        status, body, _ = _request(f"{host.url}/ext/gateway/keys")
+
+        assert status == 200
+        [record] = json.loads(body)["keys"]
+        assert record["usage"]["calls"] == 0
+        assert record["usage"]["key_id"] == record["id"]
 
 
 class TestClients:

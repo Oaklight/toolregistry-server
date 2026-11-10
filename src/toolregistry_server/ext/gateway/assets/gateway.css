@@ -124,6 +124,52 @@
     border-color: var(--gw-bad);
 }
 
+.ext-container[data-ext-name="gateway"] .gw-btn-small {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-number {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-detail-card,
+.ext-container[data-ext-name="gateway"] .gw-edit-card {
+    border: 1px solid var(--gw-line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 8%);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-detail-card h4,
+.ext-container[data-ext-name="gateway"] .gw-edit-card h4 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    flex-basis: 100%;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px 20px;
+    margin-bottom: 12px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-detail-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid var(--gw-line);
+    padding-bottom: 6px;
+    font-size: 13px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-detail-name {
+    color: var(--gw-muted);
+}
+
 .ext-container[data-ext-name="gateway"] .gw-pill {
     display: inline-block;
     padding: 2px 8px;

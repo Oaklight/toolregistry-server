@@ -10,6 +10,7 @@ import pytest
 
 from toolregistry_server.keystore import (
     ApiKeyStore,
+    KeyUsage,
     Principal,
     PrincipalResolver,
     ScopeSpec,
@@ -521,3 +522,275 @@ class TestMaxConcurrency:
             assert old.set_max_concurrency(created.record.id, 3).max_concurrency == 3
         finally:
             old.close()
+
+
+# ---------------------------------------------------------------------------
+# Rotation (#248)
+# ---------------------------------------------------------------------------
+
+
+class TestRotate:
+    def test_keeps_identity_and_replaces_the_secret(self, store, clock):
+        created = store.create(
+            "build-bot",
+            {"namespaces": ["alpha"], "tools": {"alpha-dangerous": False}},
+            expires_at=clock.now + timedelta(days=1),
+            max_concurrency=3,
+        )
+        before = store.get(created.record.id)
+        assert before is not None
+
+        rotated = store.rotate(created.record.id)
+
+        assert rotated.secret != created.secret
+        assert rotated.secret.startswith("trk_")
+        assert rotated.record.id == before.id
+        assert rotated.record.label == before.label
+        assert rotated.record.scopes == before.scopes
+        assert rotated.record.created_at == before.created_at
+        assert rotated.record.expires_at == before.expires_at
+        assert rotated.record.max_concurrency == 3
+        assert "secret" not in rotated.record.to_dict()
+
+    def test_the_old_secret_is_refused_on_the_next_request(self, store):
+        created = store.create("build-bot", {"namespaces": ["alpha"]})
+        assert store.verify(created.secret) is not None  # populate the cache
+
+        rotated = store.rotate(created.record.id)
+
+        assert store.verify(created.secret) is None
+        principal = store.verify(rotated.secret)
+        assert principal is not None
+        assert principal.key_id == created.record.id
+
+    def test_rotation_is_persisted(self, tmp_path, clock):
+        path = tmp_path / "keys.db"
+        with ApiKeyStore(path, clock=clock) as database:
+            created = database.create("build-bot", {"namespaces": ["alpha"]})
+            rotated = database.rotate(created.record.id)
+
+        with ApiKeyStore(path, clock=clock) as database:
+            assert database.verify(created.secret) is None
+            assert database.verify(rotated.secret) is not None
+
+    def test_an_unknown_key_is_refused(self, store):
+        with pytest.raises(KeyError):
+            store.rotate("key_missing")
+
+    def test_a_revoked_key_is_refused(self, store):
+        created = store.create("build-bot", {"namespaces": ["alpha"]})
+        store.revoke(created.record.id)
+
+        with pytest.raises(ValueError, match="revoked"):
+            store.rotate(created.record.id)
+
+    def test_an_expired_key_is_refused(self, tmp_path, clock):
+        database = ApiKeyStore(tmp_path / "keys.db", clock=clock)
+        try:
+            created = database.create(
+                "short",
+                {"namespaces": ["alpha"]},
+                expires_at=clock.now + timedelta(seconds=5),
+            )
+            clock.advance(6)
+
+            with pytest.raises(ValueError, match="expired"):
+                database.rotate(created.record.id)
+        finally:
+            database.close()
+
+
+# ---------------------------------------------------------------------------
+# Editing (#248)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdate:
+    def test_changes_every_field(self, store, clock):
+        created = store.create("old", {"namespaces": ["alpha"]}, max_concurrency=2)
+        expires = clock.now + timedelta(days=2)
+
+        updated = store.update(
+            created.record.id,
+            label="new",
+            scopes={"namespaces": ["beta"], "tools": {"beta-echo": True}},
+            expires_at=expires,
+            max_concurrency=5,
+        )
+
+        assert updated.id == created.record.id
+        assert updated.label == "new"
+        assert updated.scopes.namespaces == ("beta",)
+        assert updated.scopes.tools == {"beta-echo": True}
+        assert updated.expires_at == "2026-01-03T12:00:00+00:00"
+        assert updated.max_concurrency == 5
+        assert updated.created_at == created.record.created_at
+
+    def test_the_old_secret_still_verifies_and_the_new_scope_applies(self, store):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+        first = store.verify(created.secret)
+        assert first is not None and first.allows("alpha", "alpha-add")
+
+        store.update(created.record.id, scopes={"namespaces": ["beta"]})
+
+        second = store.verify(created.secret)
+        assert second is not None
+        assert not second.allows("alpha", "alpha-add")
+        assert second.allows("beta", "beta-echo")
+
+    def test_optional_fields_can_be_cleared(self, store, clock):
+        created = store.create(
+            "bot",
+            {"namespaces": ["alpha"]},
+            expires_at=clock.now + timedelta(days=1),
+            max_concurrency=4,
+        )
+
+        updated = store.update(created.record.id, expires_at=None, max_concurrency=None)
+
+        assert updated.expires_at is None
+        assert updated.max_concurrency is None
+
+    def test_a_revoked_key_is_refused(self, store):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+        store.revoke(created.record.id)
+
+        with pytest.raises(ValueError, match="revoked"):
+            store.update(created.record.id, label="renamed")
+
+    def test_a_concurrent_revoke_is_caught_on_the_write(self, store, monkeypatch):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+        original = store._select_id  # noqa: SLF001
+        reads = {"count": 0}
+
+        def revoking_read(key_id):
+            reads["count"] += 1
+            if reads["count"] == 2:
+                store.revoke(key_id)
+            return original(key_id)
+
+        monkeypatch.setattr(store, "_select_id", revoking_read)
+
+        with pytest.raises(ValueError, match="revoked"):
+            store.update(created.record.id, label="renamed")
+
+    def test_a_past_expiry_is_refused(self, store, clock):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+
+        with pytest.raises(ValueError, match="future"):
+            store.update(
+                created.record.id,
+                expires_at=clock.now - timedelta(seconds=1),
+            )
+
+    def test_an_empty_label_is_refused(self, store):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+
+        with pytest.raises(ValueError, match="label"):
+            store.update(created.record.id, label="   ")
+
+    def test_an_unknown_key_is_refused(self, store):
+        with pytest.raises(KeyError):
+            store.update("key_missing", label="renamed")
+
+    def test_no_fields_returns_the_current_record(self, store):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+
+        updated = store.update(created.record.id)
+
+        assert updated == created.record
+
+    def test_the_change_is_persisted(self, tmp_path, clock):
+        path = tmp_path / "keys.db"
+        with ApiKeyStore(path, clock=clock) as database:
+            created = database.create("bot", {"namespaces": ["alpha"]})
+            database.update(created.record.id, label="renamed", max_concurrency=2)
+
+        with ApiKeyStore(path, clock=clock) as database:
+            record = database.get(created.record.id)
+        assert record is not None
+        assert record.label == "renamed"
+        assert record.max_concurrency == 2
+
+
+# ---------------------------------------------------------------------------
+# Usage counters (#249)
+# ---------------------------------------------------------------------------
+
+
+class TestUsage:
+    def test_counts_each_outcome(self, store, clock):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+
+        store.record_usage(created.record.id, "ok")
+        clock.advance(10)
+        store.record_usage(created.record.id, "ok")
+        clock.advance(10)
+        store.record_usage(created.record.id, "error")
+        store.record_usage(created.record.id, "busy")
+        store.record_usage(created.record.id, "denied")
+
+        usage = store.usage(created.record.id)
+        assert usage == KeyUsage(
+            key_id=created.record.id,
+            calls=5,
+            ok=2,
+            error=1,
+            busy=1,
+            denied=1,
+            last_success_at="2026-01-01T12:00:10+00:00",
+        )
+        assert "secret" not in json.dumps(usage.to_dict())
+
+    def test_last_success_only_moves_on_an_ok(self, store, clock):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+
+        store.record_usage(created.record.id, "error")
+        assert store.usage(created.record.id).last_success_at is None
+
+        store.record_usage(created.record.id, "ok")
+        first = store.usage(created.record.id).last_success_at
+        clock.advance(30)
+        store.record_usage(created.record.id, "denied")
+
+        assert first == "2026-01-01T12:00:00+00:00"
+        assert store.usage(created.record.id).last_success_at == first
+
+    def test_a_key_without_calls_has_zero_usage(self, store):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+
+        usage = store.usage(created.record.id)
+
+        assert usage == KeyUsage.empty(created.record.id)
+        assert usage.to_dict()["calls"] == 0
+
+    def test_usage_all_returns_every_recorded_key(self, store):
+        first = store.create("one", {"namespaces": ["alpha"]})
+        second = store.create("two", {"namespaces": ["alpha"]})
+        store.record_usage(first.record.id, "ok")
+        store.record_usage(second.record.id, "denied")
+
+        usage = store.usage_all()
+
+        assert usage[first.record.id].ok == 1
+        assert usage[second.record.id].denied == 1
+
+    def test_an_unknown_outcome_is_rejected(self, store):
+        created = store.create("bot", {"namespaces": ["alpha"]})
+
+        with pytest.raises(ValueError, match="outcome"):
+            store.record_usage(created.record.id, "timeout")
+
+    def test_usage_survives_revoke_and_reopen(self, tmp_path, clock):
+        path = tmp_path / "keys.db"
+        with ApiKeyStore(path, clock=clock) as database:
+            created = database.create("bot", {"namespaces": ["alpha"]})
+            database.record_usage(created.record.id, "ok")
+            database.record_usage(created.record.id, "denied")
+            database.revoke(created.record.id)
+
+        with ApiKeyStore(path, clock=clock) as database:
+            usage = database.usage(created.record.id)
+        assert usage.calls == 2
+        assert usage.ok == 1
+        assert usage.denied == 1
