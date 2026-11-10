@@ -380,6 +380,14 @@ class TestComposite:
         assert composite.enabled is True
         assert composite.has_keys is False
 
+    def test_static_tokens_survive_an_oauth_only_deployment(self, jwks):
+        resolver = build_resolver(None, ["api-secret"], _settings())
+
+        assert isinstance(resolver, CompositePrincipalResolver)
+        assert resolver.resolve("api-secret").unrestricted is True
+        assert resolver.resolve(_token(KEY1, "key-1")).label == "user-1"
+        assert resolver.has_keys is False
+
     def test_unconfigured_builds_nothing(self):
         assert build_resolver(None, [], None) is None
 
@@ -406,6 +414,12 @@ class TestCliFlags:
             "tools:read=calculator,web",
             "--oauth-scopes",
             "openid profile email offline_access",
+            "--oauth-authorization-url",
+            "https://idp.example.com/realms/dev/authorize",
+            "--oauth-token-url",
+            "https://idp.example.com/realms/dev/token",
+            "--oauth-refresh-url",
+            "https://idp.example.com/realms/dev/refresh",
         )
 
         settings = _oauth_settings(parsed, default_audience=None)
@@ -420,6 +434,9 @@ class TestCliFlags:
             "email",
             "offline_access",
         )
+        assert settings.authorization_url.endswith("/authorize")
+        assert settings.token_url.endswith("/token")
+        assert settings.refresh_url.endswith("/refresh")
 
     def test_advertised_scopes_default_to_omitted(self):
         parsed = self._parsed("openapi", "--oauth-issuer", ISSUER)

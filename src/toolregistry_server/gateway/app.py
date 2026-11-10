@@ -744,6 +744,18 @@ class GatewayAdapter(Adapter):
             )
         self._oauth_issuer = oauth.issuer if oauth is not None else None
         self._oauth_scopes = oauth.scopes_supported if oauth is not None else None
+        self._openapi_auth = None
+        if oauth is not None:
+            from ..oauth import OpenAPIAuth
+
+            self._openapi_auth = OpenAPIAuth(
+                oauth,
+                bearer_accepted=bool(self._tokens)
+                or bool(
+                    self._principal_resolver is not None
+                    and getattr(self._principal_resolver, "has_keys", False)
+                ),
+            )
         # Validating here keeps a bad knob out of the listener: uvicorn binds
         # only after the adapter is fully constructed.
         self._client_limiter = ClientLimiter(client_concurrency, concurrency_timeout)
@@ -893,6 +905,7 @@ class GatewayAdapter(Adapter):
                 regex_timeout=self._regex_timeout,
                 regex_budget=self._regex_budget,
                 principal_resolver=resolver,
+                openapi_auth=self._openapi_auth,
             )
 
         try:
@@ -921,6 +934,7 @@ class GatewayAdapter(Adapter):
             regex_budget=self._regex_budget,
             principal_resolver=resolver,
             dependencies=dependencies,
+            openapi_auth=self._openapi_auth,
         )
 
     def _build_mcp_server(self) -> Any:

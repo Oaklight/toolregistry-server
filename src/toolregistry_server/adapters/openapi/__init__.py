@@ -127,6 +127,9 @@ class OpenAPIAdapter(Adapter):
             ``None`` enables it when a key store is configured, ``True``
             forces it on and ``False`` leaves it off.  The app calls route
             handlers directly, so core writes nothing without this switch.
+        oauth: OAuth resource-server settings.  When set, the served OpenAPI
+            document describes the authorization-code flow and, if keys or
+            static tokens are also accepted, the OR of both credentials.
     """
 
     def __init__(
@@ -142,6 +145,7 @@ class OpenAPIAdapter(Adapter):
         regex_budget: float = DEFAULT_REGEX_BUDGET,
         principal_resolver: Any | None = None,
         execution_log: bool | None = None,
+        oauth: Any | None = None,
     ) -> None:
         super().__init__(route_table)
 
@@ -154,6 +158,11 @@ class OpenAPIAdapter(Adapter):
         configure_execution_log(
             route_table.registry, enabled=execution_log, has_keys=has_keys
         )
+        openapi_auth = None
+        if oauth is not None:
+            from ...oauth import OpenAPIAuth
+
+            openapi_auth = OpenAPIAuth(oauth, bearer_accepted=bool(tokens) or has_keys)
         self._app = create_httpserver_app(
             route_table,
             title=title,
@@ -164,6 +173,7 @@ class OpenAPIAdapter(Adapter):
             regex_timeout=regex_timeout,
             regex_budget=regex_budget,
             principal_resolver=principal_resolver,
+            openapi_auth=openapi_auth,
         )
 
     @property
@@ -297,8 +307,9 @@ class OpenAPIAdapter(Adapter):
 
         identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         tokens = load_tokens(kwargs.pop("tokens_path", None))
+        oauth = kwargs.pop("oauth", None)
         principal_resolver = _build_key_resolver(
-            kwargs.pop("keys_db", None), tokens, kwargs.pop("oauth", None)
+            kwargs.pop("keys_db", None), tokens, oauth
         )
         adapter = cls(
             route_table,
@@ -311,6 +322,7 @@ class OpenAPIAdapter(Adapter):
             regex_budget=kwargs.pop("regex_budget", DEFAULT_REGEX_BUDGET),
             principal_resolver=principal_resolver,
             execution_log=kwargs.pop("execution_log", None),
+            oauth=oauth,
         )
         adapter.run(**kwargs)
 

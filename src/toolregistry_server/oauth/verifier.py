@@ -67,6 +67,12 @@ class OAuthSettings:
         refresh_cooldown: Minimum interval between forced JWKS refetches,
             in seconds.  A token with an unknown ``kid`` cannot drive one
             outbound request per call.
+        authorization_url: Authorization endpoint override for the OpenAPI
+            ``authorizationCode`` flow.  ``None`` reads it from the issuer's
+            metadata.
+        token_url: Token endpoint override for the same flow.
+        refresh_url: Optional refresh endpoint override; omitted from the
+            flow unless set.
         scopes_supported: Scopes advertised in the protected-resource
             metadata.  ``None`` and an empty tuple both omit the field; when
             an issuer is configured the field is omitted unless this is set
@@ -84,6 +90,9 @@ class OAuthSettings:
     algorithms: tuple[str, ...] = DEFAULT_ALGORITHMS
     refresh_cooldown: float = DEFAULT_REFRESH_COOLDOWN
     scopes_supported: tuple[str, ...] | None = None
+    authorization_url: str | None = None
+    token_url: str | None = None
+    refresh_url: str | None = None
 
     def __post_init__(self) -> None:
         if not self.issuer.strip():
@@ -165,6 +174,34 @@ def _load_json(url: str, timeout: float) -> Any:
 
     with urlopen(url, timeout=timeout) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8"))
+
+
+def iter_authorization_server_metadata(
+    issuer: str, timeout: float
+) -> Iterable[dict[str, Any]]:
+    """Yield the issuer's authorization-server metadata documents.
+
+    Tries the RFC 8414 form first (with a path-bearing issuer, the
+    well-known segment precedes the issuer path), then the suffix form, then
+    OIDC discovery.  Only documents that decode to an object are yielded; a
+    transport or decoding failure is logged and the next candidate is tried.
+    Callers pick the fields they need and stop iterating once satisfied.
+    """
+    for url in _metadata_url_candidates(issuer):
+        try:
+            document = _load_json(url, timeout)
+        except Exception as exc:
+            logger.info(f"OAuth metadata discovery from {url} failed: {exc}")
+            continue
+        if isinstance(document, dict):
+            yield document
+
+
+def fetch_authorization_server_metadata(
+    issuer: str, timeout: float
+) -> dict[str, Any] | None:
+    """Return the first usable authorization-server metadata document."""
+    return next(iter(iter_authorization_server_metadata(issuer, timeout)), None)
 
 
 class _JwksCache:
@@ -280,16 +317,12 @@ class OAuthTokenVerifier:
         usable ``jwks_uri``.  Discovery failures are logged once and never
         reject a token by themselves; the caller falls back.
         """
-        for url in _metadata_url_candidates(self._settings.issuer):
-            try:
-                document = _load_json(url, self._settings.timeout)
-            except Exception as exc:
-                logger.info(f"OAuth metadata discovery from {url} failed: {exc}")
-                continue
-            if isinstance(document, dict):
-                jwks_uri = document.get("jwks_uri")
-                if isinstance(jwks_uri, str) and jwks_uri.strip():
-                    return jwks_uri.strip()
+        for document in iter_authorization_server_metadata(
+            self._settings.issuer, self._settings.timeout
+        ):
+            jwks_uri = document.get("jwks_uri")
+            if isinstance(jwks_uri, str) and jwks_uri.strip():
+                return jwks_uri.strip()
         return None
 
     def _resolve_jwks_uri(self) -> str:
@@ -483,14 +516,19 @@ def build_resolver(
         The composite resolver, one of its parts, or ``None``.
     """
     api_keys: PrincipalResolver | None = None
+    static_tokens = tuple(operator_tokens)
     if store is not None:
-        api_keys = PrincipalResolver(store, operator_tokens=tuple(operator_tokens))
+        api_keys = PrincipalResolver(store, operator_tokens=static_tokens)
     elif keys_db and transport != "stdio":
         from ..keystore import ApiKeyStore
 
         api_keys = PrincipalResolver(
-            ApiKeyStore(keys_db), operator_tokens=tuple(operator_tokens)
+            ApiKeyStore(keys_db), operator_tokens=static_tokens
         )
+    elif static_tokens:
+        # OAuth may be configured without a key store; static tokens stay
+        # the bootstrap/legacy credential and are tried first.
+        api_keys = PrincipalResolver(None, operator_tokens=static_tokens)
     oauth_resolver = build_oauth_resolver(oauth)
     if api_keys is not None and oauth_resolver is not None:
         return CompositePrincipalResolver(api_keys, oauth_resolver)
@@ -517,8 +555,19 @@ def settings_from_args(parsed: Any, *, default_audience: str) -> OAuthSettings |
     jwks_uri = getattr(parsed, "oauth_jwks", None)
     raw_scopes = getattr(parsed, "oauth_scope", None) or []
     raw_supported = getattr(parsed, "oauth_scopes", None)
+    authorization_url = getattr(parsed, "oauth_authorization_url", None)
+    token_url = getattr(parsed, "oauth_token_url", None)
+    refresh_url = getattr(parsed, "oauth_refresh_url", None)
     if issuer is None:
-        if audience or jwks_uri or raw_scopes or raw_supported is not None:
+        if (
+            audience
+            or jwks_uri
+            or raw_scopes
+            or raw_supported is not None
+            or authorization_url
+            or token_url
+            or refresh_url
+        ):
             raise ValueError(
                 "--oauth-issuer is required when other OAuth options are set"
             )
@@ -549,6 +598,9 @@ def settings_from_args(parsed: Any, *, default_audience: str) -> OAuthSettings |
         jwks_uri=jwks_uri,
         scope_map=scope_map,
         scopes_supported=scopes_supported,
+        authorization_url=authorization_url,
+        token_url=token_url,
+        refresh_url=refresh_url,
     )
 
 
