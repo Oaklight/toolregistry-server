@@ -8,6 +8,7 @@ import importlib
 import sys
 import textwrap
 import types
+from pathlib import Path
 
 import pytest
 from toolregistry import ToolRegistry
@@ -840,7 +841,7 @@ def test_a_url_selected_source_cannot_be_moved_without_the_declaration(
     from toolregistry.config import ConfigError
 
     _patch_registration(monkeypatch)
-    path = _write(tmp_path, MCP_SOURCE, OAUTH_URL_SECTION)
+    path = Path(_write(tmp_path, MCP_SOURCE, OAUTH_URL_SECTION))
     config = _config(path)
     manager = SourceManager(
         ToolRegistry(), config, config_path=path, oauth_provider=FakeProvider()
@@ -1053,3 +1054,61 @@ def test_close_oauth_clients_drops_a_reload_created_provider():
 
     assert closed == [True]
     assert app.source_manager.oauth_provider is None
+
+
+# -- declaration swap ordering and the excluded-source flag ------------------
+
+
+def test_a_reload_swaps_declarations_under_the_manager_lock(tmp_path, monkeypatch):
+    """#274: a reload must not interleave with a panel mutation.
+
+    The mutation persists and then syncs declarations while holding the
+    manager lock; a reload that swapped them outside that lock could leave
+    the provider holding a mix of the file and the in-memory config.
+    """
+    _patch_registration(monkeypatch)
+    path = Path(_write(tmp_path, MCP_SOURCE, OAUTH_URL_SECTION))
+    manager = SourceManager(ToolRegistry(), _config(path), config_path=path)
+
+    seen: list[bool] = []
+
+    def recording(target, config):
+        seen.append(manager._lock._is_owned())
+
+    monkeypatch.setattr(manager, "_reload_oauth_declarations", recording)
+
+    assert manager.reload_from_path(path) is True
+    assert seen == [True]
+
+
+def test_excluding_a_source_clears_its_reauth_flag(tmp_path, monkeypatch):
+    """#276: the panel must not offer Re-authorize for an excluded source.
+
+    The flag is a verdict about a credential in use.  The store keeps the
+    latch, so re-enabling re-derives it; the entry does not keep it.
+    """
+    _patch_registration(monkeypatch)
+    path = Path(_write(tmp_path, MCP_SOURCE, OAUTH_URL_SECTION))
+    config = _config(path)
+    manager = SourceManager(
+        ToolRegistry(), config, config_path=path, oauth_provider=FakeProvider()
+    )
+    entry = manager.apply_initial()[0]
+    assert entry.status is SourceStatus.APPLIED
+
+    # The declaration is unchanged; only its scope moves.  A credential
+    # verdict may already be latched on the entry.
+    flagged = dataclasses.replace(entry, reauth_required=True)
+    excluded = dataclasses.replace(entry.source, enabled=False)
+
+    updated, added = manager._apply_unchanged(
+        entry.key,
+        excluded,
+        flagged,
+        dataclasses.replace(config, tools=(excluded,)),
+        {"registered": 0, "disabled": 0},
+    )
+
+    assert updated.status is SourceStatus.EXCLUDED
+    assert updated.reauth_required is False
+    assert added == set()

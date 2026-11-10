@@ -27,9 +27,12 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import random
 import sqlite3
+import stat
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -70,6 +73,10 @@ CREATE TABLE IF NOT EXISTS oauth_client_pending (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     source_url TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS oauth_client_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -132,6 +139,12 @@ def _parse_time(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _is_busy(exc: sqlite3.OperationalError) -> bool:
+    """Whether *exc* is SQLite reporting a lock held by another writer."""
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message
 
 
 @dataclass(frozen=True)
@@ -256,6 +269,60 @@ class PendingAuthorization:
     source_url: str = ""
 
 
+#: How long SQLite waits for a held write lock before reporting
+#: ``SQLITE_BUSY``.  Two processes may share one store (a server and a CLI,
+#: or two servers), and a token refresh or a panel write holds the lock for
+#: the duration of one transaction, so the default five seconds is too short.
+BUSY_TIMEOUT_MS = 15_000
+
+#: Extra attempts after a busy timeout, with exponential backoff and jitter.
+#: Together with :data:`BUSY_TIMEOUT_MS` this bounds a write to roughly a
+#: minute and keeps a contended writer from failing on the first collision.
+BUSY_RETRIES = 3
+
+#: Base backoff for a retried busy write, in seconds.
+_BUSY_BACKOFF = 0.05
+
+#: ``O_NOFOLLOW`` where the platform has it.  A zero value means the platform
+#: cannot refuse a symlink at ``open`` time; the ``lstat`` check still runs.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+#: Manifest key: selector-to-store-path map of the declarations this
+#: configuration has recorded.  See
+#: :meth:`OAuthClientProvider.reconcile_stored_tokens`.
+DECLARED_TARGETS_KEY = "declared_targets"
+
+
+def _refuse_unsafe_target(database: str) -> None:
+    """Refuse a symlink or a special file at the store path.
+
+    ``Path.exists`` and a plain ``open`` follow a symlink, and opening a FIFO
+    for writing blocks until a reader appears.  Both turn a writable state
+    directory into a denial of service, so the target is inspected first and
+    only a regular file (or no file at all) is accepted.
+
+    Args:
+        database: The store path.
+
+    Raises:
+        OSError: If the path exists and is a symlink or not a regular file.
+    """
+    try:
+        info = os.lstat(database)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        raise OSError(
+            f"refusing to open the OAuth token store {database!r}: "
+            "the path is a symbolic link"
+        )
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(
+            f"refusing to open the OAuth token store {database!r}: "
+            "the path is not a regular file"
+        )
+
+
 def _prepare_directory(database: str) -> None:
     """Create the store's directory owner-only.
 
@@ -276,10 +343,14 @@ def _prepare_directory(database: str) -> None:
 
 
 def _create_private_file(database: str) -> None:
-    """Create the database file with mode 0600 before SQLite opens it."""
-    if Path(database).exists():
-        return
-    descriptor = os.open(database, os.O_CREAT | os.O_WRONLY, 0o600)
+    """Create the database file with mode 0600 before SQLite opens it.
+
+    ``O_NOFOLLOW`` makes the open refuse a symlink that appeared between the
+    :func:`_refuse_unsafe_target` check and this call.  The file is not
+    truncated: an existing database keeps its contents.
+    """
+    flags = os.O_CREAT | os.O_WRONLY | _NOFOLLOW
+    descriptor = os.open(database, flags, 0o600)
     os.close(descriptor)
 
 
@@ -317,10 +388,12 @@ class TokenStore:
         self._lock = threading.RLock()
         if database != ":memory:":
             _prepare_directory(database)
+            _refuse_unsafe_target(database)
             _create_private_file(database)
         self._connection = sqlite3.connect(database, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         with self._lock:
+            self._connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
             self._connection.executescript(_SCHEMA)
             _migrate(self._connection)
             if database != ":memory:":
@@ -328,6 +401,47 @@ class TokenStore:
             self._connection.commit()
         if database != ":memory:":
             _restrict_permissions(database)
+
+    @property
+    def path(self) -> str:
+        """Return the database path this store opened."""
+        return self._path
+
+    def _run_write(
+        self, statement: str, parameters: tuple[Any, ...] = ()
+    ) -> sqlite3.Cursor:
+        """Execute one write and commit it, retrying a busy database.
+
+        ``PRAGMA busy_timeout`` already makes SQLite wait, so a retry only
+        runs when the wait expired.  Backoff is exponential with jitter, and
+        the total wait is bounded by :data:`BUSY_RETRIES`, so a lock held by
+        another process produces a typed failure rather than a hang.
+
+        Args:
+            statement: The SQL to execute.
+            parameters: Bound parameters.
+
+        Returns:
+            The cursor, for its ``rowcount``.
+
+        Raises:
+            sqlite3.OperationalError: When the database stays busy for every
+                attempt, or on any other operational error.
+        """
+        attempt = 0
+        while True:
+            try:
+                cursor = self._connection.execute(statement, parameters)
+                self._connection.commit()
+                return cursor
+            except sqlite3.OperationalError as exc:
+                if attempt >= BUSY_RETRIES or not _is_busy(exc):
+                    raise
+                with contextlib.suppress(sqlite3.Error):
+                    self._connection.rollback()
+                attempt += 1
+                delay = _BUSY_BACKOFF * (2 ** (attempt - 1))
+                time.sleep(delay + random.random() * _BUSY_BACKOFF)
 
     def close(self) -> None:
         """Close the database connection.  The store is unusable afterwards."""
@@ -378,7 +492,7 @@ class TokenStore:
             secret_digest=record.secret_digest,
         )
         with self._lock:
-            self._connection.execute(
+            self._run_write(
                 """
                 INSERT INTO oauth_client_tokens (
                     source_id, issuer, client_id, scopes, access_token,
@@ -406,7 +520,6 @@ class TokenStore:
                 """,
                 _record_values(stored),
             )
-            self._connection.commit()
         return stored
 
     def mark_reauth(
@@ -448,7 +561,7 @@ class TokenStore:
         """
         scopes_text = json.dumps(list(requested_scopes or ()), separators=(",", ":"))
         with self._lock:
-            self._connection.execute(
+            self._run_write(
                 """
                 INSERT INTO oauth_client_tokens (
                     source_id, issuer, client_id, scopes, updated_at,
@@ -477,7 +590,6 @@ class TokenStore:
                     secret_digest,
                 ),
             )
-            self._connection.commit()
 
     def clear_latch(self, source_id: str) -> None:
         """Clear the re-authorization latch after a credential change.
@@ -490,7 +602,7 @@ class TokenStore:
             source_id: Selector the declaration is written under.
         """
         with self._lock:
-            self._connection.execute(
+            self._run_write(
                 """
                 UPDATE oauth_client_tokens
                    SET needs_reauth = 0,
@@ -499,7 +611,6 @@ class TokenStore:
                 """,
                 (source_id,),
             )
-            self._connection.commit()
 
     def mark_rejected(self, source_id: str) -> None:
         """Record that the resource server rejected the access token.
@@ -515,7 +626,7 @@ class TokenStore:
             source_id: Selector the declaration is written under.
         """
         with self._lock:
-            self._connection.execute(
+            self._run_write(
                 """
                 UPDATE oauth_client_tokens
                    SET access_token = NULL,
@@ -526,7 +637,6 @@ class TokenStore:
                 """,
                 (_format_time(self._clock()), source_id),
             )
-            self._connection.commit()
 
     def reset_rejections(self, source_id: str) -> None:
         """Clear the rejection counter after the credential was accepted.
@@ -538,7 +648,7 @@ class TokenStore:
             source_id: Selector the declaration is written under.
         """
         with self._lock:
-            self._connection.execute(
+            self._run_write(
                 """
                 UPDATE oauth_client_tokens
                    SET rejections = 0
@@ -546,20 +656,23 @@ class TokenStore:
                 """,
                 (source_id,),
             )
-            self._connection.commit()
 
-    def clear(self, source_id: str) -> None:
-        """Delete the stored record for *source_id*."""
+    def clear(self, source_id: str) -> bool:
+        """Delete the stored record for *source_id*.
+
+        Returns:
+            ``True`` when a row was deleted.
+        """
         with self._lock:
-            self._connection.execute(
+            cursor = self._run_write(
                 "DELETE FROM oauth_client_tokens WHERE source_id = ?", (source_id,)
             )
-            self._connection.commit()
+            return cursor.rowcount > 0
 
     def put_pending(self, pending: PendingAuthorization) -> None:
         """Store an authorization request awaiting its callback."""
         with self._lock:
-            self._connection.execute(
+            self._run_write(
                 """
                 INSERT OR REPLACE INTO oauth_client_pending (
                     state, source_id, code_verifier, redirect_uri,
@@ -576,7 +689,6 @@ class TokenStore:
                     pending.source_url,
                 ),
             )
-            self._connection.commit()
 
     def pop_pending(self, state: str) -> PendingAuthorization | None:
         """Remove and return the request for *state*, or ``None``.
@@ -590,22 +702,59 @@ class TokenStore:
             ).fetchone()
             if row is None:
                 return None
-            self._connection.execute(
+            self._run_write(
                 "DELETE FROM oauth_client_pending WHERE state = ?", (state,)
             )
-            self._connection.commit()
         return _pending_from_row(row)
 
     def purge_expired_pending(self, now: datetime | None = None) -> int:
         """Delete expired authorization requests and return how many went."""
         moment = now or self._clock()
         with self._lock:
-            cursor = self._connection.execute(
+            cursor = self._run_write(
                 "DELETE FROM oauth_client_pending WHERE expires_at <= ?",
                 (_format_time(moment),),
             )
-            self._connection.commit()
             return cursor.rowcount
+
+    def declared_targets(self) -> dict[str, str]:
+        """Return the selector-to-store-path manifest this store recorded.
+
+        The manifest lets the next start delete the token row of a
+        declaration that left the file while the server was stopped.  An
+        empty mapping means nothing was recorded, not that nothing is
+        declared now.
+        """
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT value FROM oauth_client_meta WHERE key = ?",
+                (DECLARED_TARGETS_KEY,),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            parsed = json.loads(row["value"])
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, Mapping):
+            return {}
+        return {
+            str(selector): str(path)
+            for selector, path in parsed.items()
+            if isinstance(selector, str) and isinstance(path, str)
+        }
+
+    def record_declared_targets(self, targets: Mapping[str, str]) -> None:
+        """Replace the stored selector-to-store-path manifest."""
+        payload = json.dumps(dict(sorted(targets.items())), separators=(",", ":"))
+        with self._lock:
+            self._run_write(
+                """
+                INSERT INTO oauth_client_meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (DECLARED_TARGETS_KEY, payload),
+            )
 
 
 def _record_values(record: TokenRecord) -> tuple[Any, ...]:

@@ -974,16 +974,31 @@ def settings_from_args(
     )
 
 
-def _config_value(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
-    """Return a CLI option, or the config-file value when the flag is absent.
+def _file_value(argument: str, section: Mapping[str, Any]) -> Any:
+    """Return the raw config-file value for *argument*, ignoring any flag.
+
+    Args:
+        argument: The destination name without the leading dashes.
+        section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        The file value, or ``None`` when the key is absent.
+    """
+    return section.get(argument.removeprefix("oauth_"))
+
+
+def _flag_value(parsed: Any, argument: str, file_value: Any) -> Any:
+    """Return a CLI option, or the already-validated file value.
 
     The argparse default for every scalar OAuth flag is ``None``, so a
-    present flag is distinguishable from an absent one.
+    present flag is distinguishable from an absent one.  The file value is
+    checked by the caller before this runs, so a typo there is an error even
+    when the flag would win.
 
     Args:
         parsed: The argparse namespace.
         argument: The destination name without the leading dashes.
-        section: The ``oauth`` mapping from the configuration file.
+        file_value: The validated config-file value.
 
     Returns:
         The flag value, the file value, or ``None``.
@@ -991,8 +1006,7 @@ def _config_value(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any
     value = getattr(parsed, argument, None)
     if value is not None:
         return value
-    key = argument.removeprefix("oauth_")
-    return section.get(key)
+    return file_value
 
 
 def effective_identity(
@@ -1092,12 +1106,12 @@ def _config_text(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     Raises:
         ValueError: If the file supplies a value that is not a string.
     """
-    value = _config_value(parsed, argument, section)
-    if value is None or isinstance(value, str):
-        return value
-    if isinstance(value, int) and not isinstance(value, bool):
-        raise _numeric_string_error(argument)
-    raise _config_error(argument, "a string", value)
+    value = _file_value(argument, section)
+    if value is not None and not isinstance(value, str):
+        if isinstance(value, int) and not isinstance(value, bool):
+            raise _numeric_string_error(argument)
+        raise _config_error(argument, "a string", value)
+    return _flag_value(parsed, argument, value)
 
 
 def _config_number(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
@@ -1119,18 +1133,21 @@ def _config_number(parsed: Any, argument: str, section: Mapping[str, Any]) -> An
         ValueError: If the file supplies a value that is not a finite
             number.
     """
-    value = _config_value(parsed, argument, section)
-    if value is None:
-        return value
-    if not isinstance(value, bool) and isinstance(value, (int, float)):
+    value = _file_value(argument, section)
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, (int, float))
+    ):
+        raise _config_error(argument, "a finite number", value)
+    if value is not None:
         try:
-            if math.isfinite(float(value)):
-                return value
+            finite = math.isfinite(float(value))
         except OverflowError:
             # A YAML integer wider than a float cannot become one; it is
             # finite as an integer but useless as a TTL.
-            pass
-    raise _config_error(argument, "a finite number", value)
+            finite = False
+        if not finite:
+            raise _config_error(argument, "a finite number", value)
+    return _flag_value(parsed, argument, value)
 
 
 def _config_secret(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
@@ -1161,12 +1178,12 @@ def _config_secret(parsed: Any, argument: str, section: Mapping[str, Any]) -> An
     Raises:
         ValueError: If the file supplies a value that is not a string.
     """
-    value = _config_value(parsed, argument, section)
-    if value is None or isinstance(value, str):
-        return value
-    if isinstance(value, int) and not isinstance(value, bool):
-        raise _numeric_string_error(argument)
-    raise ValueError(f"{_config_label(argument)} must be a string")
+    value = _file_value(argument, section)
+    if value is not None and not isinstance(value, str):
+        if isinstance(value, int) and not isinstance(value, bool):
+            raise _numeric_string_error(argument)
+        raise ValueError(f"{_config_label(argument)} must be a string")
+    return _flag_value(parsed, argument, value)
 
 
 def _config_bool(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
@@ -1183,10 +1200,10 @@ def _config_bool(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     Raises:
         ValueError: If the file supplies a value that is not a boolean.
     """
-    value = _config_value(parsed, argument, section)
-    if value is None or isinstance(value, bool):
-        return value
-    raise _config_error(argument, "a boolean", value)
+    value = _file_value(argument, section)
+    if value is not None and not isinstance(value, bool):
+        raise _config_error(argument, "a boolean", value)
+    return _flag_value(parsed, argument, value)
 
 
 def _config_scopes(parsed: Any, section: Mapping[str, Any]) -> str | None:

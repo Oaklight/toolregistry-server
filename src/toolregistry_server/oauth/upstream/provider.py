@@ -41,6 +41,8 @@ import base64
 import hashlib
 import http.client
 import json
+import math
+import os
 import re
 import secrets
 import sqlite3
@@ -90,6 +92,12 @@ __all__ = [
 
 #: How long an authorization request may wait for its callback.
 AUTHORIZATION_STATE_TTL = 600.0
+
+#: How long an authorization-server metadata document is trusted before it is
+#: fetched again.  Discovery is not on the hot path, so a short TTL costs one
+#: request per source per window and lets a metadata change take effect
+#: without a restart.
+DEFAULT_METADATA_TTL = 300.0
 
 #: Statuses that mean a discovered endpoint has moved rather than refused us.
 #: They are retried once after the metadata cache is dropped.
@@ -290,8 +298,8 @@ class UrllibTransport:
     supplies every URL it dials, but the URLs are not screened by
     :mod:`toolregistry.netpolicy`: discovery and the token POST can reach a
     loopback or link-local host if the configuration names one.  That matches
-    :mod:`toolregistry_server.oauth.verifier`.  Screening either has to be
-    added under a separate issue; nothing implements it here.
+    :mod:`toolregistry_server.oauth.verifier`.  Screening is tracked as #264;
+    nothing implements it here.
     """
 
     def get_json(self, url: str, timeout: float) -> Any:
@@ -417,6 +425,10 @@ class OAuthClientProvider:
         skew: Seconds before expiry at which a token is refreshed.
         assumed_ttl: Seconds a token is trusted when its response stated no
             expiry.  ``None`` keeps such a token until something replaces it.
+        metadata_ttl: Seconds an authorization-server metadata document is
+            cached.  Expiry re-fetches it; a failed re-fetch keeps serving
+            the cached document and retries after a full TTL, so an
+            unreachable identity provider does not stall every connect.
     """
 
     def __init__(
@@ -430,6 +442,7 @@ class OAuthClientProvider:
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         skew: float = DEFAULT_EXPIRY_SKEW,
         assumed_ttl: float | None = DEFAULT_ASSUMED_TTL,
+        metadata_ttl: float = DEFAULT_METADATA_TTL,
     ) -> None:
         self._declarations = tuple(declarations)
         self._store = store
@@ -439,10 +452,11 @@ class OAuthClientProvider:
         self._timeout = timeout
         self._skew = skew
         self._assumed_ttl = assumed_ttl
+        self._metadata_ttl = metadata_ttl
         self._lock = threading.RLock()
         self._stores: dict[str, TokenStore] = {}
         self._token_locks: dict[str, threading.Lock] = {}
-        self._metadata: dict[str, dict[str, Any]] = {}
+        self._metadata: dict[str, tuple[dict[str, Any], datetime]] = {}
 
     # -- declaration lookup ------------------------------------------------
 
@@ -453,9 +467,20 @@ class OAuthClientProvider:
             return self._declarations
 
     def replace_declarations(self, declarations: tuple[OAuthClientConfig, ...]) -> None:
-        """Replace the declarations after a config reload."""
+        """Replace the declarations after a config reload.
+
+        The stored-token reconciliation runs after the swap, so a declaration
+        that left the file takes its row with it.
+        """
         with self._lock:
             self._declarations = tuple(declarations)
+        try:
+            self.reconcile_stored_tokens()
+        except OAuthStoreError as exc:
+            # The swap is what a caller asked for; the cleanup is
+            # best-effort, and a locked store must not fail a panel mutation
+            # after its config was already written.
+            logger.warning(f"Could not reconcile stored OAuth tokens: {exc}")
 
     def declaration_for(self, source: ToolSource) -> OAuthClientConfig | None:
         """Return the declaration that selects *source*, if any.
@@ -1175,17 +1200,21 @@ class OAuthClientProvider:
     def _metadata_for(self, declaration: OAuthClientConfig) -> dict[str, Any]:
         """Return and cache the authorization-server metadata.
 
-        The cache has no TTL: one document is kept per discovery URL or
-        issuer for the life of the provider, so a metadata change at the
-        authorization server is only seen after a restart or a config reload
-        that creates a new provider.  Discovery is not on the hot path, so a
-        TTL can be added later without changing this signature.
+        One document is kept per discovery URL or issuer for
+        :attr:`metadata_ttl` seconds.  An expired entry is fetched again, so
+        a metadata change at the authorization server takes effect without a
+        restart.  When that fetch fails, the cached document is served for
+        one more TTL and a warning is logged: an identity provider that is
+        briefly unreachable must not stop a token that still works from being
+        used.
         """
         key = declaration.discovery_url or declaration.issuer or ""
         with self._lock:
             cached = self._metadata.get(key)
         if cached is not None:
-            return cached
+            document, fetched_at = cached
+            if self._clock() - fetched_at < timedelta(seconds=self._metadata_ttl):
+                return document
         if declaration.discovery_url:
             urls = (declaration.discovery_url,)
         elif declaration.issuer:
@@ -1200,8 +1229,16 @@ class OAuthClientProvider:
             usable = self._usable_metadata(declaration, document)
             if usable is not None:
                 with self._lock:
-                    self._metadata[key] = usable
+                    self._metadata[key] = (usable, self._clock())
                 return usable
+        if cached is not None:
+            logger.warning(
+                f"OAuth metadata for {redact(key)} could not be refreshed; "
+                "serving the cached document until the next attempt"
+            )
+            with self._lock:
+                self._metadata[key] = (cached[0], self._clock())
+            return cached[0]
         raise TransientOAuthError(
             f"could not discover OAuth metadata for {redact(key)}"
         )
@@ -1250,6 +1287,66 @@ class OAuthClientProvider:
         return ""  # pragma: no cover - config validation requires one
 
     # -- stores ------------------------------------------------------------
+
+    def reconcile_stored_tokens(self) -> tuple[str, ...]:
+        """Delete token rows for declarations this configuration no longer has.
+
+        The default store records which selector was declared against which
+        store path.  A recorded selector that is not declared now has its row
+        deleted from the store it named.  That covers removing one entry and
+        removing the whole ``oauth.clients`` section, including while the
+        server was stopped: the next start rebuilds the manifest and deletes
+        what it recorded before.  Startup calls this once; a declaration
+        replacement calls it again.
+
+        Only rows this manifest recorded are touched, so a row written by
+        another configuration that shares the database is left alone.
+
+        Returns:
+            The selectors whose rows were deleted, sorted.
+        """
+        current = {
+            declaration.source: declaration.store_path
+            for declaration in self._declarations
+        }
+        store = self._manifest_store()
+        if store is None:
+            return ()
+        try:
+            previous = store.declared_targets()
+            removed: list[str] = []
+            for selector, path in sorted(previous.items()):
+                if selector in current:
+                    continue
+                target = store if path == store.path else self._open_store(path)
+                if target.clear(selector):
+                    removed.append(selector)
+            if previous != current:
+                store.record_declared_targets(current)
+        except (sqlite3.Error, OSError, json.JSONDecodeError, RuntimeError) as exc:
+            raise OAuthStoreError(
+                f"token store unavailable ({type(exc).__name__}); "
+                "the stored grants were kept"
+            ) from exc
+        if removed:
+            logger.info(
+                "Removed OAuth token rows for declarations that left the "
+                f"configuration: {', '.join(removed)}"
+            )
+        return tuple(removed)
+
+    def _manifest_store(self) -> TokenStore | None:
+        """Return the store that records declared targets, or ``None``.
+
+        The manifest is only needed when there is something to record or a
+        database that may already hold a manifest.  A configuration that has
+        never used OAuth therefore does not create the default database.
+        """
+        if self._store is not None:
+            return self._store
+        if not self._declarations and not os.path.exists(self._default_token_store):
+            return None
+        return self._open_store(self._default_token_store)
 
     def _store_call(
         self, operation: Callable[..., Any], *args: Any, **kwargs: Any
@@ -1303,11 +1400,21 @@ class OAuthClientProvider:
 
 
 def _as_int(value: Any) -> int | None:
-    """Return *value* as a non-negative integer, or ``None``."""
+    """Return *value* as a non-negative whole number of seconds, or ``None``.
+
+    A JSON float is accepted and rounded down: several identity providers
+    send ``"expires_in": 3599.5`` or ``3600.0``.  A non-finite, negative or
+    boolean value is treated as absent, which is the same as a response that
+    stated no expiry at all.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value if value >= 0 else None
+    if isinstance(value, float):
+        if not math.isfinite(value) or value < 0:
+            return None
+        return math.floor(value)
     if isinstance(value, str):
         try:
             parsed = int(value)

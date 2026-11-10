@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import stat
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -439,3 +441,83 @@ def test_an_old_database_gains_the_rejection_column(tmp_path):
         assert migrated.token_endpoint == "https://idp.example.com/token"
         assert migrated.requested_scopes == ("read",)
         assert migrated.secret_digest == "digest"
+
+
+# -- path hardening, busy handling, and the declaration manifest -------------
+
+
+def test_a_symlink_at_the_store_path_is_refused(tmp_path):
+    """#270: a planted symlink must not be followed into another file."""
+    target = tmp_path / "elsewhere.db"
+    target.write_text("", encoding="utf-8")
+    link = tmp_path / "tokens.db"
+    try:
+        link.symlink_to(target)
+    except OSError:  # pragma: no cover - platforms without symlink support
+        pytest.skip("symbolic links are not available")
+
+    with pytest.raises(OSError, match="symbolic link"):
+        TokenStore(link)
+
+
+def test_a_special_file_at_the_store_path_is_refused(tmp_path):
+    """A FIFO would block the process forever if it were opened."""
+    if not hasattr(os, "mkfifo"):  # pragma: no cover - Windows
+        pytest.skip("mkfifo is not available")
+    fifo = tmp_path / "tokens.db"
+    os.mkfifo(fifo)
+
+    with pytest.raises(OSError, match="not a regular file"):
+        TokenStore(fifo)
+
+
+def test_a_held_write_lock_fails_within_a_bounded_time(tmp_path, monkeypatch):
+    """#272: a shared store must report SQLITE_BUSY, not hang the caller."""
+    from toolregistry_server.oauth.upstream import store as store_module
+
+    # The deployment values are chosen for two real processes; keep the test
+    # fast while exercising the same retry loop.
+    monkeypatch.setattr(store_module, "BUSY_TIMEOUT_MS", 50)
+    monkeypatch.setattr(store_module, "BUSY_RETRIES", 2)
+    database = str(tmp_path / "tokens.db")
+    blocker = TokenStore(database)
+    writer = TokenStore(database)
+    blocker._connection.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            writer.put(_record())
+        elapsed = time.monotonic() - started
+    finally:
+        blocker._connection.rollback()
+        writer.close()
+        blocker.close()
+
+    assert elapsed < 5
+
+    # The store still works once the lock is released.
+    with TokenStore(database) as reopened:
+        reopened.put(_record())
+        assert reopened.get(SOURCE) is not None
+
+
+def test_the_declaration_manifest_round_trips(store):
+    """#268: the manifest records which selector belongs to which store."""
+    assert store.declared_targets() == {}
+
+    store.record_declared_targets({SOURCE: "/tmp/tokens.db"})
+
+    assert store.declared_targets() == {SOURCE: "/tmp/tokens.db"}
+
+    store.record_declared_targets({})
+    assert store.declared_targets() == {}
+
+
+def test_a_corrupt_manifest_is_read_as_empty(store):
+    with store._lock:
+        store._run_write(
+            "INSERT OR REPLACE INTO oauth_client_meta (key, value) VALUES (?, ?)",
+            ("declared_targets", "not json"),
+        )
+
+    assert store.declared_targets() == {}

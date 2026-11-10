@@ -1449,3 +1449,58 @@ class TestOAuthSectionSurface:
                 default_audience=None,
                 section={"issuer": 42},
             )
+
+    @pytest.mark.parametrize(
+        ("argument", "value", "expectation"),
+        [
+            ("oauth_issuer", 42, "a string"),
+            ("oauth_audience", 42, "a string"),
+            ("oauth_jwks", 42, "a string"),
+            ("oauth_authorization_url", 42, "a string"),
+            ("oauth_token_url", 42, "a string"),
+            ("oauth_refresh_url", 42, "a string"),
+            ("oauth_introspection_url", 42, "a string"),
+            ("oauth_introspection_client_id", 42, "a string"),
+            ("oauth_concurrency_claim", 42, "a string"),
+            ("oauth_introspection_client_secret", 42, "must be a string"),
+            ("oauth_introspection_cache_ttl", "soon", "a finite number"),
+            ("oauth_introspection_cache_ttl", True, "a finite number"),
+            ("oauth_introspection_optional", 42, "a boolean"),
+        ],
+    )
+    def test_a_wrong_typed_scalar_is_rejected_whether_or_not_the_flag_wins(
+        self, argument, value, expectation
+    ):
+        """#263: a typo in the file must not wait for the flag to be dropped."""
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        key = argument.removeprefix("oauth_")
+        section = {"issuer": ISSUER, key: value}
+        for parsed in (
+            argparse.Namespace(**{argument: "flag-value"}),
+            argparse.Namespace(),
+        ):
+            with pytest.raises(ValueError, match=rf"oauth\.{key}") as excinfo:
+                settings_from_args(
+                    parsed,
+                    default_audience=AUDIENCE,
+                    config_section=section,
+                )
+            assert expectation in str(excinfo.value)
+
+    def test_a_valid_file_scalar_still_loses_to_the_flag(self):
+        """The type check must not change precedence."""
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        settings = settings_from_args(
+            argparse.Namespace(oauth_issuer=ISSUER, oauth_jwks="https://flag/keys"),
+            default_audience=AUDIENCE,
+            config_section={
+                "issuer": "https://file.example.com",
+                "jwks": "https://file.example.com/keys",
+            },
+        )
+
+        assert settings is not None
+        assert settings.issuer == ISSUER
+        assert settings.jwks_uri == "https://flag/keys"
