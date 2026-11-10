@@ -52,10 +52,11 @@ class FakeEntry:
     source_id: str
     source: Any
     status: str = "applied"
+    tool_names: Sequence[str] = ("calc-add",)
 
     @property
     def names(self) -> Sequence[str]:
-        return ("calc-add",)
+        return self.tool_names
 
     @property
     def allow_private_hosts(self) -> bool:
@@ -464,6 +465,96 @@ class TestSourceEditing:
         assert "top-secret" not in body.decode()
         assert "also-secret" not in body.decode()
 
+    def test_detail_redacts_url_userinfo(self, panel, sources) -> None:
+        sources._entries["cred"] = FakeEntry(
+            "cred",
+            MCPSource(
+                transport="streamable-http",
+                url="https://user:pass@mcp.example.test/mcp",
+            ),
+        )
+        status, body = _request(f"{panel.url}/ext/gateway/sources/cred")
+        assert status == 200
+        declaration = _json(body)["source"]["declaration"]
+        assert declaration["url"] == "https://mcp.example.test/mcp"
+        assert "url" in declaration["secret_fields"]
+        assert "user:pass" not in body.decode()
+
+    def test_edit_round_trip_keeps_url_userinfo(self, panel, sources) -> None:
+        original = "https://user:pass@mcp.example.test/mcp"
+        sources._entries["cred"] = FakeEntry(
+            "cred",
+            MCPSource(transport="streamable-http", url=original),
+        )
+        _, body = _request(f"{panel.url}/ext/gateway/sources/cred")
+        declaration = _json(body)["source"]["declaration"]
+        assert declaration["url"] == "https://mcp.example.test/mcp"
+
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/cred",
+            method="PUT",
+            data={
+                "type": "mcp",
+                "transport": "streamable-http",
+                "url": declaration["url"],
+                "namespace": "renamed",
+            },
+        )
+        assert status == 200
+        stored = sources.get("cred").source
+        assert stored.url == original
+        assert stored.namespace == "renamed"
+
+    def test_openapi_base_url_userinfo_is_redacted_and_restored(
+        self, panel, sources
+    ) -> None:
+        from toolregistry.config import OpenAPISource
+
+        original = "https://user:pass@api.example.test/v2"
+        sources._entries["api"] = FakeEntry(
+            "api",
+            OpenAPISource(url="https://api.example.test/spec.json", base_url=original),
+        )
+        _, body = _request(f"{panel.url}/ext/gateway/sources/api")
+        declaration = _json(body)["source"]["declaration"]
+        assert declaration["base_url"] == "https://api.example.test/v2"
+        assert "base_url" in declaration["secret_fields"]
+        assert "user:pass" not in body.decode()
+
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/api",
+            method="PUT",
+            data={
+                "type": "openapi",
+                "url": declaration["url"],
+                "base_url": declaration["base_url"],
+            },
+        )
+        assert status == 200
+        assert sources.get("api").source.base_url == original
+
+    def test_openapi_clear_secrets_drops_the_token(self, panel, sources) -> None:
+        from toolregistry.config import AuthConfig, OpenAPISource
+
+        sources._entries["api"] = FakeEntry(
+            "api",
+            OpenAPISource(
+                url="https://api.example.test/spec.json",
+                auth=AuthConfig(token="s3cret-token"),
+            ),
+        )
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/api",
+            method="PUT",
+            data={
+                "type": "openapi",
+                "url": "https://api.example.test/spec.json",
+                "clear_secrets": True,
+            },
+        )
+        assert status == 200
+        assert sources.get("api").source.auth is None
+
     def test_unknown_source_is_a_404(self, panel) -> None:
         status, _ = _request(f"{panel.url}/ext/gateway/sources/nope")
         assert status == 404
@@ -554,6 +645,18 @@ class TestSourceEditing:
         assert tool["name"] == "calc-add"
         assert tool["description"] == "Add two integers."
         assert tool["enabled"] is True
+
+    def test_a_removed_tool_is_not_reported_enabled(self, panel, sources) -> None:
+        sources._entries["stale"] = FakeEntry(
+            "stale",
+            MCPSource(transport="streamable-http", url="https://mcp.example.test/mcp"),
+            tool_names=("calc-add", "calc-gone"),
+        )
+        status, body = _request(f"{panel.url}/ext/gateway/sources/stale/tools")
+        assert status == 200
+        tools = {tool["name"]: tool for tool in _json(body)["tools"]}
+        assert tools["calc-add"]["enabled"] is True
+        assert tools["calc-gone"]["enabled"] is False
 
     def test_edit_keeps_declaration_fields_the_form_cannot_send(
         self, panel, sources
@@ -913,7 +1016,54 @@ class TestCallTester:
         assert body["error"] == "Tool Disabled"
         log = registry.get_execution_log()
         assert log is not None
-        assert log.get_entries() == []
+        [entry] = log.get_entries()
+        assert entry.tool_name == "calc-subtract"
+        assert entry.metadata["outcome"] == "denied"
+        assert entry.metadata["client_id"] == "operator"
+
+    def test_an_unconfirmed_call_is_logged_as_denied(self, registry, panel) -> None:
+        registry.enable_logging()
+        status, _ = _call(panel, "files-remove_all", {"arguments": {"path": "/tmp"}})
+        assert status == 409
+        log = registry.get_execution_log()
+        assert log is not None
+        [entry] = log.get_entries()
+        assert entry.tool_name == "files-remove_all"
+        assert entry.arguments == {"path": "/tmp"}
+        assert entry.metadata["outcome"] == "denied"
+
+    def test_a_policy_denied_call_is_logged_as_denied(self, registry, panel) -> None:
+        from toolregistry.permissions import (
+            PermissionPolicy,
+            PermissionResult,
+            PermissionRule,
+        )
+
+        registry.enable_logging()
+        registry.set_permission_policy(
+            PermissionPolicy(
+                rules=[
+                    PermissionRule(
+                        name="deny-add",
+                        match=lambda tool, _parameters: tool.name == "calc-add",
+                        result=PermissionResult.DENY,
+                        reason="read-only host",
+                    )
+                ],
+                fallback=PermissionResult.ALLOW,
+            )
+        )
+        status, body = _call(
+            panel, "calc-add", {"arguments": {"a": 1, "b": 2}, "confirm": True}
+        )
+        assert status == 403
+        assert body["error"] == "Forbidden"
+        log = registry.get_execution_log()
+        assert log is not None
+        [entry] = log.get_entries()
+        assert entry.tool_name == "calc-add"
+        assert entry.arguments == {"a": 1, "b": 2}
+        assert entry.metadata["outcome"] == "denied"
 
     def test_invalid_arguments_are_refused(self, panel) -> None:
         status, body = _call(
