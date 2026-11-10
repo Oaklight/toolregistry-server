@@ -85,10 +85,15 @@ def public_declaration(source: Any) -> dict[str, Any]:
     if isinstance(kwargs, Mapping):
         secret_fields.extend(f"kwargs.{name}" for name in kwargs)
 
+    # ``_as_dict`` is a shallow copy, so the nested ``auth`` mapping is the
+    # stored object's; copy it before removing the token.
     auth = data.get("auth")
-    if isinstance(auth, dict) and auth.pop("token", None):
-        secret_fields.append("auth.token")
-    elif getattr(getattr(source, "auth", None), "token", None):
+    listed_token = None
+    if isinstance(auth, Mapping):
+        auth = dict(auth)
+        data["auth"] = auth
+        listed_token = auth.pop("token", None)
+    if listed_token or getattr(getattr(source, "auth", None), "token", None):
         # ``AuthConfig.to_dict`` already omits the token, so the declaration
         # cannot tell the form that one is stored; the object can.
         secret_fields.append("auth.token")
@@ -356,13 +361,20 @@ def _server_identity(info: Any) -> tuple[Any, Any]:
 
 
 def _probe_openapi(source: Any, *, allow_private_hosts: bool) -> dict[str, Any]:
-    """Fetch and parse an OpenAPI document without registering its tools."""
+    """Fetch and parse an OpenAPI document without registering its tools.
+
+    Registration passes ``allow_local_files=True``: the source declaration
+    comes from the operator's own configuration, the same file that can
+    import Python modules and run stdio commands.  The test mirrors that, so
+    a local spec path reports the same result a restart would produce.
+    """
     from toolregistry._async_runtime import AsyncRuntime
     from toolregistry.integrations.openapi.utils import load_openapi_spec_async
 
     spec = AsyncRuntime.run_sync(
         load_openapi_spec_async(
             getattr(source, "url", ""),
+            allow_local_files=True,
             allow_private_hosts=allow_private_hosts,
             follow_redirects=False,
         )

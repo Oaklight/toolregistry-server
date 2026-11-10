@@ -272,6 +272,22 @@ class TestLogFilters:
         assert principals["calc-subtract"] == {"key_id": None, "label": "anonymous"}
         assert payload["entries"][0]["timestamp"]
 
+    def test_an_anonymous_record_is_not_the_operator(self, registry, panel) -> None:
+        """``record_tool_call(principal=None)`` must read as anonymous."""
+        from toolregistry_server.isolation import record_tool_call
+
+        registry.enable_logging()
+        record_tool_call(registry, "calc-add", {"a": 1, "b": 2}, result=3)
+
+        _, all_entries = _logs(panel)
+        [entry] = all_entries["entries"]
+        assert entry["principal"] == {"key_id": None, "label": "anonymous"}
+
+        _, operator = _logs(panel, "?key_id=operator")
+        assert operator["entries"] == []
+        _, anonymous = _logs(panel, "?key_label=anonymous")
+        assert [row["tool_name"] for row in anonymous["entries"]] == ["calc-add"]
+
     def test_key_id_filter(self, registry, panel) -> None:
         _seed_log(registry)
         _, payload = _logs(panel, "?key_id=key_a")
@@ -304,12 +320,45 @@ class TestLogFilters:
         assert {entry["status"] for entry in ok["entries"]} == {"success"}
         assert [entry["tool_name"] for entry in error["entries"]] == ["calc-add"]
 
-    def test_busy_and_denied_match_nothing(self, registry, panel) -> None:
-        _seed_log(registry)
-        for outcome in ("busy", "denied"):
-            _, payload = _logs(panel, f"?outcome={outcome}")
-            assert payload["entries"] == []
-            assert payload["count"] == 0
+    def test_busy_and_denied_select_the_recorded_outcome(self, registry, panel) -> None:
+        """#255 records busy/denied entries with the real outcome in metadata."""
+        registry.enable_logging()
+        from toolregistry.admin import ExecutionLogEntry, ExecutionStatus
+
+        log = registry.get_execution_log()
+        assert log is not None
+        for index, outcome in enumerate(("busy", "denied")):
+            entry = ExecutionLogEntry.create(
+                tool_name="calc-add",
+                status=(
+                    ExecutionStatus.SUCCESS
+                    if outcome == "busy"
+                    else ExecutionStatus.ERROR
+                ),
+                duration_ms=1.0,
+                arguments={},
+                metadata={
+                    "key_id": "key_a",
+                    "client_id": "build-bot",
+                    "outcome": outcome,
+                },
+            )
+            log.add(
+                dataclasses.replace(
+                    entry, timestamp=datetime(2026, 11, 10, 12, index, 0)
+                )
+            )
+
+        _, busy = _logs(panel, "?outcome=busy")
+        _, denied = _logs(panel, "?outcome=denied")
+        assert [entry["status"] for entry in busy["entries"]] == ["success"]
+        assert [entry["status"] for entry in denied["entries"]] == ["error"]
+        assert busy["count"] == denied["count"] == 1
+        # The status filter still reads the entry's status, not its outcome.
+        _, errors = _logs(panel, "?status=error")
+        assert [entry["principal"]["label"] for entry in errors["entries"]] == [
+            "build-bot"
+        ]
 
     def test_unknown_outcome_is_a_400(self, registry, panel) -> None:
         _seed_log(registry)
@@ -368,6 +417,33 @@ class TestLogFilters:
         assert len(payload["entries"]) == 4
         _, none = _logs(panel, "?has_warnings=true")
         assert none["entries"] == []
+
+    def test_a_recorded_entry_without_client_id_is_anonymous(
+        self, registry, panel
+    ) -> None:
+        """#255 writes both metadata keys; only a non-null client_id attributes."""
+        registry.enable_logging()
+        from toolregistry.admin import ExecutionLogEntry, ExecutionStatus
+
+        log = registry.get_execution_log()
+        assert log is not None
+        log.add(
+            ExecutionLogEntry.create(
+                tool_name="calc-add",
+                status=ExecutionStatus.SUCCESS,
+                duration_ms=1.0,
+                arguments={},
+                metadata={"key_id": None, "client_id": None},
+            )
+        )
+        _, payload = _logs(panel, "?key_id=operator")
+        assert payload["entries"] == []
+        status, body = _logs(panel)
+        assert status == 200
+        assert body["entries"][0]["principal"] == {
+            "key_id": None,
+            "label": "anonymous",
+        }
 
 
 # ---------------------------------------------------------------- #250 sources
@@ -479,6 +555,66 @@ class TestSourceEditing:
         assert tool["description"] == "Add two integers."
         assert tool["enabled"] is True
 
+    def test_edit_keeps_declaration_fields_the_form_cannot_send(
+        self, panel, sources
+    ) -> None:
+        """PUT is a full replace; unrendered fields must survive the edit."""
+        from toolregistry.config import MCPSource
+
+        sources._entries["s2"] = FakeEntry(
+            "s2",
+            MCPSource(
+                transport="streamable-http",
+                url="https://mcp.example.test/mcp",
+                include=("read_*",),
+                tags=("ops",),
+                persistent=False,
+            ),
+        )
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/s2",
+            method="PUT",
+            data={
+                "type": "mcp",
+                "transport": "streamable-http",
+                "url": "https://mcp.example.test/mcp",
+                "namespace": "renamed",
+            },
+        )
+        assert status == 200
+        stored = sources.get("s2").source
+        assert stored.namespace == "renamed"
+        assert stored.include == ("read_*",)
+        assert stored.tags == ("ops",)
+        assert stored.persistent is False
+
+    def test_edit_keeps_the_openapi_base_url(self, panel, sources) -> None:
+        from toolregistry.config import OpenAPISource
+
+        sources._entries["s3"] = FakeEntry(
+            "s3",
+            OpenAPISource(
+                url="https://api.example.test/openapi.json",
+                base_url="https://api.example.test/v2",
+                include=("pets_*",),
+                tags=("public",),
+            ),
+        )
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/s3",
+            method="PUT",
+            data={
+                "type": "openapi",
+                "url": "https://api.example.test/openapi.json",
+                "namespace": "renamed",
+            },
+        )
+        assert status == 200
+        stored = sources.get("s3").source
+        assert stored.base_url == "https://api.example.test/v2"
+        assert stored.include == ("pets_*",)
+        assert stored.tags == ("public",)
+
     def test_openapi_token_and_python_kwargs_are_write_only(self) -> None:
         from toolregistry.config import AuthConfig, OpenAPISource, PythonSource
 
@@ -577,6 +713,114 @@ class TestConnectionTest:
         assert result["ok"] is True
         assert result["server_name"] == "remote"
         assert result["tool_count"] == 2
+
+    def test_a_stored_source_uses_its_own_private_host_flag(
+        self, panel, sources, monkeypatch
+    ) -> None:
+        """Registration trusts ``source.allow_private_hosts``; the test must too.
+
+        The panel starts without the admin private-host flag, so an OR with
+        that flag would report a false negative for this source.
+        """
+        from toolregistry.config import MCPSource
+
+        sources._entries["loop"] = FakeEntry(
+            "loop",
+            MCPSource(
+                transport="streamable-http",
+                url="http://127.0.0.1:9000/mcp",
+                allow_private_hosts=True,
+            ),
+        )
+        seen: dict[str, Any] = {}
+
+        async def _probe(source, **kwargs):
+            seen.update(kwargs)
+            return {
+                "ok": True,
+                "kind": "mcp",
+                "tool_count": 1,
+                "server_name": "loopback",
+                "server_version": "1",
+                "tools": [],
+                "error": None,
+                "error_type": None,
+            }
+
+        monkeypatch.setattr(panel_sources, "_probe_mcp", _probe)
+        status, body = _request(
+            f"{panel.url}/ext/gateway/sources/loop/test", method="POST"
+        )
+        assert status == 200
+        assert seen["allow_private_hosts"] is True
+        assert _json(body)["test"]["ok"] is True
+
+    def test_the_admin_flag_does_not_lift_a_declaration(
+        self, registry, monkeypatch
+    ) -> None:
+        """The admin fetch flag must not make the test disagree with a restart."""
+        extension = GatewayAdminExtension(
+            parse_source=parse_source_payload, allow_private_hosts=True
+        )
+        admin = AdminServer(registry, port=0, extensions=[extension])
+        seen: dict[str, Any] = {}
+
+        def _probe(source, **kwargs):
+            seen.update(kwargs)
+            return {
+                "ok": True,
+                "kind": "openapi",
+                "tool_count": 0,
+                "server_name": None,
+                "server_version": None,
+                "tools": [],
+                "error": None,
+                "error_type": None,
+            }
+
+        monkeypatch.setattr(panel_sources, "_probe_openapi", _probe)
+        info = admin.start()
+        try:
+            status, _ = _request(
+                f"{info.url}/ext/gateway/sources/test",
+                method="POST",
+                data={
+                    "type": "openapi",
+                    "url": "https://api.example.test/openapi.json",
+                },
+            )
+        finally:
+            admin.stop()
+        assert status == 200
+        assert seen["allow_private_hosts"] is False
+
+    def test_an_openapi_local_path_is_read_like_registration(
+        self, panel, sources, tmp_path
+    ) -> None:
+        """Registration passes ``allow_local_files=True``; the test must too."""
+        from toolregistry.config import OpenAPISource
+
+        spec_path = tmp_path / "spec.json"
+        spec_path.write_text(
+            json.dumps(
+                {
+                    "openapi": "3.0.0",
+                    "info": {"title": "Local", "version": "1.0"},
+                    "paths": {"/ping": {"get": {}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        sources._entries["local"] = FakeEntry(
+            "local", OpenAPISource(url=str(spec_path))
+        )
+        status, body = _request(
+            f"{panel.url}/ext/gateway/sources/local/test", method="POST"
+        )
+        assert status == 200
+        result = _json(body)["test"]
+        assert result["ok"] is True, result.get("error")
+        assert result["tool_count"] == 1
 
     def test_python_source_has_no_test(self, panel) -> None:
         status, body = _request(

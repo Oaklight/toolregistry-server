@@ -7,11 +7,12 @@ server-side half of the extension's own Logs view: the same entries, with the
 principal, outcome and time-range filters the issue asks for, and a matching
 statistics view so a count always agrees with the filtered table.
 
-The execution log records calls that reached a handler.  A refused call
-(``denied``) or one that never got a concurrency slot (``busy``) is written to
-the structured log, not to the execution log, so those two outcome values are
-accepted and match nothing.  The answer says so, rather than silently
-returning every entry.
+A refused call (``denied``) and a call that never got a concurrency slot
+(``busy``) are recorded too, from #255 onward.  Their entry carries the real
+outcome under ``metadata["outcome"]`` while its status stays ``error`` (or
+``success`` for ``busy``).  ``ok`` and ``error`` still derive from the status.
+The outcome filter therefore prefers a recorded ``metadata["outcome"]`` and
+falls back to the status.
 """
 
 from __future__ import annotations
@@ -21,17 +22,25 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-#: Outcome spelling the panel uses to ``ExecutionStatus`` value.
-_OUTCOME_STATUSES = {
-    "ok": "success",
-    "success": "success",
+#: Accepted outcome spellings, normalised to one value.
+_OUTCOME_ALIASES = {
+    "ok": "ok",
+    "success": "ok",
     "error": "error",
+    "busy": "busy",
+    "denied": "denied",
     "timeout": "timeout",
     "disabled": "disabled",
 }
 
-#: Outcomes that never appear in the execution log.
-_UNRECORDED_OUTCOMES = frozenset({"busy", "denied"})
+#: ``ExecutionStatus`` value to outcome, for entries that do not carry
+#: ``metadata["outcome"]`` (``ok``/``error`` and entries written before #255).
+_STATUS_OUTCOMES = {
+    "success": "ok",
+    "error": "error",
+    "timeout": "timeout",
+    "disabled": "disabled",
+}
 
 #: Query value that selects the unscoped operator principal.
 _OPERATOR = "operator"
@@ -52,24 +61,25 @@ class LogFilters:
         limit: Largest number of entries to return.
         tool_name: Exact tool name, or ``None``.
         status: ``ExecutionStatus`` value, or ``None``.
+        outcome: One normalised outcome (``ok``, ``error``, ``busy``,
+            ``denied``, ``timeout`` or ``disabled``), or ``None``.
         has_warnings: Warnings filter, or ``None``.
         key_id: Stored key id, ``"operator"`` for an unattributed-to-a-key
             principal, or ``None``.
         key_label: Case-insensitive key label, or ``None.
         since: Inclusive lower bound on the entry timestamp, or ``None``.
         until: Inclusive upper bound on the entry timestamp, or ``None``.
-        match_nothing: Set when the requested outcome is never recorded.
     """
 
     limit: int = 100
     tool_name: str | None = None
     status: str | None = None
+    outcome: str | None = None
     has_warnings: bool | None = None
     key_id: str | None = None
     key_label: str | None = None
     since: datetime | None = None
     until: datetime | None = None
-    match_nothing: bool = False
 
 
 def _param(params: Mapping[str, Sequence[str]], name: str) -> str | None:
@@ -138,16 +148,24 @@ def _parse_limit(value: str) -> int:
     return limit
 
 
-def _parse_outcome(value: str) -> tuple[str | None, bool]:
-    """Translate an ``outcome`` value into a status and a match-nothing flag."""
+def _parse_outcome(value: str) -> str:
+    """Normalise an ``outcome`` query value.
+
+    Args:
+        value: The operator's spelling.
+
+    Returns:
+        The canonical outcome.
+
+    Raises:
+        LogFilterError: If the value is not a known outcome.
+    """
     lowered = value.strip().lower()
-    if lowered in _UNRECORDED_OUTCOMES:
-        return None, True
-    status = _OUTCOME_STATUSES.get(lowered)
-    if status is None:
-        accepted = sorted({*_OUTCOME_STATUSES, *_UNRECORDED_OUTCOMES})
+    outcome = _OUTCOME_ALIASES.get(lowered)
+    if outcome is None:
+        accepted = sorted(_OUTCOME_ALIASES)
         raise LogFilterError(f"'outcome' must be one of: {', '.join(accepted)}")
-    return status, False
+    return outcome
 
 
 def parse_filters(params: Mapping[str, Sequence[str]]) -> LogFilters:
@@ -167,10 +185,8 @@ def parse_filters(params: Mapping[str, Sequence[str]]) -> LogFilters:
     limit = _parse_limit(limit_text) if limit_text is not None else 100
 
     status = _param(params, "status")
-    match_nothing = False
-    outcome = _param(params, "outcome")
-    if outcome is not None:
-        status, match_nothing = _parse_outcome(outcome)
+    outcome_text = _param(params, "outcome")
+    outcome = _parse_outcome(outcome_text) if outcome_text is not None else None
 
     has_warnings: bool | None = None
     warnings_text = _param(params, "has_warnings")
@@ -186,22 +202,24 @@ def parse_filters(params: Mapping[str, Sequence[str]]) -> LogFilters:
         limit=limit,
         tool_name=_param(params, "tool_name"),
         status=status,
+        outcome=outcome,
         has_warnings=has_warnings,
         key_id=_param(params, "key_id"),
         key_label=_param(params, "key_label"),
         since=_parse_time(since_text, "since") if since_text else None,
         until=_parse_time(until_text, "until") if until_text else None,
-        match_nothing=match_nothing,
     )
 
 
 def principal_view(entry: Any) -> dict[str, Any]:
     """Return the principal recorded with *entry*.
 
-    ``record_tool_call`` stores ``key_id`` and the key label under
-    ``metadata``.  A static operator token has no key id, and its label is
-    ``"operator"``; an entry with no attribution at all is reported as
-    ``"anonymous"`` so it cannot be mistaken for an operator call.
+    ``record_tool_call`` always writes ``key_id`` and ``client_id`` under
+    ``metadata``.  A key's ``client_id`` is its label, an OAuth principal's is
+    its OAuth client id, and an operator tester call carries ``"operator"``.
+    ``principal=None`` writes both as null, and such an entry is
+    ``"anonymous"``: a null ``client_id`` is the only reliable mark of no
+    attribution, because ``key_id`` is present-but-null on every entry.
 
     Args:
         entry: One :class:`~toolregistry.admin.ExecutionLogEntry`.
@@ -210,12 +228,47 @@ def principal_view(entry: Any) -> dict[str, Any]:
         ``{"key_id": ..., "label": ...}``.
     """
     metadata = getattr(entry, "metadata", None) or {}
-    key_id = metadata.get("key_id")
     label = metadata.get("client_id")
-    if not label:
-        attributed = "key_id" in metadata
-        label = _OPERATOR if attributed and key_id is None else "anonymous"
-    return {"key_id": key_id, "label": str(label)}
+    return {
+        "key_id": metadata.get("key_id"),
+        "label": str(label) if label else "anonymous",
+    }
+
+
+def _entry_outcome(entry: Any) -> str:
+    """Return the outcome recorded with *entry*.
+
+    ``busy`` and ``denied`` carry their outcome under ``metadata``; ``ok`` and
+    ``error`` derive from the status, as does every older entry.
+
+    Args:
+        entry: One execution-log entry.
+
+    Returns:
+        The normalised outcome.
+    """
+    metadata = getattr(entry, "metadata", None) or {}
+    recorded = metadata.get("outcome")
+    if recorded:
+        return _OUTCOME_ALIASES.get(str(recorded).lower(), str(recorded))
+    status = str(getattr(entry.status, "value", entry.status))
+    return _STATUS_OUTCOMES.get(status, status)
+
+
+def _principal_matches(principal: Mapping[str, Any], filters: LogFilters) -> bool:
+    """Return whether *principal* passes the key id and label filters."""
+    if filters.key_id is not None:
+        key_id = principal["key_id"]
+        if filters.key_id.lower() == _OPERATOR:
+            # The operator principal is an attributed entry with no key row;
+            # an anonymous entry also has no key id, so the label must agree.
+            if key_id is not None or principal["label"] != _OPERATOR:
+                return False
+        elif key_id != filters.key_id:
+            return False
+    return filters.key_label is None or (
+        principal["label"].lower() == filters.key_label.lower()
+    )
 
 
 def _matches(entry: Any, filters: LogFilters, principal: Mapping[str, Any]) -> bool:
@@ -226,24 +279,14 @@ def _matches(entry: Any, filters: LogFilters, principal: Mapping[str, Any]) -> b
         filters.status
     ):
         return False
+    if filters.outcome is not None and _entry_outcome(entry) != filters.outcome:
+        return False
     if (
         filters.has_warnings is not None
         and bool(entry.warnings) != filters.has_warnings
     ):
         return False
-    if filters.key_id is not None:
-        key_id = principal["key_id"]
-        if filters.key_id.lower() == _OPERATOR:
-            # The operator principal is an attributed entry with no key row;
-            # an unattributed entry is anonymous, not the operator.
-            if key_id is not None or principal["label"] != _OPERATOR:
-                return False
-        elif key_id != filters.key_id:
-            return False
-    if (
-        filters.key_label is not None
-        and principal["label"].lower() != filters.key_label.lower()
-    ):
+    if not _principal_matches(principal, filters):
         return False
     if filters.since is not None and entry.timestamp < filters.since:
         return False
@@ -260,8 +303,6 @@ def select_entries(entries: Iterable[Any], filters: LogFilters) -> list[Any]:
     Returns:
         The matching entries in reverse chronological order.
     """
-    if filters.match_nothing:
-        return []
     selected = [
         entry for entry in entries if _matches(entry, filters, principal_view(entry))
     ]
