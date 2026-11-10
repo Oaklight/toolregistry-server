@@ -52,6 +52,7 @@ from ..isolation import (
     identity_header,
     principal_key,
 )
+from ..oauth.redirect import OAUTH2_REDIRECT_PATH, oauth2_redirect_html
 from ..regex_guard import DEFAULT_REGEX_BUDGET, DEFAULT_REGEX_TIMEOUT
 from .admin import GatewayAdminHost, GatewayAdminProxyASGI
 from .frontends import (
@@ -353,6 +354,19 @@ async def _send_json(
     await response(scope, receive, send)
 
 
+async def _send_html(scope: Scope, send: Send, body: str) -> None:
+    """Send an HTML response.
+
+    Args:
+        scope: ASGI scope.
+        send: ASGI send callable.
+        body: The HTML document.
+    """
+    from starlette.responses import HTMLResponse
+
+    await HTMLResponse(body)(scope, None, send)
+
+
 async def _redirect(scope: Scope, send: Send, location: str) -> None:
     """Send a permanent redirect that keeps the query string.
 
@@ -616,6 +630,16 @@ class _GatewayASGI:
             # The panel shell uses document-relative asset URLs, so the
             # browser must see the trailing slash.
             await _redirect(scope, send, frontend.path + "/")
+            return
+
+        if (
+            frontend.name == "openapi"
+            and path == frontend.path + OAUTH2_REDIRECT_PATH
+        ):
+            # The authorization server redirects the browser here without a
+            # bearer token, so the page is answered before the frontend's
+            # auth wrapper and its app-level dependency (#245).
+            await _send_html(scope, send, oauth2_redirect_html())
             return
 
         app = gateway._frontend_app(frontend.name)

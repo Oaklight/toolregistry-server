@@ -62,6 +62,11 @@ from ...isolation import (
     principal_key,
     record_tool_call,
 )
+from ...oauth.redirect import (
+    OAUTH2_REDIRECT_PATH,
+    OAUTH2_REDIRECT_URL,
+    oauth2_redirect_html,
+)
 from ...regex_guard import (
     DEFAULT_REGEX_BUDGET,
     DEFAULT_REGEX_TIMEOUT,
@@ -498,7 +503,9 @@ def _add_docs_route(app: App, title: str) -> None:
           integrity="{SWAGGER_UI_BUNDLE_INTEGRITY}"
           crossorigin="anonymous"></script>
   <script>
-    window.ui = SwaggerUIBundle({{url: "/openapi.json", dom_id: "#swagger-ui"}});
+    window.ui = SwaggerUIBundle({{url: "/openapi.json",
+                                  oauth2RedirectUrl: "{OAUTH2_REDIRECT_URL}",
+                                  dom_id: "#swagger-ui"}});
   </script>
 </body>
 </html>"""
@@ -506,6 +513,22 @@ def _add_docs_route(app: App, title: str) -> None:
     @app.get("/docs")
     async def _docs(request) -> Response:
         return Response(html_page, content_type="text/html; charset=utf-8")
+
+
+def _add_oauth2_redirect_route(app: App) -> None:
+    """Register ``GET /oauth2-redirect.html`` for the Swagger UI OAuth flow.
+
+    Swagger UI derives this location from the ``/docs`` page URL, so the
+    page is served at the listener root here and at the same relative path
+    under a gateway mount.  The route is unauthenticated: the authorization
+    server redirects the browser without a bearer token (#245).
+    """
+
+    @app.get(OAUTH2_REDIRECT_PATH)
+    async def _oauth2_redirect(request) -> Response:
+        return Response(
+            oauth2_redirect_html(), content_type="text/html; charset=utf-8"
+        )
 
 
 def _add_redoc_route(app: App, title: str) -> None:
@@ -658,6 +681,10 @@ def _add_auth(
 
     @app.before_request
     async def _require_token(request) -> Response | None:
+        if getattr(request, "path", "") == OAUTH2_REDIRECT_PATH:
+            # The authorization server redirects the browser here without a
+            # bearer token; requiring one would break the flow (#245).
+            return None
         header = request.headers.get("authorization", "")
         scheme, _, credential = header.partition(" ")
         principal = None
@@ -899,6 +926,7 @@ def create_httpserver_app(
         openapi_auth,
     )
     _add_docs_route(app, title)
+    _add_oauth2_redirect_route(app)
     _add_redoc_route(app, title)
     _add_events_route(app, route_table, max_sse_subscribers, principal_resolver)
     _add_framework_errors(app)

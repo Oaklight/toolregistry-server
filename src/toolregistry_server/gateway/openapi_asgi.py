@@ -34,6 +34,11 @@ from ..adapters.openapi.adapter import (
 )
 from ..adapters.openapi.serialisation import encode_tool_result
 from ..isolation import policy_refusal, policy_refusal_sync, record_tool_call
+from ..oauth.redirect import (
+    OAUTH2_REDIRECT_PATH,
+    OAUTH2_REDIRECT_URL,
+    oauth2_redirect_html,
+)
 from ..regex_guard import (
     DEFAULT_REGEX_BUDGET,
     DEFAULT_REGEX_TIMEOUT,
@@ -1191,6 +1196,22 @@ def setup_dynamic_openapi(
 # ---------------------------------------------------------------------------
 
 
+def _add_oauth2_redirect_route(app: "FastAPI") -> None:
+    """Register ``GET /oauth2-redirect.html`` for the Swagger UI OAuth flow.
+
+    Swagger UI resolves ``oauth2RedirectUrl`` against the ``/docs`` page URL,
+    so the relative value registered on the app keeps working when the
+    frontend is mounted under a gateway path.  The gateway dispatcher answers
+    this path before its bearer wrapper, because the authorization server
+    redirects the browser without a token (#245).
+    """
+    from fastapi.responses import HTMLResponse
+
+    @app.get(OAUTH2_REDIRECT_PATH, include_in_schema=False)
+    async def _oauth2_redirect() -> "HTMLResponse":
+        return HTMLResponse(oauth2_redirect_html())
+
+
 def create_openapi_app(
     route_table: RouteTable,
     title: str = "ToolRegistry Server",
@@ -1267,13 +1288,17 @@ def create_openapi_app(
             version=version,
             description=description,
             dependencies=list(dependencies),
+            swagger_ui_oauth2_redirect_url=OAUTH2_REDIRECT_URL,
         )
     else:
         app = FastAPI(
             title=title,
             version=version,
             description=description,
+            swagger_ui_oauth2_redirect_url=OAUTH2_REDIRECT_URL,
         )
+
+    _add_oauth2_redirect_route(app)
 
     async def _server_error(request: Request, exc: Exception) -> JSONResponse:
         """Render an unexpected failure in the httpserver's JSON envelope.
