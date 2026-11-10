@@ -28,6 +28,7 @@ from ...isolation import (
     operator_refusal,
     policy_refusal,
     principal_client_id,
+    record_refused_call,
     record_tool_call,
 )
 from ...scoped_discovery import (
@@ -739,14 +740,13 @@ async def _authorise_call(
             raise make_mcp_error(INVALID_PARAMS, policy_message)
     except McpErrorClass as exc:
         _log_attributed_call(tool_name, principal, "denied", started, reason=str(exc))
-        record_tool_call(
+        record_refused_call(
             registry,
             tool_name,
-            arguments,
             principal=principal,
-            error=exc,
-            duration_ms=(time.monotonic() - started) * 1000,
             outcome="denied",
+            reason=str(exc),
+            duration_ms=(time.monotonic() - started) * 1000,
         )
         raise
 
@@ -856,6 +856,8 @@ async def _mcp_call_tool(
                         route, arguments, session_ctx, session_mgr
                     )
             except ClientBusyTimeout as exc:
+                # ``_record_outcome`` below writes the row with
+                # ``outcome="busy"``; recording here as well would duplicate it.
                 raise make_mcp_error(BUSY_ERROR_CODE, str(exc)) from exc
         call_result = result
         if tool_name == DISCOVERY_TOOL_NAME:

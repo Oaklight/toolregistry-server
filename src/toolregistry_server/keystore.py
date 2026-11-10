@@ -516,13 +516,20 @@ class Principal:
     """An authenticated caller.
 
     Attributes:
-        key_id: The stored key id, or ``None`` for a static operator token.
-        label: The key label, or ``None`` for a static operator token.
+        key_id: The stored key id, or ``None`` for a static operator token
+            and for an OAuth token.
+        label: The key label, the OAuth ``sub``, or ``None`` for a static
+            operator token.
         scopes: The scope specification.  Ignored when *unrestricted* is set.
         unrestricted: Whether the caller may use every tool.  Static
             ``--tokens`` credentials map here.
         max_concurrency: The key's in-flight call limit, or ``None`` for the
-            process default.  A static operator token has no override.
+            process default.  A static operator token has no override.  An
+            OAuth token may carry one through its claims.
+        client_id: The OAuth client that obtained the token (``client_id`` or
+            ``azp``), when the credential is an OAuth access token.  It is
+            ``None`` for API keys and static tokens, where *label* already
+            names the client.
         store: The store the key was verified against, used only to record
             usage for the next call.  It is excluded from ``to_dict`` and
             from equality.
@@ -533,6 +540,7 @@ class Principal:
     scopes: ScopeSpec = field(default_factory=ScopeSpec)
     unrestricted: bool = False
     max_concurrency: int | None = None
+    client_id: str | None = None
     store: Any = field(default=None, repr=False, compare=False)
 
     @classmethod
@@ -571,6 +579,7 @@ class Principal:
             "scopes": self.scopes.to_dict(),
             "unrestricted": self.unrestricted,
             "max_concurrency": self.max_concurrency,
+            "client_id": self.client_id,
         }
 
     def token_scopes(self) -> list[str]:

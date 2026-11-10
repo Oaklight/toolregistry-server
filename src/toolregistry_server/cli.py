@@ -116,14 +116,27 @@ def print_banner(
     print("\n".join(lines), file=stream)
 
 
-def _oauth_settings(parsed: argparse.Namespace, *, default_audience: str | None) -> Any:
+def _oauth_settings(
+    parsed: argparse.Namespace,
+    *,
+    default_audience: str | None,
+    config_path: str | None = None,
+) -> Any:
     """Build OAuth settings from parsed arguments, or ``None``.
+
+    Args:
+        parsed: The argparse namespace.
+        default_audience: Resource URL used when ``--oauth-audience`` is
+            absent.
+        config_path: Configuration file whose ``oauth`` section may supply
+            the introspection settings.  A command-line flag wins.
 
     Raises:
         ValueError: If an OAuth option is set without an issuer or audience,
             or ``--oauth-scope`` is malformed.
     """
     from .oauth import settings_from_args
+    from .oauth.config import load_oauth_section
 
     issuer = getattr(parsed, "oauth_issuer", None)
     audience = getattr(parsed, "oauth_audience", None)
@@ -131,7 +144,11 @@ def _oauth_settings(parsed: argparse.Namespace, *, default_audience: str | None)
         raise ValueError(
             "--oauth-audience is required when the server has no public URL"
         )
-    return settings_from_args(parsed, default_audience=default_audience or "")
+    return settings_from_args(
+        parsed,
+        default_audience=default_audience or "",
+        config_section=load_oauth_section(config_path),
+    )
 
 
 def _openapi_audience(parsed: argparse.Namespace) -> str:
@@ -413,9 +430,11 @@ class CLI:
             "--oauth-scope",
             action="append",
             default=[],
-            metavar="SCOPE=NAMESPACE[,NAMESPACE]",
+            metavar="SCOPE=ENTRY[,ENTRY]",
             help=(
-                "Map one token scope to namespace patterns; repeatable.  "
+                "Map one token scope to namespace patterns and tool "
+                "overrides; repeatable.  An entry is a namespace pattern, "
+                "+tool-name to allow one tool, or -tool-name to deny it.  "
                 "Unmapped scopes grant nothing"
             ),
         )
@@ -457,6 +476,66 @@ class CLI:
             help=(
                 "Optional refreshUrl for the OpenAPI authorizationCode flow; "
                 "omitted unless set"
+            ),
+        )
+        group.add_argument(
+            "--oauth-introspection-url",
+            default=None,
+            metavar="URL",
+            help=(
+                "RFC 7662 introspection endpoint.  When set, every locally "
+                "verified token is confirmed with it so a revocation takes "
+                "effect within --oauth-introspection-cache-ttl"
+            ),
+        )
+        group.add_argument(
+            "--oauth-introspection-client-id",
+            default=None,
+            metavar="ID",
+            help="Client id for the introspection endpoint (HTTP Basic)",
+        )
+        group.add_argument(
+            "--oauth-introspection-client-secret",
+            default=None,
+            metavar="SECRET",
+            help="Client secret for the introspection endpoint (HTTP Basic)",
+        )
+        group.add_argument(
+            "--oauth-introspection-cache-ttl",
+            type=float,
+            default=None,
+            metavar="SECONDS",
+            help=(
+                "How long one introspection result is reused (default: 5); "
+                "this bounds how long a revoked token is still accepted"
+            ),
+        )
+        group.add_argument(
+            "--oauth-introspection-optional",
+            action="store_true",
+            default=None,
+            help=(
+                "Fall back to local verification when the introspection "
+                "endpoint fails; by default a failure rejects the token"
+            ),
+        )
+        group.add_argument(
+            "--oauth-concurrency-claim",
+            default=None,
+            metavar="CLAIM",
+            help=(
+                "Token claim that may carry a client's in-flight call limit "
+                "(default: max_concurrency; a non-positive value is ignored)"
+            ),
+        )
+        group.add_argument(
+            "--oauth-client-concurrency",
+            action="append",
+            default=[],
+            metavar="CLIENT=LIMIT",
+            help=(
+                "Static in-flight call limit for one OAuth client; "
+                "repeatable.  A valid concurrency claim wins"
             ),
         )
 
@@ -523,7 +602,9 @@ class CLI:
             options: dict[str, Any] = {
                 "config_path": config_path,
                 "oauth": _oauth_settings(
-                    parsed, default_audience=_openapi_audience(parsed)
+                    parsed,
+                    default_audience=_openapi_audience(parsed),
+                    config_path=config_path,
                 ),
                 "profile": getattr(parsed, "profile", None),
                 "host": parsed.host,
@@ -558,6 +639,7 @@ class CLI:
                         parsed.port,
                         "/mcp",
                     ),
+                    config_path=config_path,
                 ),
                 "profile": getattr(parsed, "profile", None),
                 "host": parsed.host,
@@ -616,7 +698,11 @@ class CLI:
             )
         options: dict[str, Any] = {
             "config_path": config_path,
-            "oauth": _oauth_settings(parsed, default_audience=default_audience),
+            "oauth": _oauth_settings(
+                parsed,
+                default_audience=default_audience,
+                config_path=config_path,
+            ),
             "profile": getattr(parsed, "profile", None),
             "host": parsed.host,
             "port": parsed.port,

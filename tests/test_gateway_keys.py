@@ -396,4 +396,7 @@ async def test_gateway_openapi_call_is_recorded_with_attribution(table, key_stor
     [entry] = gateway._route_table.registry.get_execution_log().get_entries()  # noqa: SLF001
     assert entry.tool_name == "alpha-add"
     assert entry.status is ExecutionStatus.SUCCESS
-    assert entry.metadata == {"key_id": created.record.id, "client_id": "alpha-bot"}
+    assert entry.metadata == {
+        "key_id": created.record.id,
+        "client_id": "alpha-bot",
+    }

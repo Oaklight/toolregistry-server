@@ -101,9 +101,7 @@ class TestHttpserverBackend:
 
 class TestGatewayBackend:
     def test_the_asgi_frontend_serves_the_page_before_its_auth_wrapper(self):
-        gateway = GatewayAdapter.create(
-            _table(), tokens=["secret"], backend="fastapi"
-        )
+        gateway = GatewayAdapter.create(_table(), tokens=["secret"], backend="fastapi")
         transport = httpx.ASGITransport(app=gateway.app)
 
         async def run():
@@ -117,10 +115,8 @@ class TestGatewayBackend:
         assert response.status_code == 200
         assert response.text == oauth2_redirect_html()
 
-    def test_the_asgi_docs_page_uses_a_relative_redirect_url(self):
-        gateway = GatewayAdapter.create(
-            _table(), tokens=["secret"], backend="fastapi"
-        )
+    def test_the_asgi_docs_page_names_the_mounted_redirect_url(self):
+        gateway = GatewayAdapter.create(_table(), tokens=["secret"], backend="fastapi")
         transport = httpx.ASGITransport(app=gateway.app)
 
         async def run():
@@ -134,12 +130,14 @@ class TestGatewayBackend:
         response = asyncio.run(run())
 
         assert response.status_code == 200
-        assert f'oauth2RedirectUrl: "{OAUTH2_REDIRECT_URL}"' in response.text
+        assert (
+            "oauth2RedirectUrl: window.location.origin + "
+            "'/openapi/oauth2-redirect.html'"
+        ) in response.text
+        assert "url: '/openapi/openapi.json'" in response.text
 
     def test_the_redirect_page_follows_a_changed_frontend_path(self):
-        gateway = GatewayAdapter.create(
-            _table(), tokens=["secret"], backend="fastapi"
-        )
+        gateway = GatewayAdapter.create(_table(), tokens=["secret"], backend="fastapi")
         gateway.update_frontend("openapi", path="/rest")
         transport = httpx.ASGITransport(app=gateway.app)
 
@@ -147,12 +145,18 @@ class TestGatewayBackend:
             async with httpx.AsyncClient(
                 transport=transport, base_url="http://test"
             ) as client:
-                return await client.get("/rest" + OAUTH2_REDIRECT_PATH)
+                page = await client.get(
+                    "/rest/docs", headers={"Authorization": "Bearer secret"}
+                )
+                redirect = await client.get("/rest" + OAUTH2_REDIRECT_PATH)
+                return page, redirect
 
-        response = asyncio.run(run())
+        page, redirect = asyncio.run(run())
 
-        assert response.status_code == 200
-        assert response.text == oauth2_redirect_html()
+        assert page.status_code == 200
+        assert "'/rest/oauth2-redirect.html'" in page.text
+        assert redirect.status_code == 200
+        assert redirect.text == oauth2_redirect_html()
 
 
 class TestDirectAsgiApp:
