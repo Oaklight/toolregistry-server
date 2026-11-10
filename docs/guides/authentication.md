@@ -349,6 +349,54 @@ toolregistry-server gateway \
 `--oauth-scopes ""` omits the field. Without `--oauth-issuer`, the metadata
 keeps advertising `mcp`, as before.
 
+### OpenAPI security scheme
+
+When an issuer is configured, the served OpenAPI document describes the
+authorization-code flow, so a generated client or a docs UI knows where to
+send the user:
+
+```json
+{
+  "components": {
+    "securitySchemes": {
+      "OAuth2": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "https://idp.example.com/realms/dev/authorize",
+            "tokenUrl": "https://idp.example.com/realms/dev/token",
+            "scopes": {"openid": "", "profile": "", "email": ""}
+          }
+        }
+      }
+    }
+  },
+  "security": [{"OAuth2": []}]
+}
+```
+
+`authorizationUrl` and `tokenUrl` come from the issuer's RFC 8414 or OIDC
+metadata (`authorization_endpoint` / `token_endpoint`). The explicit
+`--oauth-authorization-url` and `--oauth-token-url` flags win over discovery;
+`--oauth-refresh-url` adds an optional `refreshUrl`. If neither an override
+nor metadata supplies both endpoints, the OAuth2 scheme is omitted with a
+warning rather than published half-built.
+
+The `scopes` object uses the `--oauth-scopes` list, the same list advertised
+in the protected-resource metadata. An empty list is valid and publishes an
+empty `scopes` object.
+
+When API keys or static tokens are also accepted, the document-level
+`security` lists both credentials and means OR: a client may send either an
+OAuth access token or a bearer key.
+
+```json
+"security": [{"OAuth2": []}, {"HTTPBearer": []}]
+```
+
+Without keys or tokens only OAuth2 is listed. Without `--oauth-issuer` the
+document is exactly what it was before.
+
 ### Limitations
 
 Token introspection (RFC 7662) is not implemented: the deployment must issue
