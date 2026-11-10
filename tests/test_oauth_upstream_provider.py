@@ -916,7 +916,7 @@ def test_the_assumed_lifetime_is_configurable(store, clock):
     )
     clock.advance(300)
     provider = OAuthClientProvider(
-        (_declaration(),),
+        (_declaration(grant="authorization_code"),),
         store=store,
         transport=FakeTransport(),
         clock=clock,
@@ -979,7 +979,20 @@ def test_a_second_404_from_the_discovered_endpoint_is_definitive(store, clock):
 
 
 def test_an_explicit_token_endpoint_is_not_rediscovered(store, clock):
-    transport = _MovingEndpointTransport()
+    class Always404:
+        def __init__(self):
+            self.gets = 0
+            self.posts: list[str] = []
+
+        def get_json(self, url, timeout):
+            self.gets += 1
+            return {"token_endpoint": "https://idp.example.com/elsewhere/token"}
+
+        def post_form(self, url, fields, headers, timeout):
+            self.posts.append(url)
+            raise OAuthHTTPError(404, None, None)
+
+    transport = Always404()
     provider = _provider(_declaration(), transport, store, clock)
 
     with pytest.raises(ReauthorizationRequired):
@@ -987,7 +1000,7 @@ def test_an_explicit_token_endpoint_is_not_rediscovered(store, clock):
     # An explicit endpoint is never re-discovered: nothing else could replace
     # it, so a 404 is the operator's endpoint being wrong.
     assert transport.gets == 0
-    assert len(transport.posts) == 1
+    assert transport.posts == ["https://idp.example.com/token"]
 
 
 def test_abandoned_pending_requests_are_purged(store, clock):
