@@ -16,11 +16,20 @@ Failure classification is deliberate:
 
 * a definitive rejection (``invalid_grant``, ``invalid_client``, another
   4xx) raises :class:`ReauthorizationRequired`, clears the stored tokens and
-  records the redacted reason;
-* a transport failure or a 5xx/429 raises :class:`TransientOAuthError` and
-  leaves the stored record alone, so a retry can use it;
+  records the redacted reason.  A ``client_credentials`` source is still
+  retried on the next connect: its grant is the client secret, which the
+  operator can correct at any time, and there is no interactive
+  authorization to wait for.  An ``authorization_code`` source keeps the
+  latch until the operator authorizes it again;
+* a transport failure, a 3xx or a 5xx/429 raises :class:`TransientOAuthError`
+  and leaves the stored record alone, so a retry can use it.  Every redirect
+  is refused: a token request carries the client secret in its body or in an
+  ``Authorization`` header, and following a 3xx would send it to whatever
+  host the response names;
 * an expired token is never returned.  If it cannot be refreshed, the caller
-  gets an error, not the stale value.
+  gets an error, not the stale value.  A token whose response carried no
+  ``expires_in`` has no expiry at all: it is returned until it is replaced or
+  until the resource server rejects it.
 
 No token, secret or PKCE verifier is written to a log or returned in a
 dictionary.  Error messages pass through :func:`redact`.
@@ -30,10 +39,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import re
 import secrets
 import threading
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -139,12 +151,25 @@ class OAuthTransport(Protocol):
 
 
 class UrllibTransport:
-    """Default transport built on :mod:`urllib.request`."""
+    """Default transport built on :mod:`urllib.request`.
+
+    Redirects are refused for every request.  The default opener follows a
+    301/302/303 by re-issuing the request as a ``GET`` to the host named in
+    ``Location`` and keeps the ``Authorization`` header, so a token POST that
+    carries ``client_secret_basic`` would hand the client secret to that
+    host.  A redirect is reported as :class:`OAuthHTTPError` with its own
+    status, which the provider classifies as transient.
+
+    The transport does not apply an outbound address policy.  The operator
+    supplies every URL it dials, but the URLs are not screened by
+    :mod:`toolregistry.netpolicy`: discovery and the token POST can reach a
+    loopback or link-local host if the configuration names one.  That matches
+    :mod:`toolregistry_server.oauth.verifier`, and screening both is tracked
+    separately.
+    """
 
     def get_json(self, url: str, timeout: float) -> Any:
         """Fetch and decode one JSON document."""
-        import urllib.request
-
         request = urllib.request.Request(
             url, headers={"Accept": "application/json"}, method="GET"
         )
@@ -158,8 +183,6 @@ class UrllibTransport:
         timeout: float,
     ) -> Any:
         """POST a form body and decode the JSON response."""
-        import urllib.request
-
         request = urllib.request.Request(
             url,
             data=urlencode(dict(fields)).encode("utf-8"),
@@ -175,11 +198,9 @@ class UrllibTransport:
     @staticmethod
     def _open(request: Any, timeout: float) -> Any:
         """Open *request* and decode JSON, mapping transport errors."""
-        import urllib.error
-        import urllib.request
-
+        opener = urllib.request.build_opener(_NoRedirect)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with opener.open(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             payload: Any = None
@@ -192,10 +213,24 @@ class UrllibTransport:
                 payload.get("error_description") if isinstance(payload, dict) else None
             )
             raise OAuthHTTPError(exc.code, error, description) from None
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            http.client.HTTPException,
+        ) as exc:
             raise TransientOAuthError(
                 f"OAuth request failed: {type(exc).__name__}"
             ) from None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so no request is replayed to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Return ``None`` so urllib raises the 3xx as an ``HTTPError``."""
+        return None
 
 
 def redact(text: str, *secrets: str | None) -> str:
@@ -320,6 +355,21 @@ class MCPOAuthProvider:
                 return declaration
         return None
 
+    def clear_stored_token(self, selector: str) -> None:
+        """Delete the stored token for *selector* when a declaration uses it.
+
+        Called before a declaration leaves the configuration.  The store is
+        keyed by the selector, so leaving the row behind would attach an old
+        credential to a source that is later re-added under the same
+        selector.  A selector with no declaration is ignored: nothing this
+        provider owns can be bound to it.
+        """
+        declaration = self.declaration_by_selector(selector)
+        if declaration is None:
+            return
+        with self._token_lock(declaration.source):
+            self._store_for(declaration).clear(declaration.source)
+
     def _token_lock(self, source_id: str) -> threading.Lock:
         """Return the per-source lock that serialises token acquisition."""
         with self._lock:
@@ -356,7 +406,11 @@ class MCPOAuthProvider:
         """Return a usable token, refreshing or fetching one as needed.
 
         An expired token is never returned.  A stored ``needs_reauth`` flag
-        short-circuits every attempt until a new authorization succeeds.
+        short-circuits every attempt until a new authorization succeeds, or,
+        for the ``client_credentials`` grant, until the next attempt: that
+        grant has no interactive authorization, so a corrected client secret
+        gets a fresh fetch instead of a permanent failure.  A stored record
+        minted for another ``issuer`` or ``client_id`` is ignored.
 
         Raises:
             ReauthorizationRequired: When the stored grant is unusable and
@@ -367,9 +421,12 @@ class MCPOAuthProvider:
         store = self._store_for(declaration)
         with self._token_lock(declaration.source):
             record = store.get(declaration.source)
+            if record is not None and not self._record_matches(declaration, record):
+                store.clear(declaration.source)
+                record = None
             now = self._clock()
             if record is not None:
-                if record.needs_reauth:
+                if record.needs_reauth and declaration.grant != "client_credentials":
                     raise ReauthorizationRequired(
                         record.error
                         or f"{declaration.source} requires re-authorization"
@@ -383,6 +440,18 @@ class MCPOAuthProvider:
         raise ReauthorizationRequired(
             f"{declaration.source} has no usable token; authorize it"
         )
+
+    def _record_matches(self, declaration: MCPOAuthConfig, record: TokenRecord) -> bool:
+        """Whether *record* was minted for the declaration's current client.
+
+        The store is keyed by the selector, which survives an ``issuer`` or
+        ``client_id`` edit.  A token minted for the old authorization server
+        must not be presented to the new one, so a mismatch reads as no
+        record at all.
+        """
+        if record.issuer != self._issuer_for(declaration):
+            return False
+        return not record.client_id or record.client_id == declaration.client_id
 
     def _client_credentials(
         self, declaration: MCPOAuthConfig, store: TokenStore
@@ -423,7 +492,7 @@ class MCPOAuthProvider:
         try:
             payload = self._request_token(declaration, fields)
         except OAuthHTTPError as exc:
-            self._record_failure(declaration, store, exc)
+            self._record_failure(declaration, store, exc, fields=fields)
         record = self._record_from_payload(
             declaration, payload, fallback_refresh=fallback_refresh
         )
@@ -494,18 +563,31 @@ class MCPOAuthProvider:
         declaration: MCPOAuthConfig,
         store: TokenStore,
         exc: OAuthHTTPError,
+        *,
+        fields: Mapping[str, str] | None = None,
     ) -> NoReturn:
         """Classify a token-endpoint rejection and raise the matching error.
 
+        A redirect is refused by the transport and arrives here as its 3xx
+        status; it is transient, because the endpoint may have moved and the
+        stored grant is still good.
+
         Raises:
-            TransientOAuthError: For 429 and 5xx responses.
+            TransientOAuthError: For 3xx, 429 and 5xx responses.
             ReauthorizationRequired: For every other rejection.  The store
                 is marked so a later connect does not retry the rejected
-                grant silently.
+                grant silently, except for ``client_credentials``, whose
+                next connect fetches a new token with the current secret.
         """
-        message = self._error_message(declaration, exc)
-        if exc.status == 429 or exc.status >= 500:
+        message = self._error_message(declaration, exc, fields=fields)
+        if 300 <= exc.status < 400 or exc.status == 429 or exc.status >= 500:
             raise TransientOAuthError(message) from None
+        if declaration.grant == "client_credentials":
+            # No interactive grant to wait for: the operator can fix the
+            # client secret and the next connect tries it.  Clearing the row
+            # keeps the corrected attempt from hitting a stale error.
+            store.clear(declaration.source)
+            raise ReauthorizationRequired(message) from None
         store.mark_reauth(
             declaration.source,
             message,
@@ -514,14 +596,25 @@ class MCPOAuthProvider:
         )
         raise ReauthorizationRequired(message) from None
 
-    def _error_message(self, declaration: MCPOAuthConfig, exc: OAuthHTTPError) -> str:
-        """Build a redacted error message from an OAuth error response."""
+    def _error_message(
+        self,
+        declaration: MCPOAuthConfig,
+        exc: OAuthHTTPError,
+        *,
+        fields: Mapping[str, str] | None = None,
+    ) -> str:
+        """Build a redacted error message from an OAuth error response.
+
+        The replayed refresh token is redacted as well as the client secret:
+        an authorization server that echoes the request in
+        ``error_description`` must not write it into the source record.
+        """
         code = exc.error or f"HTTP {exc.status}"
         detail = f": {exc.description}" if exc.description else ""
-        return redact(
-            f"OAuth token request rejected ({code}{detail})",
-            declaration.client_secret,
-        )
+        secrets = [declaration.client_secret]
+        if fields:
+            secrets.append(fields.get("refresh_token"))
+        return redact(f"OAuth token request rejected ({code}{detail})", *secrets)
 
     # -- authorization code + PKCE ----------------------------------------
 
@@ -563,7 +656,11 @@ class MCPOAuthProvider:
         state = secrets.token_urlsafe(32)
         now = self._clock()
         expires_at = now + timedelta(seconds=AUTHORIZATION_STATE_TTL)
-        self._control_store().put_pending(
+        control = self._control_store()
+        # Drop requests whose callback never came, so an abandoned flow does
+        # not leave its PKCE verifier on disk for the life of the store.
+        control.purge_expired_pending(now)
+        control.put_pending(
             PendingAuthorization(
                 state=state,
                 source_id=declaration.source,
@@ -608,6 +705,11 @@ class MCPOAuthProvider:
             ReauthorizationRequired: If the authorization server rejects the
                 code or the client.
             TransientOAuthError: On a retryable server or transport error.
+
+        The pending request is consumed before the exchange, so a transient
+        failure means the operator must start a new authorization: an
+        authorization code is single-use, and a second exchange of the same
+        code would be rejected anyway.
         """
         pending = self._control_store().pop_pending(state)
         if pending is None:
@@ -662,7 +764,14 @@ class MCPOAuthProvider:
         return endpoint
 
     def _metadata_for(self, declaration: MCPOAuthConfig) -> dict[str, Any]:
-        """Return and cache the authorization-server metadata."""
+        """Return and cache the authorization-server metadata.
+
+        The cache has no TTL: one document is kept per discovery URL or
+        issuer for the life of the provider, so a metadata change at the
+        authorization server is only seen after a restart or a config reload
+        that creates a new provider.  Discovery is not on the hot path, so a
+        TTL can be added later without changing this signature.
+        """
         key = declaration.discovery_url or declaration.issuer or ""
         with self._lock:
             cached = self._metadata.get(key)

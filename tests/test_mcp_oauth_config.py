@@ -344,6 +344,57 @@ def test_duplicate_selector_is_rejected(tmp_path):
         )
 
 
+def test_two_selector_forms_for_one_source_are_rejected(tmp_path):
+    # ``namespace:example`` and ``url:https://mcp.example.com/mcp`` name the
+    # same source in TOOLS.  Comparing the selector text would let both
+    # through, and the source would then fail at connect time.
+    with pytest.raises(ConfigError, match="duplicate declaration"):
+        _load(
+            tmp_path,
+            """\
+            - source: "namespace:example"
+              issuer: https://idp.example.com
+              client_id: toolregistry
+              client_secret: secret
+            - source: "url:https://mcp.example.com/mcp"
+              issuer: https://idp.example.com
+              client_id: toolregistry
+              client_secret: secret
+            """,
+        )
+
+
+def test_a_url_selector_with_a_trailing_slash_duplicates_the_plain_one(tmp_path):
+    with pytest.raises(ConfigError, match="duplicate declaration"):
+        _load(
+            tmp_path,
+            """\
+            - source: "namespace:example"
+              issuer: https://idp.example.com
+              client_id: toolregistry
+              client_secret: secret
+            - source: "url:https://mcp.example.com/mcp/"
+              issuer: https://idp.example.com
+              client_id: toolregistry
+              client_secret: secret
+            """,
+        )
+
+
+def test_relative_token_store_is_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="must be an absolute path"):
+        _load(
+            tmp_path,
+            """\
+            - source: "namespace:example"
+              issuer: https://idp.example.com
+              client_id: toolregistry
+              client_secret: secret
+              token_store: state/mcp-oauth.db
+            """,
+        )
+
+
 def test_section_must_be_a_list(tmp_path):
     path = _write(
         tmp_path,
