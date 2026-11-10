@@ -234,6 +234,23 @@ def test_rotate_reports_an_unknown_key(tmp_path, capsys):
     assert "Key not found" in capsys.readouterr().err
 
 
+def test_rotate_refuses_a_revoked_key(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+    revoke = _parse("keys", "--db", database, "revoke", key_id)
+    assert dispatch_keys(revoke) == 0
+    capsys.readouterr()
+
+    rotate = _parse("keys", "--db", database, "rotate", key_id)
+
+    assert dispatch_keys(rotate) == 2
+    err = capsys.readouterr().err
+    assert "revoked" in err
+    assert "Traceback" not in err
+
+
 def test_update_changes_the_named_fields(tmp_path, capsys):
     database = str(tmp_path / "keys.db")
     create = _parse("keys", "--db", database, "create", "--label", "old", "--json")
