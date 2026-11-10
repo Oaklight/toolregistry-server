@@ -167,6 +167,13 @@ class App:
                 "Pass a config file path or a pre-built ToolRegistry."
             )
 
+        if manager is not None and self.mcp_oauth_provider is not None:
+            import atexit
+
+            # The token stores are SQLite connections; release them when the
+            # process ends.  A test or embedder calls close_mcp_oauth itself.
+            atexit.register(self.close_mcp_oauth)
+
         if profile is not None:
             apply_profile(registry, profile)
 
@@ -262,10 +269,12 @@ class App:
     def close_mcp_oauth(self) -> None:
         """Close the upstream OAuth token stores, if any.
 
-        A server process releases them at exit; an embedder or a test can
-        call this to release them sooner.  The provider is dropped, so a
-        later reload creates a new one.  A provider created by a config
-        reload lives on the source manager, so both are closed.
+        :meth:`prepare_registry` registers this with :mod:`atexit` when it
+        creates a provider, so a server process releases the stores at exit;
+        an embedder or a test can also call this to release them sooner.  The
+        provider is dropped, so a later reload creates a new one.  A provider
+        created by a config reload lives on the source manager, so both are
+        closed.  Calling it twice is harmless.
         """
         manager = self.source_manager
         for provider in (

@@ -101,16 +101,17 @@ COMMENTS_WARNING = "the config file was rewritten; comments are not preserved"
 
 #: Top-level keys the core ``ToolConfig`` owns.  A rewrite replaces these and
 #: leaves every other section (``gateway``, ``oauth``, ``mcp_oauth``) as it
-#: was, so a source edit cannot erase a server-owned setting.
-_CORE_CONFIG_KEYS = (
-    "mode",
-    "disabled",
-    "enabled",
-    "tools",
-    "profiles",
-    "tool_metadata",
-    "tool_parameters",
+#: was, so a source edit cannot erase a server-owned setting.  The list is
+#: taken from the installed dataclass: a key this server knows but the
+#: installed core does not (``tool_parameters`` before core 0.21) must not be
+#: dropped from a file the core could not have produced.  ``source`` is the
+#: parsed file path, not a schema key, so it is excluded.
+_CORE_CONFIG_KEYS = frozenset(
+    field.name for field in dataclasses.fields(ToolConfig) if field.name != "source"
 )
+
+#: HTTP statuses with which an MCP server rejects the credential itself.
+_AUTH_REJECTION_STATUSES = frozenset({401, 403})
 
 #: A source is identified by its declaration, not by its position, so
 #: reordering the ``tools`` list is not treated as a change.  Fields that live
@@ -181,6 +182,30 @@ def _redact_url_userinfo(text: str) -> str:
 def _safe_error(exc: BaseException) -> str:
     """Return an exception message safe to show in a status payload."""
     return _redact_url_userinfo(str(exc))
+
+
+def _auth_rejection_status(exc: BaseException) -> int | None:
+    """Return the 401/403 an MCP client raised, if that is what it was.
+
+    The MCP client reports a resource-server rejection as an ``httpx``
+    ``HTTPStatusError``, sometimes wrapped in an ``ExceptionGroup`` because it
+    is raised inside a task group.  The whole cause chain and every group
+    member are searched; no other failure carries a credential verdict.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        status = getattr(current, "status_code", None)
+        if isinstance(status, int) and status in _AUTH_REJECTION_STATUSES:
+            return status
+        pending.extend(getattr(current, "exceptions", ()) or ())
+        pending.append(current.__cause__)
+        pending.append(current.__context__)
+    return None
 
 
 def _describe_source(source: ToolSource) -> str:
@@ -268,8 +293,9 @@ class SourceEntry:
         names: Tool names the declaration produced.
         status: Result of the last apply attempt.
         error: Redacted error text when *status* is ``FAILED``.
-        reauth_required: ``True`` when the failure is a definitive upstream
-            OAuth rejection.  A retry will not help until the operator
+        reauth_required: ``True`` when the upstream rejected the credential:
+            a definitive token-endpoint rejection, or an HTTP 401/403 from
+            the MCP server itself.  A retry will not help until the operator
             authorizes the source again.
     """
 
@@ -1074,6 +1100,22 @@ class SourceManager:
             if declarations:
                 self.oauth_provider = MCPOAuthProvider(declarations)
             return
+        previous = self.oauth_provider.declarations
+        # A declaration that left the file must take its stored token with it;
+        # otherwise re-adding the source under the same selector reuses a
+        # credential the operator has removed.  Clear before the swap: the
+        # provider resolves the selector through its live declarations.
+        remaining = {declaration.source for declaration in declarations}
+        for declaration in previous:
+            if declaration.source in remaining:
+                continue
+            try:
+                self.oauth_provider.clear_stored_token(declaration.source)
+            except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+                logger.warning(
+                    f"Could not clear the stored OAuth token for "
+                    f"{declaration.source!r}: {_safe_error(exc)}"
+                )
         self.oauth_provider.replace_declarations(declarations)
 
     def is_own_write(self) -> bool:
@@ -1119,6 +1161,23 @@ class SourceManager:
             self._openapi_integrations.pop(key, None)
             if self.strict_spec_regex and isinstance(exc, SpecPatternError):
                 raise
+            status = _auth_rejection_status(exc)
+            if oauth_headers is not None and status is not None:
+                # The resource server rejected the credential itself, so the
+                # stored grant is dead even though the token endpoint accepted
+                # it.  Report it the same way as a rejected token request.
+                logger.warning(
+                    f"MCP source {_describe_source(source)} rejected the OAuth "
+                    f"credential with HTTP {status}; re-authorization required"
+                )
+                return SourceEntry(
+                    key,
+                    source,
+                    frozenset(),
+                    SourceStatus.FAILED,
+                    f"HTTP {status} from the MCP server; the OAuth token was rejected",
+                    reauth_required=True,
+                )
             logger.warning(
                 f"Failed to load tools from {_describe_source(source)}: "
                 f"{_safe_error(exc)}"
@@ -1139,7 +1198,9 @@ class SourceManager:
 
         A definitive rejection sets ``reauth_required`` so the panel can
         offer Re-authorize; a transient failure leaves the stored token
-        alone and is retried on the next diff.
+        alone and is retried on the next diff.  A provider error raised for
+        ``client_credentials`` is a definitive rejection too: the operator
+        must correct the client secret, and the next diff fetches again.
 
         Args:
             key: The source's stable identity.
@@ -1368,17 +1429,26 @@ class SourceManager:
         path = Path(self.config_path)
         backup: str | None = None
         try:
-            from ._config_file import read_config_mapping, write_config_mapping
+            from ._config_file import (
+                _WRITE_LOCK,
+                read_config_mapping,
+                write_config_mapping,
+            )
 
-            data = read_config_mapping(path) if path.exists() else {}
-            serialized = self.config.to_dict()
-            for key in _CORE_CONFIG_KEYS:
-                data.pop(key, None)
-            data.update(serialized)
-            self._prune_oauth_section(data)
-            if path.exists():
-                backup = f"{path}.bak"
-            write_config_mapping(data, path)
+            # The whole read-modify-write runs under the same lock the gateway
+            # uses for a frontend save.  Without it, a panel source edit that
+            # races a frontend save would read the file first and write back
+            # a version without that section.
+            with _WRITE_LOCK:
+                data = read_config_mapping(path) if path.exists() else {}
+                serialized = self.config.to_dict()
+                for key in _CORE_CONFIG_KEYS:
+                    data.pop(key, None)
+                data.update(serialized)
+                self._prune_oauth_section(data)
+                if path.exists():
+                    backup = f"{path}.bak"
+                write_config_mapping(data, path)
             self._last_written_hash = _file_hash(path)
             return True, None, backup, (COMMENTS_WARNING,)
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
@@ -1390,7 +1460,10 @@ class SourceManager:
         The section is server-owned and is preserved verbatim, so a literal
         client secret is never round-tripped through ``to_dict``.  Only
         entries that no longer select a source are removed: deleting a
-        source must not make the next reload reject the file.
+        source must not make the next reload reject the file.  A removed
+        declaration's stored token is deleted too, so re-adding the source
+        under the same selector cannot reuse a credential that was minted
+        for a declaration the operator has removed.
 
         Args:
             data: The configuration mapping about to be written.
@@ -1410,10 +1483,45 @@ class SourceManager:
                 for source in self.config.tools
             )
         ]
+        kept_ids = {id(entry) for entry in kept}
+        pruned = [
+            entry["source"]
+            for entry in section
+            if id(entry) not in kept_ids
+            and isinstance(entry, dict)
+            and isinstance(entry.get("source"), str)
+        ]
+        if pruned:
+            self._clear_stored_tokens(pruned)
         if kept:
             data[MCP_OAUTH_SECTION] = kept
         else:
             data.pop(MCP_OAUTH_SECTION, None)
+
+    def _clear_stored_tokens(self, selectors: Sequence[str]) -> None:
+        """Delete the stored token for each removed OAuth declaration.
+
+        A store that cannot be opened is not an error: the row is stale, and
+        the next authorization overwrites it.  The write must not fail
+        because of a cleanup.
+
+        Args:
+            selectors: Selectors whose declaration left the configuration.
+        """
+        provider = self.oauth_provider
+        if provider is None:
+            return
+        clearer = getattr(provider, "clear_stored_token", None)
+        if clearer is None:  # pragma: no cover - a stand-in provider has none
+            return
+        for selector in selectors:
+            try:
+                clearer(selector)
+            except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+                logger.warning(
+                    f"Could not clear the stored OAuth token for {selector!r}: "
+                    f"{_safe_error(exc)}"
+                )
 
     def _position_of(self, key: SourceKey) -> int:
         """Return the index of *key* in the declared source list."""

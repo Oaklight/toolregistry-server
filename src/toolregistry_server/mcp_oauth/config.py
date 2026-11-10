@@ -130,7 +130,12 @@ class MCPOAuthConfig:
 
     @property
     def store_path(self) -> str:
-        """Return the token-store path this declaration uses."""
+        """Return the token-store path this declaration uses.
+
+        ``token_store`` is validated as absolute at load time; the default
+        path is absolute too, so the store never depends on the working
+        directory.
+        """
         return self.token_store or default_token_store_path()
 
     def to_dict(self) -> dict[str, Any]:
@@ -285,8 +290,23 @@ def _build_declaration(entry: Any, index: int) -> MCPOAuthConfig:
             entry.get("token_endpoint"), f"{where}.token_endpoint"
         ),
         client_auth=client_auth,
-        token_store=_optional_string(entry.get("token_store"), f"{where}.token_store"),
+        token_store=_token_store_path(entry.get("token_store"), where),
     )
+
+
+def _token_store_path(value: Any, where: str) -> str | None:
+    """Return an absolute token-store path, or ``None`` for the default.
+
+    A relative path is rejected: it would resolve against the process working
+    directory, so the same configuration would use a different store under a
+    different launcher and could silently create a second database.
+    """
+    text = _optional_string(value, f"{where}.token_store")
+    if text is None:
+        return None
+    if not os.path.isabs(text):
+        raise ConfigError(f"{where}.token_store must be an absolute path, got {text!r}")
+    return text
 
 
 def _required_string(entry: dict[str, Any], key: str, where: str) -> str:
@@ -431,17 +451,13 @@ def _validate_declarations(
         sources: The configuration's source list.
 
     Raises:
-        ConfigError: On a duplicate selector, an unmatched or ambiguous
-            selector, a stdio match, or a source that already sets an
-            ``Authorization`` header.
+        ConfigError: On a duplicate selector (including two selectors that
+            name the same source), an unmatched or ambiguous selector, a
+            stdio match, or a source that already sets an ``Authorization``
+            header.
     """
-    seen: set[str] = set()
+    seen: set[MCPSource] = set()
     for declaration in declarations:
-        if declaration.source in seen:
-            raise ConfigError(
-                f"{MCP_OAUTH_SECTION}: duplicate declaration for {declaration.source!r}"
-            )
-        seen.add(declaration.source)
         matched = [
             source
             for source in sources
@@ -467,6 +483,17 @@ def _validate_declarations(
             )
         matched_source = matched[0]
         assert isinstance(matched_source, MCPSource)
+        # Deduplicate on the resolved source, not on the selector text:
+        # ``namespace:example`` and ``url:https://mcp.example.com/mcp`` can
+        # name the same source, and two declarations for it fail the source
+        # at connect time.
+        if matched_source in seen:
+            raise ConfigError(
+                f"{MCP_OAUTH_SECTION}: duplicate declaration for "
+                f"{declaration.source!r}; more than one declaration selects "
+                "the same MCP source"
+            )
+        seen.add(matched_source)
         headers = matched_source.headers or {}
         if any(name.lower() == "authorization" for name in headers):
             raise ConfigError(

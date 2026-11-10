@@ -2,13 +2,18 @@
 
 Every HTTP interaction goes through a fake transport, so nothing reaches the
 network.  The store is in-memory except where a test explicitly checks disk
-permissions.
+permissions.  The transport tests use loopback servers, because the redirect
+and truncation behaviour under test is urllib's.
 """
 
 from __future__ import annotations
 
 import base64
+import http.server
 import json
+import socket
+import socketserver
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -24,6 +29,7 @@ from toolregistry_server.mcp_oauth.provider import (
     OAuthStateError,
     ReauthorizationRequired,
     TransientOAuthError,
+    UrllibTransport,
     redact,
 )
 from toolregistry_server.mcp_oauth.store import TokenRecord, TokenStore
@@ -181,7 +187,11 @@ def test_invalid_grant_marks_reauth_and_clears_tokens(store, clock):
     transport = FakeTransport(
         responses=[OAuthHTTPError(400, "invalid_grant", "revoked")]
     )
-    provider = _provider(_declaration(), transport, store, clock)
+    # The authorization-code grant has an interactive path, so a rejected
+    # refresh latches the source until the operator authorizes it again.
+    provider = _provider(
+        _declaration(grant="authorization_code"), transport, store, clock
+    )
 
     with pytest.raises(ReauthorizationRequired, match="invalid_grant"):
         provider.headers_for(_source())
@@ -412,3 +422,315 @@ def test_replace_declarations_takes_effect(store, clock):
     provider.replace_declarations(())
     assert provider.declarations == ()
     assert provider.headers_for(_source()) is None
+
+
+# -- real-transport behaviour -------------------------------------------------
+
+
+class _RecordingServer(socketserver.ThreadingTCPServer):
+    """A loopback HTTP server that records every request it receives."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, handler_cls):
+        super().__init__(("127.0.0.1", 0), handler_cls)
+        self.requests: list[tuple[str, str, dict[str, str]]] = []
+
+    @property
+    def url(self) -> str:
+        host, port = self.server_address[:2]
+        return f"http://{host}:{port}/token"
+
+
+class _RedirectingHandler(http.server.BaseHTTPRequestHandler):
+    """Answer every request with a redirect to the second server."""
+
+    target = ""
+
+    def do_GET(self):  # noqa: N802 - http.server naming
+        self._redirect()
+
+    def do_POST(self):  # noqa: N802 - http.server naming
+        self._redirect()
+
+    def _redirect(self):
+        self.server.requests.append(
+            (self.command, self.path, dict(self.headers.items()))
+        )
+        # Drain the body so the client does not see a reset.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        self.send_response(self.server.redirect_status)
+        self.send_header("Location", self.server.target)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):  # noqa: D102 - silence the test log
+        pass
+
+
+class _TargetHandler(http.server.BaseHTTPRequestHandler):
+    """Record requests and answer with a token."""
+
+    def do_GET(self):  # noqa: N802 - http.server naming
+        self._record()
+
+    def do_POST(self):  # noqa: N802 - http.server naming
+        self._record()
+
+    def _record(self):
+        self.server.requests.append(
+            (self.command, self.path, dict(self.headers.items()))
+        )
+        body = b'{"access_token": "AT", "expires_in": 3600}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):  # noqa: D102 - silence the test log
+        pass
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize("client_auth", ["client_secret_post", "client_secret_basic"])
+def test_transport_never_follows_a_redirect(status, client_auth):
+    client_id, secret = "toolregistry", "s3cret"
+    credential = base64.b64encode(f"{client_id}:{secret}".encode()).decode("ascii")
+    headers = (
+        {"Authorization": f"Basic {credential}"}
+        if client_auth == "client_secret_basic"
+        else {}
+    )
+    target_cls = type("Target", (_TargetHandler,), {})
+    target = _RecordingServer(target_cls)
+    source_cls = type("Source", (_RedirectingHandler,), {})
+    source = _RecordingServer(source_cls)
+    source.target = target.url
+    source.redirect_status = status
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True)
+        for server in (source, target)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        transport = UrllibTransport()
+        with pytest.raises(OAuthHTTPError) as caught:
+            transport.post_form(
+                source.url,
+                {"grant_type": "client_credentials", "client_secret": secret},
+                headers,
+                5.0,
+            )
+    finally:
+        for server in (source, target):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=5)
+
+    assert caught.value.status == status
+    # The redirect target must not be contacted at all: the client secret is
+    # in the body or in the Authorization header, and neither may be replayed.
+    assert target.requests == []
+    assert len(source.requests) == 1
+
+
+def test_transport_maps_a_truncated_body_to_transient():
+    class Truncated(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server naming
+            # Declare more bytes than are sent, then close the connection.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b'{"access_token": ')
+            self.wfile.flush()
+            self.close_connection = True
+
+        def log_message(self, *args):  # noqa: D102 - silence the test log
+            pass
+
+    server = _RecordingServer(type("Truncated2", (Truncated,), {}))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(TransientOAuthError):
+            UrllibTransport().get_json(server.url, 5.0)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_transport_maps_a_reset_socket_to_transient():
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def accept_and_drop():
+        connection, _ = listener.accept()
+        connection.close()
+
+    thread = threading.Thread(target=accept_and_drop, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(TransientOAuthError):
+            UrllibTransport().get_json(f"http://127.0.0.1:{port}/token", 5.0)
+    finally:
+        thread.join(timeout=5)
+        listener.close()
+
+
+# -- classification and store behaviour ---------------------------------------
+
+
+def test_redirect_status_is_transient(store, clock):
+    transport = FakeTransport(responses=[OAuthHTTPError(302, None, None)])
+    provider = _provider(_declaration(), transport, store, clock)
+
+    with pytest.raises(TransientOAuthError, match="HTTP 302"):
+        provider.headers_for(_source())
+
+    assert store.get(SOURCE) is None
+
+
+def test_client_credentials_recovers_after_the_secret_is_corrected(store, clock):
+    """A rejected client secret must not latch the source off forever."""
+    transport = FakeTransport(
+        responses=[
+            OAuthHTTPError(401, "invalid_client", "bad secret"),
+            {"access_token": "AT", "expires_in": 3600},
+        ]
+    )
+    provider = _provider(_declaration(), transport, store, clock)
+
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    assert store.get(SOURCE) is None
+
+    # The operator fixed the secret; the next connect tries again.
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer AT"}
+    assert len(transport.posts) == 2
+
+
+def test_authorization_code_rejection_keeps_the_latch(store, clock):
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="OLD",
+            refresh_token="RT",
+            expires_at=NOW - timedelta(seconds=1),
+            updated_at=NOW,
+        )
+    )
+    transport = FakeTransport(
+        responses=[OAuthHTTPError(400, "invalid_grant", "revoked")]
+    )
+    provider = _provider(
+        _declaration(grant="authorization_code"), transport, store, clock
+    )
+
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    # No interactive authorization can be started for this declaration, so
+    # the latch stays and the failure is not retried silently.
+    with pytest.raises(ReauthorizationRequired):
+        provider.headers_for(_source())
+    assert len(transport.posts) == 1
+
+
+def test_a_token_for_another_issuer_is_not_reused(store, clock):
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://old-idp.example.com",
+            client_id="toolregistry",
+            access_token="OLD",
+            expires_at=NOW + timedelta(hours=1),
+            updated_at=NOW,
+        )
+    )
+    transport = FakeTransport(responses=[{"access_token": "NEW", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer NEW"}
+    assert len(transport.posts) == 1
+    assert store.get(SOURCE).issuer == "https://idp.example.com"
+
+
+def test_a_token_for_another_client_is_not_reused(store, clock):
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="another-client",
+            access_token="OLD",
+            expires_at=NOW + timedelta(hours=1),
+            updated_at=NOW,
+        )
+    )
+    transport = FakeTransport(responses=[{"access_token": "NEW", "expires_in": 3600}])
+    provider = _provider(_declaration(), transport, store, clock)
+
+    assert provider.headers_for(_source()) == {"Authorization": "Bearer NEW"}
+    assert len(transport.posts) == 1
+
+
+def test_clear_stored_token_removes_the_row(store, clock):
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="AT",
+            expires_at=NOW + timedelta(hours=1),
+            updated_at=NOW,
+        )
+    )
+    provider = _provider(_declaration(), FakeTransport(), store, clock)
+    provider.clear_stored_token(SOURCE)
+    assert store.get(SOURCE) is None
+    # A selector no declaration owns is a no-op.
+    provider.clear_stored_token("namespace:unknown")
+
+
+def test_echoed_refresh_token_is_redacted(store, clock):
+    store.put(
+        TokenRecord(
+            source_id=SOURCE,
+            issuer="https://idp.example.com",
+            client_id="toolregistry",
+            access_token="OLD",
+            refresh_token="RT-SECRET",
+            expires_at=NOW - timedelta(seconds=1),
+            updated_at=NOW,
+        )
+    )
+    transport = FakeTransport(
+        responses=[
+            OAuthHTTPError(400, "invalid_grant", "refresh token RT-SECRET is invalid")
+        ]
+    )
+    provider = _provider(_declaration(), transport, store, clock)
+
+    with pytest.raises(ReauthorizationRequired) as caught:
+        provider.headers_for(_source())
+
+    assert "RT-SECRET" not in str(caught.value)
+    assert "[redacted]" in str(caught.value)
+
+
+def test_abandoned_pending_requests_are_purged(store, clock):
+    provider, _ = _authorization_provider(store, clock, [])
+    first = provider.start_authorization(SOURCE, "https://gateway.example.com/callback")
+    clock.advance(601)
+    provider.start_authorization(SOURCE, "https://gateway.example.com/callback")
+
+    with pytest.raises(OAuthStateError, match="unknown or already used"):
+        provider.complete_authorization("CODE", first.state)
