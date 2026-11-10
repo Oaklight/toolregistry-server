@@ -62,13 +62,35 @@ The table shows one row per key:
 |--------|---------|
 | Label | Operator-facing name |
 | Scopes | Namespaces, plus any per-tool allow/deny overrides |
-| Created | Creation time |
-| Expires | Expiry time, or `Never` |
-| Last used | Time of the latest successful authentication |
+| Calls | Calls recorded for this key |
+| OK | Calls whose handler returned |
+| Errors | Calls whose handler raised |
+| Busy | Calls refused by the client concurrency budget |
+| Denied | Calls refused by the key scope or the permission policy |
+| Last success | Time of the latest successful call, or `—` |
 | Status | `Active`, `Expired` or `Revoked` |
+| Actions | `Details`, `Edit`, `Rotate` and `Revoke`, as the key's status allows |
 
 Revoked and expired keys stay in the table so their history remains visible.
 The store keeps secrets hashed; no response and no asset contains a plaintext
+secret.
+
+### Usage counters
+
+The usage columns are read from counters persisted in the key database, not
+from the execution log. Each call or refusal that is charged to a key
+increments its row, so the numbers survive a restart and stay visible after a
+key is revoked or expires. The Keys page reads all counters in one query when
+it lists the keys.
+
+!!! note "Usage and the Logs page"
+    The execution log is an in-memory ring of 1000 entries per process. The
+    key counters are cumulative and unbounded, so past that window the two
+    views diverge by design: the Keys page keeps counting while the Logs page
+    has already dropped the oldest entries. Compare a key's counts with the
+    Logs page only inside the log's current window.
+
+A key with no recorded call shows zeros. A usage response never includes a
 secret.
 
 ### Creating a key
@@ -99,11 +121,51 @@ On success the page shows the secret once, with a copy button:
     recovered later. Closing the dialog without copying it means creating a
     new key.
 
+### Rotating a key
+
+**Rotate** asks for confirmation, then issues a new secret for the key. The
+key id, label, scopes, expiry, concurrency and usage history stay the same;
+only the secret changes, and the old secret is refused on its next request.
+
+The new secret is shown once, in the same one-time panel as a created key,
+and the response carries `Cache-Control: no-store`. It cannot be recovered
+later; rotating again is the only way to get another one.
+
+**Rotate** is offered only for an `Active` key. A revoked key cannot be
+rotated, and an expired key must have its expiry extended or cleared with
+**Edit** first.
+
+### Editing a key
+
+**Edit** opens a form for the label, scopes, tool overrides, concurrency and
+expiry, filled with the key's current values. **Save** sends only these fields
+and applies the change to the next request, with no restart.
+
+- **Label** is required and must not be empty.
+- **Scopes** is a comma-separated namespace list; **Tool overrides** is one
+  `tool=allow` or `tool=deny` per line.
+- **Expires** empty means no expiry. A time in the past is refused.
+- **Concurrency** empty uses the server default.
+
+Saving with no change is refused with "Change at least one field."
+
+**Edit** is not offered for a revoked key. A revoked key keeps its history but
+cannot be changed.
+
+### Key details
+
+**Details** opens a read-only view of one key: label, id, scopes, tool
+overrides, creation time, expiry, last used, concurrency, status and every
+usage counter including the last success. It reads the key from the store
+through `GET /ext/gateway/keys/<key_id>`, so it shows the current row rather
+than the last list refresh.
+
 ### Revoking a key
 
 **Revoke** asks for confirmation and marks the key revoked immediately. A
 client that presents it is refused on its next request. Revocation is
-idempotent, and the original revocation time is kept.
+idempotent, and the original revocation time is kept. A revoked key keeps its
+row and its usage counters.
 
 ### Scoped keys and deferred tools
 

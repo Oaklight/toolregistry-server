@@ -271,6 +271,72 @@ list differs from the one the client was last served, the shim sends
 
 POSIX only, like `local-hub`. One shim per client, all sharing one hub.
 
+### `keys` — Manage scoped client API keys
+
+```bash
+toolregistry-server keys --db PATH <command> [command-options]
+```
+
+Works on the SQLite key store named by `--db`, the same file the servers read
+with `--keys-db`. `--db` is required and comes before the command. The scope
+model is described in the
+[Authentication guide](../../guides/authentication.md#scoped-api-keys).
+
+| Command | Purpose |
+|---------|---------|
+| `create` | Create a key and print its secret once |
+| `list` | List keys ordered by last use |
+| `get KEY_ID` | Show one key with its usage counters |
+| `rotate KEY_ID` | Issue a new secret for an existing key and print it once |
+| `update KEY_ID` | Change a key's label, scopes, expiry or concurrency |
+| `revoke KEY_ID` | Revoke a key immediately |
+| `set-concurrency KEY_ID` | Change the key's in-flight call limit |
+
+`list` takes `--limit` (default 50) and `--offset`. Every command accepts
+`--json` for machine-readable output.
+
+**Rotating a key.** `keys rotate KEY_ID` issues a new secret for a key that
+already exists. The key id, label, scopes, expiry, concurrency and usage
+history are kept; only the secret changes. The new secret is printed once, and
+the old one is refused on its next request. Rotation is refused for a revoked
+key and for an expired key: extend or clear the expiry with `update` first,
+then rotate.
+
+**Updating a key.** `keys update KEY_ID` changes the named fields and leaves
+the rest alone:
+
+| Flag | Effect |
+|------|--------|
+| `--label LABEL` | New non-empty label |
+| `--namespace PATTERN` | Replace the namespace allow-list; repeatable. `*` allows every namespace and `prefix/*` allows a prefix |
+| `--allow-tool NAME` | Replace the tool-override map with an allow; repeatable |
+| `--deny-tool NAME` | Replace the tool-override map with a deny; repeatable |
+| `--expires ISO8601` | New expiry timestamp; UTC is assumed when no offset is given. Mutually exclusive with `--clear-expiry` |
+| `--clear-expiry` | Remove the expiry so the key does not expire |
+| `--concurrency N` | New in-flight call limit. Mutually exclusive with `--clear-concurrency` |
+| `--clear-concurrency` | Drop the override and use the server's `--client-concurrency` |
+
+The scope flags merge by category, not wholesale. `--namespace` replaces only
+the namespace list, and `--allow-tool` / `--deny-tool` together define only the
+tool-override map, with a name given to both flags denied. A category without a
+flag keeps its current value, so `update KEY_ID --label build-bot-v2` changes
+the label and nothing else. Note that `create` spells the expiry flag
+`--expires-at` and `update` spells it `--expires`; neither form accepts a time
+in the past. An update is refused when the key is revoked. Changes apply to the
+next request, with no restart.
+
+**Usage counters.** `keys list --usage` adds a `usage` object to every record,
+and `keys get` always includes one. The object carries `calls`, `ok`, `error`,
+`busy`, `denied` and `last_success_at`; the text output prints a `calls:` line
+with the four outcomes and a `last ok:` line. The counters are persisted in the
+key database, so they survive a restart and do not depend on the in-memory
+execution log, and they are not cleared by rotation, revocation or expiry. A
+usage object never contains a secret.
+
+**Exit codes.** `0` on success. `1` when `KEY_ID` is unknown. `2` when the store
+refuses the change — a revoked key, an expiry in the past, an invalid
+concurrency — or when `update` is given no field to change.
+
 ## Configuration File
 
 See the [Configuration Guide](../../guides/configuration.md) for details on the JSON, JSONC, or YAML configuration format.
