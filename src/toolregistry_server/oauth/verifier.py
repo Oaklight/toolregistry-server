@@ -330,9 +330,11 @@ class OAuthTokenVerifier:
         if self._settings.jwks_uri:
             return self._settings.jwks_uri
         if self._resolved_jwks_uri is None:
+            # ``jwks_url`` strips a trailing slash before composing the
+            # fallback, so an issuer published with one (Auth0 does) does
+            # not produce ``<issuer>//.well-known/jwks.json``.
             self._resolved_jwks_uri = (
-                self._discover_jwks_uri()
-                or f"{self._settings.issuer}/.well-known/jwks.json"
+                self._discover_jwks_uri() or self._settings.jwks_url
             )
         return self._resolved_jwks_uri
 

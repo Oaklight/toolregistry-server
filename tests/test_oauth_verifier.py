@@ -329,6 +329,23 @@ class TestJwksDiscovery:
         assert _verifier().verify(_token(KEY1, "key-1")) is not None
         assert server.urls == [JWKS_URL]
 
+    def test_a_trailing_slash_issuer_does_not_double_the_fallback_slash(
+        self, monkeypatch
+    ):
+        """#246: the last-resort URL must strip the issuer's trailing slash."""
+        issuer = ISSUER + "/"
+        fallback = f"{ISSUER}/.well-known/jwks.json"
+        server = _RoutedServer({fallback: {"keys": [JWK1]}})
+        monkeypatch.setattr(urllib.request, "urlopen", server)
+
+        verifier = OAuthTokenVerifier(
+            OAuthSettings(issuer=issuer, audience=AUDIENCE)
+        )
+
+        assert verifier.verify(_token(KEY1, "key-1", iss=issuer)) is not None
+        assert fallback in server.urls
+        assert all("//.well-known" not in url for url in server.urls)
+
 
 class TestOAuthResolver:
     def test_scopes_map_through_the_explicit_table(self, jwks):
