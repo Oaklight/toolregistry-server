@@ -25,9 +25,10 @@ from typing import Any
 
 __all__ = ["OUTCOMES", "KeyUsage"]
 
-#: Every outcome a call may report.  ``record_usage`` rejects anything else so
-#: a misspelt call site fails loudly instead of silently creating a bucket
-#: the panel never reads.
+#: Every outcome a call may report.  ``record_usage`` rejects anything else
+#: with ``ValueError``; the call site in ``isolation.record_tool_call`` logs a
+#: warning if the store write itself fails, so a broken counter never fails a
+#: tool call.
 OUTCOMES = frozenset({"ok", "error", "busy", "denied"})
 
 

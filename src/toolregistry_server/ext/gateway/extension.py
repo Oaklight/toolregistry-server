@@ -312,11 +312,19 @@ def _usage_dict(usage: Any) -> dict[str, Any]:
 
 
 def _key_usage(store: Any, key_id: str) -> dict[str, Any]:
-    """Return one key's usage without letting a store bug take the page down."""
+    """Return one key's usage without letting a store bug take the page down.
+
+    A missing method or a store that raises still answers with zeros: the
+    key itself was read successfully, so the page should render and only the
+    counters are lost.
+    """
     usage = getattr(store, "usage", None)
     if not callable(usage):
         return _usage_dict(None)
-    return _usage_dict(usage(key_id))
+    try:
+        return _usage_dict(usage(key_id))
+    except Exception:  # pragma: no cover - a broken store must not break the page
+        return _usage_dict(None)
 
 
 def _keys_usage(store: Any) -> Mapping[str, Any]:
