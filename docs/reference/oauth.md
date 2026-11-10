@@ -241,11 +241,18 @@ client id、授权方式或目标 URL 变化时，该行会被直接丢弃。
 发现文档仅在其 `issuer` 等于配置的 issuer（RFC 8414 第 3.3 节）时使用；对于只给出
 `discovery_url` 的情况，文档必须声明 issuer。其中的端点必须是绝对的 `http` 或
 `https` URL，缺少可用 `token_endpoint` 的文档不会被缓存，以便下一个候选仍可作答。
+缓存的文档在 300 秒后会重新获取，因此即使端点移动时没有返回 404/410，也无需重启即可
+生效；重新获取失败时，会继续使用缓存文档直到下一次尝试，并记录一条警告。
 
 会使 `oauth.clients` 选择器选不中来源或选中多个来源的面板修改，会在写入前被拒绝；
 写入失败时令牌行保持不变。错误文本会被脱敏：URL 中的用户信息、凭据形式的参数、
 客户端密钥以及 HTTP Basic 的 base64 凭据。长度不足六个字符的密钥不会在自由文本中
 替换，否则会改写普通单词。
+
+令牌行属于创建它的声明。存储中记录了哪个选择器声明在哪条 `token_store` 路径上，
+下一次启动会删除记录中已不在文件里的选择器所对应的行——包括整个 `clients` 段是在
+服务器停止期间被删除的情况。记录中未出现的行（例如由共享同一数据库的另一个配置
+写入的行）会被保留。
 
 响应中没有 `expires_in` 的令牌按一小时计算寿命，起算于存储行的 `updated_at`。
 省略该字段的身份提供方因此会使每个来源每小时发起一次令牌请求，而不是得到一个永不
@@ -263,7 +270,8 @@ client id、授权方式或目标 URL 变化时，该行会被直接丢弃。
 拼写错误会让一项安全控制静默关闭。类型错误的值会指明键名，例如
 `oauth.scope must be a mapping from a scope to its entries, or a list of
 SCOPE=ENTRY[,ENTRY] strings` 或 `oauth.scopes must be a string or a list of
-strings`。非法的按客户端上限会指明来源，例如
+strings`。即使同时给出了对应选项，类型错误的标量值也会被拒绝，因为运行时由选项
+取胜，否则该笔误要等到选项被移除才会暴露。非法的按客户端上限会指明来源，例如
 `oauth.client_concurrency['reports-bot'] must be a positive integer`。
 
 文件中设置了某项、但文件与选项都没有 issuer 时，与选项的情形一样是启动错误。audience
