@@ -644,12 +644,12 @@ class TestMutations:
         assert path.read_text(encoding="utf-8") == before
 
     def test_read_only_config_is_reported(self, manager, monkeypatch):
-        import toolregistry_server.source_manager as source_manager
+        import toolregistry_server._config_file as config_file
 
         def refuse(*_args, **_kwargs):
             raise PermissionError("read-only file system")
 
-        monkeypatch.setattr(source_manager, "save_config", refuse)
+        monkeypatch.setattr(config_file, "write_config_mapping", refuse)
 
         result = manager.add(PythonSource(class_path="gamma.Gamma", namespace="gamma"))
 
