@@ -42,11 +42,35 @@ Example:
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
+
+from .panel_logs import parse_filters, principal_view, select_entries, summarise
+from .panel_sources import (
+    mcp_auth_to_headers,
+    merge_secrets,
+    public_declaration,
+    test_connection,
+)
+from .panel_sources import (
+    source_tools as _source_tools,
+)
+from .panel_tools import (
+    PanelRefusal,
+)
+from .panel_tools import (
+    call_tool as _call_tool,
+)
+from .panel_tools import (
+    list_tools as _list_tools,
+)
+from .panel_tools import (
+    tool_detail as _tool_detail,
+)
 
 #: Extension name: the URL segment and the asset directory key.
 GATEWAY_EXTENSION_NAME = "gateway"
@@ -134,6 +158,9 @@ class SourceControl(Protocol):
     def remove(self, ref: str) -> Any:
         """Remove a declaration by its opaque id."""
 
+    def get(self, ref: str) -> Any:
+        """Return one declaration's entry; raise ``KeyError`` if unknown."""
+
     def replace(self, ref: str, source: Any) -> Any:
         """Replace a declaration by its opaque id."""
 
@@ -181,6 +208,11 @@ def _guard(handler: Callable[..., Any]) -> Callable[..., Any]:
     def wrapped(self: Any, request: Any, **params: Any) -> Any:
         try:
             return handler(self, request, **params)
+        except PanelRefusal as exc:
+            return (
+                {**{"error": exc.error, "message": exc.message}, **exc.extra},
+                exc.status,
+            )
         except _BadRequest as exc:
             return _error(400, "Bad Request", str(exc))
         except _Unavailable as exc:
@@ -433,12 +465,17 @@ class GatewayAdminExtension:
         sources: SourceControl | None = None,
         parse_source: Callable[[Mapping[str, Any]], Any] | None = None,
         clients: ClientControl | None = None,
+        route_table: Any | None = None,
+        allow_private_hosts: bool = False,
     ) -> None:
         self._key_store = key_store
         self._frontends = frontends
         self._sources = sources
         self._parse_source = parse_source
         self._clients = clients
+        self._route_table = route_table
+        self._allow_private_hosts = allow_private_hosts
+        self._registry: Any | None = None
 
     def register(self, ctx: Any) -> None:
         """Register the extension routes on *ctx*.
@@ -446,6 +483,7 @@ class GatewayAdminExtension:
         Args:
             ctx: The host's ``AdminContext`` for this extension.
         """
+        self._registry = ctx.registry
         ctx.get("/keys", self.list_keys)
         ctx.post("/keys", self.create_key)
         ctx.get("/keys/<key_id>", self.get_key)
@@ -457,10 +495,19 @@ class GatewayAdminExtension:
         ctx.patch("/frontends/<name>", self.update_frontend)
         ctx.get("/sources", self.list_sources)
         ctx.post("/sources", self.add_source)
+        ctx.post("/sources/test", self.test_declaration)
+        ctx.get("/sources/<source_id>", self.get_source)
         ctx.put("/sources/<source_id>", self.replace_source)
         ctx.delete("/sources/<source_id>", self.remove_source)
         ctx.post("/sources/<source_id>/retry", self.retry_source)
         ctx.post("/sources/<source_id>/refresh", self.refresh_source)
+        ctx.post("/sources/<source_id>/test", self.test_source)
+        ctx.get("/sources/<source_id>/tools", self.source_tools)
+        ctx.get("/tools", self.list_tools)
+        ctx.get("/tools/<path:name>", self.get_tool)
+        ctx.post("/tools/<path:name>/call", self.call_tool)
+        ctx.get("/logs", self.list_logs)
+        ctx.get("/logs/stats", self.log_stats)
 
     # ---- collaborators ---------------------------------------------------
 
@@ -628,10 +675,32 @@ class GatewayAdminExtension:
         sources = self._require(self._sources, "source manager")
         return {"sources": [dict(record) for record in sources.to_dicts()]}
 
-    def _declaration(self, request: Any) -> Any:
+    def _declaration(self, request: Any, *, stored: Any = None) -> Any:
+        """Parse a request body into a source declaration.
+
+        An MCP ``auth`` block is translated into the ``headers`` entry the
+        config file stores.  On an edit, a secret field the form left blank
+        keeps the stored value (see :func:`~.panel_sources.merge_secrets`).
+        """
         sources = self._require(self._sources, "source manager")
         parse_source = self._require(self._parse_source, "source declaration parser")
-        return sources, parse_source(_json_body(request))
+        payload = _json_body(request)
+        kind = payload.get("type") or payload.get("kind")
+        if payload.get("clear_secrets") and "auth" in payload:
+            raise _BadRequest("pass either 'auth' or 'clear_secrets', not both")
+        if kind == "mcp":
+            # Translate first: a token the form supplied then wins over a
+            # stored header of the same name during the merge below.
+            payload = mcp_auth_to_headers(payload)
+        if stored is not None:
+            payload = merge_secrets(payload, stored)
+            # The edit form may not show this switch; keep the stored value
+            # rather than silently turning the permission back off.
+            if "allow_private_hosts" not in payload:
+                stored_flag = getattr(stored, "allow_private_hosts", None)
+                if stored_flag is not None:
+                    payload["allow_private_hosts"] = bool(stored_flag)
+        return sources, parse_source(payload)
 
     @_guard
     def add_source(self, request: Any) -> Any:
@@ -641,8 +710,14 @@ class GatewayAdminExtension:
 
     @_guard
     def replace_source(self, request: Any, source_id: str) -> dict[str, Any]:
-        """Replace a source declaration by id."""
-        sources, source = self._declaration(request)
+        """Replace a source declaration by id.
+
+        A secret the edit form left blank is carried over from the stored
+        declaration, so saving the form does not erase a credential.
+        """
+        sources = self._require(self._sources, "source manager")
+        stored = sources.get(source_id)
+        _, source = self._declaration(request, stored=stored.source)
         return _mutation_json(sources.replace(source_id, source))
 
     @_guard
@@ -667,6 +742,127 @@ class GatewayAdminExtension:
         """
         sources = self._require(self._sources, "source manager")
         return {"refresh": _refresh_json(sources.refresh(source_id))}
+
+    @_guard
+    def get_source(self, request: Any, source_id: str) -> dict[str, Any]:
+        """Return one source's status and its editable declaration.
+
+        The declaration carries no secret value; ``secret_fields`` names the
+        fields that are stored but withheld, so the edit form can ask for
+        them again.
+        """
+        sources = self._require(self._sources, "source manager")
+        entry = sources.get(source_id)
+        record = _record_dict(entry)
+        if not isinstance(record, Mapping):
+            record = {}
+        return {"source": {**record, "declaration": public_declaration(entry.source)}}
+
+    @_guard
+    def source_tools(self, request: Any, source_id: str) -> dict[str, Any]:
+        """Return the tools a source registered, with a short description."""
+        sources = self._require(self._sources, "source manager")
+        entry = sources.get(source_id)
+        return {
+            "source_id": source_id,
+            "tools": _source_tools(entry, self._registry),
+        }
+
+    @_guard
+    def test_source(self, request: Any, source_id: str) -> dict[str, Any]:
+        """Test a stored source without registering or changing anything."""
+        sources = self._require(self._sources, "source manager")
+        entry = sources.get(source_id)
+        return {
+            "test": test_connection(
+                entry.source, allow_private_hosts=self._allow_private_hosts
+            )
+        }
+
+    @_guard
+    def test_declaration(self, request: Any) -> dict[str, Any]:
+        """Test a declaration from the form before it is added or saved."""
+        parse_source = self._require(self._parse_source, "source declaration parser")
+        payload = _json_body(request)
+        kind = payload.get("type") or payload.get("kind")
+        if kind == "mcp":
+            payload = mcp_auth_to_headers(payload)
+        return {
+            "test": test_connection(
+                parse_source(payload), allow_private_hosts=self._allow_private_hosts
+            )
+        }
+
+    # ---- tools -----------------------------------------------------------
+
+    @_guard
+    def list_tools(self, request: Any) -> dict[str, Any]:
+        """Return one compact record per registered tool, disabled included."""
+        registry = self._require(self._registry, "tool registry")
+        return {"tools": _list_tools(registry, self._route_table)}
+
+    @_guard
+    def get_tool(self, request: Any, name: str) -> dict[str, Any]:
+        """Return the full detail of one tool, including its schemas."""
+        registry = self._require(self._registry, "tool registry")
+        return {"tool": _tool_detail(registry, self._route_table, name)}
+
+    @_guard
+    def call_tool(self, request: Any, name: str) -> dict[str, Any]:
+        """Call one tool as the operator, through the client call path.
+
+        ``confirm`` must be true.  A disabled tool is refused; the call is
+        recorded in the execution log under the operator principal.
+        """
+        registry = self._require(self._registry, "tool registry")
+        return {
+            "call": _call_tool(registry, self._route_table, name, _json_body(request))
+        }
+
+    # ---- logs ------------------------------------------------------------
+
+    def _execution_log(self) -> Any:
+        """Return the registry's execution log, or refuse the request."""
+        registry = self._require(self._registry, "tool registry")
+        getter = getattr(registry, "get_execution_log", None)
+        log = getter() if getter is not None else None
+        if log is None:
+            raise _BadRequest("execution logging is not enabled")
+        return log
+
+    @_guard
+    def list_logs(self, request: Any) -> dict[str, Any]:
+        """Return log entries filtered by principal, outcome, tool and time."""
+        log = self._execution_log()
+        filters = parse_filters(request.query_params)
+        entries = select_entries(log.get_entries(), filters)
+        return {
+            "entries": [_entry_json(entry) for entry in entries],
+            "count": len(entries),
+        }
+
+    @_guard
+    def log_stats(self, request: Any) -> dict[str, Any]:
+        """Return the statistics of the same filtered entries the table shows."""
+        log = self._execution_log()
+        filters = parse_filters(request.query_params)
+        entries = select_entries(log.get_entries(), filters)
+        return summarise(entries)
+
+
+def _entry_json(entry: Any) -> dict[str, Any]:
+    """Serialise one log entry with its principal and an ISO timestamp.
+
+    The entry is projected through the tool-result encoder: a logged
+    argument may be a ``datetime`` or ``Decimal``, which the plain
+    ``JSONResponse`` would refuse.
+    """
+    from toolregistry.utils import ToolResultJSONEncoder
+
+    data = dataclasses.asdict(entry)
+    data["timestamp"] = entry.timestamp.isoformat()
+    data["principal"] = principal_view(entry)
+    return json.loads(json.dumps(data, cls=ToolResultJSONEncoder))
 
 
 __all__ = ["GATEWAY_EXTENSION_NAME", "GatewayAdminExtension", "REQUIRES_API"]

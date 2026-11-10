@@ -563,6 +563,10 @@ class GatewayAdminHost:
             source URL.
         client_limiter: The gateway's per-client call budget, or ``None`` for
             a 503 Clients page.  The panel reads its counters.
+        route_table: The route table the frontends serve.  The Tools page
+            reads served schemas and execution hints from it, and the call
+            tester runs the same route a client would.  ``None`` falls back
+            to the registry's own view.
     """
 
     def __init__(
@@ -575,6 +579,7 @@ class GatewayAdminHost:
         key_store: Any = None,
         allow_private_hosts: bool = False,
         client_limiter: Any = None,
+        route_table: Any = None,
     ) -> None:
         self._registry = registry
         self._frontends = frontends
@@ -583,6 +588,7 @@ class GatewayAdminHost:
         self._key_store = key_store
         self._allow_private_hosts = allow_private_hosts
         self._client_limiter = client_limiter
+        self._route_table = route_table
         self._server: Any = None
         self._port: int | None = None
         self._lock = threading.RLock()
@@ -613,6 +619,8 @@ class GatewayAdminHost:
             sources=self._source_manager,
             parse_source=parse_source_payload,
             clients=self._client_limiter,
+            route_table=self._route_table,
+            allow_private_hosts=self._allow_private_hosts,
         )
         hook = (
             SourceManagerHook(self._source_manager)
