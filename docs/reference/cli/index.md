@@ -50,7 +50,7 @@ toolregistry-server openapi [选项]
 | `--execution-log` / `--no-execution-log` | 配置 `--keys-db` 时开启 | 在注册表执行日志中记录每次工具调用。见[认证](../guides/authentication.md#执行日志) |
 | `--oauth-issuer URL` | - | 接受的授权服务器 issuer（`iss`）。启用 OAuth Bearer 校验，令牌在本地用该服务器的 JWKS 验证 |
 | `--oauth-audience URL` | 由 `--host`/`--port` 推导 | 期望的 `aud` 或 RFC 8707 `resource` 值。无法推导 URL 时必须显式提供 |
-| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
+| `--oauth-jwks URL` | 从 RFC 8414/OIDC 元数据发现，否则 `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | 把一个令牌作用域映射到命名空间模式；可重复。未映射的作用域不授予任何权限 |
 | `--oauth-scopes "SCOPE ..."` | - | 在受保护资源元数据中公布的作用域，空格分隔。为空时省略；配置 issuer 后默认省略；未配置 OAuth 时仍公布 `mcp` |
 | `--max-body-size BYTES` | `1048576`（1 MiB） | 接受的最大请求体。必须为正数；超限返回带 JSON 错误的 `413` |
@@ -89,7 +89,7 @@ toolregistry-server mcp [选项]
 | `--execution-log` / `--no-execution-log` | 配置 `--keys-db` 时开启 | 在注册表执行日志中记录每次工具调用。见[认证](../guides/authentication.md#执行日志) |
 | `--oauth-issuer URL` | - | 接受的授权服务器 issuer（`iss`）。启用 OAuth Bearer 校验，令牌在本地用该服务器的 JWKS 验证 |
 | `--oauth-audience URL` | 由 `--host`/`--port` 推导 | 期望的 `aud` 或 RFC 8707 `resource` 值。无法推导 URL 时必须显式提供 |
-| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
+| `--oauth-jwks URL` | 从 RFC 8414/OIDC 元数据发现，否则 `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | 把一个令牌作用域映射到命名空间模式；可重复。未映射的作用域不授予任何权限 |
 | `--oauth-scopes "SCOPE ..."` | - | 在受保护资源元数据中公布的作用域，空格分隔。为空时省略；配置 issuer 后默认省略；未配置 OAuth 时仍公布 `mcp` |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 在 OAuth 受保护资源元数据中公布的公开 URL（反向代理后必需） |
@@ -146,7 +146,7 @@ toolregistry-server gateway [选项]
 | `--tokens PATH` | - | Bearer 令牌文件，作用于所有前端；同时读取 `API_BEARER_TOKEN` |
 | `--oauth-issuer URL` | - | 接受的授权服务器 issuer（`iss`）。启用 OAuth Bearer 校验，令牌在本地用该服务器的 JWKS 验证 |
 | `--oauth-audience URL` | 由 `--host`/`--port` 推导 | 期望的 `aud` 或 RFC 8707 `resource` 值。无法推导 URL 时必须显式提供 |
-| `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
+| `--oauth-jwks URL` | 从 RFC 8414/OIDC 元数据发现，否则 `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | 把一个令牌作用域映射到命名空间模式；可重复。未映射的作用域不授予任何权限 |
 | `--oauth-scopes "SCOPE ..."` | - | 在受保护资源元数据中公布的作用域，空格分隔。为空时省略；配置 issuer 后默认省略；未配置 OAuth 时仍公布 `mcp` |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 受保护资源元数据中使用的公开 MCP URL |

@@ -233,7 +233,7 @@ toolregistry-server gateway \
 |------|------|
 | `--oauth-issuer URL` | 接受的精确 `iss` 值。设置后启用 OAuth 校验 |
 | `--oauth-audience URL` | 期望的 `aud` 或 RFC 8707 `resource` 值，默认为对外公布的 MCP URL |
-| `--oauth-jwks URL` | JWKS 端点（默认：`<issuer>/.well-known/jwks.json`） |
+| `--oauth-jwks URL` | JWKS 端点（默认：从 issuer 的元数据中发现） |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | 把一个作用域映射到命名空间模式；可重复 |
 | `--oauth-scopes "SCOPE ..."` | 在受保护资源元数据中公布的作用域。为空时省略；配置 issuer 后默认省略 |
 
@@ -244,8 +244,14 @@ toolregistry-server gateway \
 - 仅接受 RS256 与 ES256 签名。`none` 与 HMAC 算法会被拒绝，`kid` 未公布的令牌也会被拒绝。
 - `iss` 必须与 `--oauth-issuer` 完全一致；令牌的 `aud` 或 RFC 8707 `resource` 声明必须包含期望的 audience。
 - `exp` 与 `nbf` 生效，允许 60 秒时钟偏差。
-- JWKS 缓存 5 分钟。遇到未知 `kid` 会强制重新拉取一次，因此轮换密钥无需重启。
-- JWKS 拉取失败时拒绝令牌；启动时的预取是尽力而为，只记录警告。
+- JWKS 端点优先取 `--oauth-jwks`。否则依次从 RFC 8414 元数据
+  （`<issuer>/.well-known/oauth-authorization-server`）、OIDC 发现
+  （`<issuer>/.well-known/openid-configuration`）读取，最后回退到
+  `<issuer>/.well-known/jwks.json`。若提供方的 JWKS 未通过这两份元数据公布，必须显式传入该参数。
+- JWKS 缓存 5 分钟。未知 `kid` 可触发重新拉取，但最多每 30 秒一次，因此随机 `kid` 无法驱动
+  出站请求；轮换密钥在该窗口之后被接受。
+- JWKS 拉取失败时拒绝令牌；启动时的预取是尽力而为，只记录警告。预取失败不会阻止第一个请求
+  自己的拉取尝试。
 
 ### 作用域映射
 
@@ -267,7 +273,9 @@ toolregistry-server mcp \
 不匹配密钥或静态令牌时，才会按 OAuth 令牌解析。省略 `--oauth-issuer` 时行为完全不变。
 
 在 MCP streamable-HTTP 上，RFC 9728 受保护资源元数据的 `authorization_servers` 会公布配置的
-issuer，客户端据此发现授权服务器。绑定 Unix socket 的 hub 没有可推导的 URL：请显式传入
+issuer，客户端据此发现授权服务器。被拒绝的请求直接携带该地址：
+`WWW-Authenticate: Bearer resource_metadata="<元数据 URL>"`，URL 跟随当前 MCP 路径；
+独立 MCP 服务器与 gateway 都会发送该质询。绑定 Unix socket 的 hub 没有可推导的 URL：请显式传入
 `--oauth-audience`（若希望客户端发现元数据，还需传入 `--server-url`）。
 
 配置外部 issuer 后，`scopes_supported` 变为显式开启：授权服务器会校验它签发的作用域，可能在
