@@ -1386,19 +1386,33 @@ def test_a_handler_raised_http_exception_is_recorded_on_fastapi(store, resolver)
     assert entry.tool_name == "alpha-teapot"
     assert entry.status is ExecutionStatus.ERROR
     assert entry.metadata == {"key_id": created.record.id, "client_id": "bot"}
+    usage = store.usage(created.record.id)
+    assert usage.error == 1
+    assert usage.ok == 0
 
 
-def test_a_handler_raised_http_exception_is_recorded_on_httpserver():
+def test_a_handler_raised_http_exception_is_recorded_on_httpserver(tmp_path):
     from toolregistry.admin import ExecutionStatus
 
-    table = _teapot_table()
-    table.registry.enable_logging()
-    app = create_httpserver_app(table)
-    url = _serve(app)
+    from toolregistry_server.keystore import ApiKeyStore, PrincipalResolver
+
+    store = ApiKeyStore(tmp_path / "keys.db")
     try:
-        status, _, _ = _request(url, "/tools/alpha/teapot", {})
+        resolver = PrincipalResolver(store)
+        table = _teapot_table()
+        table.registry.enable_logging()
+        created = store.create("bot", {"namespaces": ["alpha"]})
+        app = create_httpserver_app(table, principal_resolver=resolver)
+        url = _serve(app)
+        try:
+            status, _, _ = _request(
+                url, "/tools/alpha/teapot", {}, headers=_bearer(created.secret)
+            )
+        finally:
+            app.shutdown()
+        usage = store.usage(created.record.id)
     finally:
-        app.shutdown()
+        store.close()
 
     # The httpserver backend has no HTTP-aware error path, so the deliberate
     # status becomes a 500 — but the call itself is still one log row.
@@ -1406,6 +1420,8 @@ def test_a_handler_raised_http_exception_is_recorded_on_httpserver():
     [entry] = table.registry.get_execution_log().get_entries()
     assert entry.tool_name == "alpha-teapot"
     assert entry.status is ExecutionStatus.ERROR
+    assert usage.error == 1
+    assert usage.ok == 0
 
 
 def test_openapi_call_is_recorded_with_attribution(table, store, resolver):

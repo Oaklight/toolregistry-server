@@ -584,6 +584,25 @@ class TestRotate:
         with pytest.raises(ValueError, match="revoked"):
             store.rotate(created.record.id)
 
+    def test_a_revoke_between_check_and_write_is_refused(self, store, monkeypatch):
+        created = store.create("build-bot", {"namespaces": ["alpha"]})
+        original = store._now  # noqa: SLF001
+        revoked = {"done": False}
+
+        def revoking_now():
+            if not revoked["done"]:
+                revoked["done"] = True
+                store.revoke(created.record.id)
+            return original()
+
+        monkeypatch.setattr(store, "_now", revoking_now)
+
+        with pytest.raises(ValueError, match="revoked"):
+            store.rotate(created.record.id)
+        record = store.get(created.record.id)
+        assert record is not None
+        assert record.revoked_at is not None
+
     def test_an_expired_key_is_refused(self, tmp_path, clock):
         database = ApiKeyStore(tmp_path / "keys.db", clock=clock)
         try:

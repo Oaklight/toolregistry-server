@@ -298,22 +298,21 @@ def _dispatch_rotate(parsed: argparse.Namespace) -> int:
 
 
 def _dispatch_update(parsed: argparse.Namespace) -> int:
-    """Change one key's label, scopes, expiry or concurrency."""
+    """Change one key's label, scopes, expiry or concurrency.
+
+    Scope flags merge into the current specification instead of replacing
+    it: ``--namespace`` replaces only the namespace list, and
+    ``--allow-tool`` / ``--deny-tool`` replace only the tool-override map.
+    A category the operator did not pass keeps its value.
+    """
     changes: dict[str, Any] = {}
-    if parsed.label is not None:
-        changes["label"] = parsed.label
-    if (
+    scope_flags = (
         parsed.namespace is not None
         or parsed.allow_tool is not None
         or parsed.deny_tool is not None
-    ):
-        changes["scopes"] = ScopeSpec(
-            tuple(parsed.namespace or ()),
-            {
-                **dict.fromkeys(parsed.allow_tool or (), True),
-                **dict.fromkeys(parsed.deny_tool or (), False),
-            },
-        )
+    )
+    if parsed.label is not None:
+        changes["label"] = parsed.label
     if parsed.clear_expiry:
         changes["expires_at"] = None
     elif parsed.expires is not None:
@@ -322,7 +321,7 @@ def _dispatch_update(parsed: argparse.Namespace) -> int:
         changes["max_concurrency"] = None
     elif parsed.concurrency is not None:
         changes["max_concurrency"] = parsed.concurrency
-    if not changes:
+    if not changes and not scope_flags:
         print(
             "Nothing to update; pass --label, --namespace, --allow-tool, "
             "--deny-tool, --expires, --clear-expiry, --concurrency or "
@@ -331,6 +330,12 @@ def _dispatch_update(parsed: argparse.Namespace) -> int:
         )
         return 2
     with ApiKeyStore(parsed.db) as store:
+        if scope_flags:
+            existing = store.get(parsed.key_id)
+            if existing is None:
+                print(f"Key not found: {parsed.key_id}", file=sys.stderr)
+                return 1
+            changes["scopes"] = _merged_scopes(existing.scopes, parsed)
         try:
             record = store.update(parsed.key_id, **changes)
         except KeyError:
@@ -344,6 +349,34 @@ def _dispatch_update(parsed: argparse.Namespace) -> int:
     else:
         _print_record(record.to_dict())
     return 0
+
+
+def _merged_scopes(existing: ScopeSpec, parsed: argparse.Namespace) -> ScopeSpec:
+    """Merge the scope flags into an existing specification.
+
+    Each category is replaced only when the operator passed a flag for it:
+    ``--namespace`` defines the namespace list, and ``--allow-tool`` /
+    ``--deny-tool`` define the tool-override map.  A category with no flag
+    keeps its current value.
+
+    Args:
+        existing: The key's current specification.
+        parsed: The parsed CLI namespace.
+
+    Returns:
+        A specification with the named category replaced and the other kept.
+    """
+    namespaces = (
+        tuple(parsed.namespace) if parsed.namespace is not None else existing.namespaces
+    )
+    if parsed.allow_tool is not None or parsed.deny_tool is not None:
+        tools: dict[str, bool] = {
+            **dict.fromkeys(parsed.allow_tool or (), True),
+            **dict.fromkeys(parsed.deny_tool or (), False),
+        }
+    else:
+        tools = dict(existing.tools)
+    return ScopeSpec(namespaces, tools)
 
 
 def _dispatch_revoke(parsed: argparse.Namespace) -> int:
