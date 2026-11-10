@@ -134,6 +134,26 @@ def _oauth_settings(parsed: argparse.Namespace, *, default_audience: str | None)
     return settings_from_args(parsed, default_audience=default_audience or "")
 
 
+def _openapi_audience(parsed: argparse.Namespace) -> str:
+    """Return the OpenAPI command's default audience.
+
+    A bind address is what the process listens on, not what a client calls,
+    so a reverse-proxy deployment has to name its public URL explicitly.
+    """
+    audience = f"http://{parsed.host}:{parsed.port}"
+    if getattr(parsed, "oauth_issuer", None) and parsed.host in {
+        "0.0.0.0",
+        "::",
+        "[::]",
+        "",
+    }:
+        logger.warning(
+            f"OAuth will use {audience} as the token audience; behind a "
+            "reverse proxy pass --oauth-audience with the public URL"
+        )
+    return audience
+
+
 def _drop_unset(options: dict[str, Any], key: str) -> None:
     """Remove *key* from *options* when it is ``None``.
 
@@ -474,7 +494,7 @@ class CLI:
             options: dict[str, Any] = {
                 "config_path": config_path,
                 "oauth": _oauth_settings(
-                    parsed, default_audience=f"http://{parsed.host}:{parsed.port}"
+                    parsed, default_audience=_openapi_audience(parsed)
                 ),
                 "profile": getattr(parsed, "profile", None),
                 "host": parsed.host,

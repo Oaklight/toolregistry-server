@@ -72,6 +72,23 @@ class _JwksServer:
         return _Response(self.document)
 
 
+class _RoutedServer:
+    """A fake HTTP endpoint that dispatches on the URL."""
+
+    def __init__(self, routes: dict[str, object] | None = None) -> None:
+        self.routes = dict(routes or {})
+        self.urls: list[str] = []
+
+    def __call__(self, url: str, timeout: float | None = None) -> _Response:
+        self.urls.append(url)
+        target = self.routes.get(url)
+        if isinstance(target, Exception):
+            raise target
+        if target is None:
+            raise OSError(f"no route for {url}")
+        return _Response(target)
+
+
 def _settings(**overrides) -> OAuthSettings:
     values = {"issuer": ISSUER, "audience": AUDIENCE, "jwks_uri": JWKS_URL}
     values.update(overrides)
@@ -153,12 +170,46 @@ class TestSignatureAndClaims:
 
 class TestJwksCache:
     def test_an_unknown_kid_forces_one_refetch(self, jwks):
-        verifier = _verifier()
+        verifier = _verifier(refresh_cooldown=0)
         assert verifier.verify(_token(KEY1, "key-1")) is not None
         assert jwks.calls == 1
 
         # Rotation: the endpoint now publishes key-2 as well.
         jwks.document = {"keys": [JWK1, JWK2]}
+        assert verifier.verify(_token(KEY2, "key-2")) is not None
+        assert jwks.calls == 2
+
+    def test_random_kids_cannot_force_a_fetch_per_request(self, jwks):
+        verifier = _verifier()
+        assert verifier.verify(_token(KEY1, "key-1")) is not None
+        assert jwks.calls == 1
+
+        now = int(time.time())
+        for index in range(20):
+            forged = jwt.encode(
+                {
+                    "iss": ISSUER,
+                    "aud": AUDIENCE,
+                    "sub": "user-1",
+                    "iat": now,
+                    "exp": now + 300,
+                },
+                KEY1,
+                algorithm="RS256",
+                headers={"kid": f"bogus-{index}"},
+            )
+            assert verifier.verify(forged) is None
+
+        assert jwks.calls == 1
+
+    def test_a_rotated_key_is_accepted_once_the_window_elapses(self, jwks):
+        verifier = _verifier()
+        assert verifier.verify(_token(KEY1, "key-1")) is not None
+
+        jwks.document = {"keys": [JWK1, JWK2]}
+        assert verifier.verify(_token(KEY2, "key-2")) is None  # inside window
+        verifier._cache._cooldown = 0  # simulate the window elapsing
+
         assert verifier.verify(_token(KEY2, "key-2")) is not None
         assert jwks.calls == 2
 
@@ -172,10 +223,64 @@ class TestJwksCache:
         _verifier().warm()  # must not raise
 
     def test_the_ttl_expiry_refetches(self, jwks):
-        verifier = _verifier(cache_ttl=0)
+        verifier = _verifier(cache_ttl=0, refresh_cooldown=0)
         assert verifier.verify(_token(KEY1, "key-1")) is not None
         assert verifier.verify(_token(KEY1, "key-1")) is not None
         assert jwks.calls == 2
+
+
+class TestJwksDiscovery:
+    def _server(self, jwks_doc: dict, *, rfc8414: dict | None, oidc: dict | None):
+        routes: dict[str, object] = {
+            f"{ISSUER}/.well-known/oauth-authorization-server": (
+                rfc8414 if rfc8414 is not None else OSError("metadata missing")
+            ),
+            f"{ISSUER}/.well-known/openid-configuration": (
+                oidc if oidc is not None else OSError("metadata missing")
+            ),
+        }
+        custom = "https://idp.example.com/custom/jwks"
+        routes[custom] = jwks_doc
+        routes[f"{ISSUER}/.well-known/jwks.json"] = jwks_doc
+        return _RoutedServer(routes), custom
+
+    def test_rfc8414_metadata_names_the_jwks(self, monkeypatch):
+        server, custom = self._server(
+            {"keys": [JWK1]},
+            rfc8414={"jwks_uri": "https://idp.example.com/custom/jwks"},
+            oidc=None,
+        )
+        monkeypatch.setattr(urllib.request, "urlopen", server)
+
+        assert _verifier(jwks_uri=None).verify(_token(KEY1, "key-1")) is not None
+        assert custom in server.urls
+        assert f"{ISSUER}/.well-known/jwks.json" not in server.urls
+
+    def test_oidc_metadata_is_the_second_candidate(self, monkeypatch):
+        server, custom = self._server(
+            {"keys": [JWK1]},
+            rfc8414=None,
+            oidc={"jwks_uri": "https://idp.example.com/custom/jwks"},
+        )
+        monkeypatch.setattr(urllib.request, "urlopen", server)
+
+        assert _verifier(jwks_uri=None).verify(_token(KEY1, "key-1")) is not None
+        assert f"{ISSUER}/.well-known/oauth-authorization-server" in server.urls
+        assert custom in server.urls
+
+    def test_discovery_miss_falls_back_to_the_well_known_path(self, monkeypatch):
+        server, _custom = self._server({"keys": [JWK1]}, rfc8414=None, oidc=None)
+        monkeypatch.setattr(urllib.request, "urlopen", server)
+
+        assert _verifier(jwks_uri=None).verify(_token(KEY1, "key-1")) is not None
+        assert f"{ISSUER}/.well-known/jwks.json" in server.urls
+
+    def test_an_explicit_jwks_uri_skips_discovery(self, monkeypatch):
+        server = _RoutedServer({JWKS_URL: {"keys": [JWK1]}})
+        monkeypatch.setattr(urllib.request, "urlopen", server)
+
+        assert _verifier().verify(_token(KEY1, "key-1")) is not None
+        assert server.urls == [JWKS_URL]
 
 
 class TestOAuthResolver:

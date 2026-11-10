@@ -41,6 +41,9 @@ DEFAULT_CACHE_TTL: float = 300.0
 #: Default JWKS request timeout, in seconds.
 DEFAULT_TIMEOUT: float = 5.0
 
+#: Minimum interval between forced JWKS refetches, in seconds.
+DEFAULT_REFRESH_COOLDOWN: float = 30.0
+
 
 @dataclass(frozen=True)
 class OAuthSettings:
@@ -59,6 +62,9 @@ class OAuthSettings:
         cache_ttl: How long a fetched JWKS stays usable, in seconds.
         timeout: JWKS request timeout, in seconds.
         algorithms: Accepted signature algorithms.
+        refresh_cooldown: Minimum interval between forced JWKS refetches,
+            in seconds.  A token with an unknown ``kid`` cannot drive one
+            outbound request per call.
         scopes_supported: Scopes advertised in the protected-resource
             metadata.  ``None`` and an empty tuple both omit the field; when
             an issuer is configured the field is omitted unless this is set
@@ -74,6 +80,7 @@ class OAuthSettings:
     cache_ttl: float = DEFAULT_CACHE_TTL
     timeout: float = DEFAULT_TIMEOUT
     algorithms: tuple[str, ...] = DEFAULT_ALGORITHMS
+    refresh_cooldown: float = DEFAULT_REFRESH_COOLDOWN
     scopes_supported: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
@@ -103,29 +110,57 @@ class OAuthSettings:
 
     @property
     def jwks_url(self) -> str:
-        """Return the JWKS endpoint the verifier fetches."""
+        """Return the configured JWKS endpoint, or the legacy fallback.
+
+        When :attr:`jwks_uri` is ``None`` the verifier first tries the
+        issuer's RFC 8414 and OIDC metadata; this property only names the
+        final fallback.
+        """
         return self.jwks_uri or f"{self.issuer}/.well-known/jwks.json"
+
+
+def _load_json(url: str, timeout: float) -> Any:
+    """Fetch and decode one JSON document.
+
+    Kept module-level so tests can patch ``urllib.request.urlopen`` once,
+    and importing ``urllib`` lazily keeps a verifier that is never used from
+    touching the network stack.
+
+    Raises:
+        Exception: Whatever the transport raises; callers decide whether a
+            discovery document is optional.
+    """
+    from urllib.request import urlopen
+
+    with urlopen(url, timeout=timeout) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
 
 
 class _JwksCache:
     """A small in-memory JWKS cache with TTL and forced refetch on rotation."""
 
-    def __init__(self, url: str, ttl: float, timeout: float) -> None:
+    def __init__(
+        self,
+        url: str,
+        ttl: float,
+        timeout: float,
+        cooldown: float = DEFAULT_REFRESH_COOLDOWN,
+    ) -> None:
         self._url = url
         self._ttl = ttl
         self._timeout = timeout
+        self._cooldown = cooldown
         self._keys: dict[str, Any] = {}
         self._expires = 0.0
+        self._last_attempt = 0.0
         self._lock = threading.Lock()
 
     def _fetch(self) -> None:
         """Fetch the JWKS document and replace the cached keys."""
-        from urllib.request import urlopen
-
         import jwt
 
-        with urlopen(self._url, timeout=self._timeout) as response:  # noqa: S310
-            document = json.loads(response.read().decode("utf-8"))
+        self._last_attempt = time.monotonic()
+        document = _load_json(self._url, self._timeout)
         keys: dict[str, Any] = {}
         for jwk in document.get("keys", ()):
             kid = jwk.get("kid")
@@ -142,15 +177,21 @@ class _JwksCache:
     def key_for(self, kid: str | None) -> Any | None:
         """Return the verification key for *kid*, refetching when needed.
 
-        An unknown ``kid`` forces one refetch, which is how a key rotation
-        is picked up without waiting for the TTL.
+        An unknown ``kid`` may force one refetch, which is how a key rotation
+        is picked up without waiting for the TTL.  Forced refetches are
+        rate-limited: inside the cooldown a miss is answered from the cache,
+        so a client cannot turn random ``kid`` values into one outbound
+        request per call.
         """
         with self._lock:
-            fresh = bool(self._keys) and time.monotonic() < self._expires
+            now = time.monotonic()
+            fresh = bool(self._keys) and now < self._expires
             if fresh and kid is not None and kid in self._keys:
                 return self._keys[kid]
             if fresh and kid is None:
                 return next(iter(self._keys.values()), None)
+            if now - self._last_attempt < self._cooldown:
+                return self._keys.get(kid) if kid is not None else None
             try:
                 self._fetch()
             except Exception as exc:
@@ -167,6 +208,9 @@ class _JwksCache:
             try:
                 self._fetch()
             except Exception as exc:
+                # Do not let a failed startup prefetch suppress the first
+                # real request's attempt; it records its own attempt time.
+                self._last_attempt = 0.0
                 logger.warning(f"JWKS prefetch from {self._url} failed: {exc}")
 
 
@@ -189,18 +233,66 @@ class OAuthTokenVerifier:
                 "pip install 'toolregistry-server[gateway]'"
             ) from exc
         self._settings = settings
-        self._cache = _JwksCache(
-            settings.jwks_url, settings.cache_ttl, settings.timeout
-        )
+        self._cache: _JwksCache | None = None
+        self._resolved_jwks_uri: str | None = None
+        self._resolve_lock = threading.Lock()
 
     @property
     def settings(self) -> OAuthSettings:
         """The settings this verifier was built with."""
         return self._settings
 
+    def _discover_jwks_uri(self) -> str | None:
+        """Read ``jwks_uri`` from RFC 8414 or OIDC metadata.
+
+        Returns ``None`` when neither document is available or carries a
+        usable ``jwks_uri``.  Discovery failures are logged once and never
+        reject a token by themselves; the caller falls back.
+        """
+        issuer = self._settings.issuer.rstrip("/")
+        candidates = (
+            f"{issuer}/.well-known/oauth-authorization-server",
+            f"{issuer}/.well-known/openid-configuration",
+        )
+        for url in candidates:
+            try:
+                document = _load_json(url, self._settings.timeout)
+            except Exception as exc:
+                logger.info(f"OAuth metadata discovery from {url} failed: {exc}")
+                continue
+            if isinstance(document, dict):
+                jwks_uri = document.get("jwks_uri")
+                if isinstance(jwks_uri, str) and jwks_uri.strip():
+                    return jwks_uri.strip()
+        return None
+
+    def _resolve_jwks_uri(self) -> str:
+        """Return the JWKS endpoint, discovering it once."""
+        if self._settings.jwks_uri:
+            return self._settings.jwks_uri
+        if self._resolved_jwks_uri is None:
+            self._resolved_jwks_uri = (
+                self._discover_jwks_uri()
+                or f"{self._settings.issuer}/.well-known/jwks.json"
+            )
+        return self._resolved_jwks_uri
+
+    def _cache_for(self) -> _JwksCache:
+        """Return the JWKS cache, building it on first use."""
+        if self._cache is None:
+            with self._resolve_lock:
+                if self._cache is None:
+                    self._cache = _JwksCache(
+                        self._resolve_jwks_uri(),
+                        self._settings.cache_ttl,
+                        self._settings.timeout,
+                        self._settings.refresh_cooldown,
+                    )
+        return self._cache
+
     def warm(self) -> None:
         """Prefetch the JWKS.  Failures are logged, not raised."""
-        self._cache.warm()
+        self._cache_for().warm()
 
     def verify(self, token: str) -> dict[str, Any] | None:
         """Return the verified claims, or ``None`` when the token is rejected."""
@@ -213,7 +305,7 @@ class OAuthTokenVerifier:
         if header.get("alg") not in self._settings.algorithms:
             return None
         kid = header.get("kid")
-        key = self._cache.key_for(str(kid) if kid else None)
+        key = self._cache_for().key_for(str(kid) if kid else None)
         if key is None:
             return None
         try:
