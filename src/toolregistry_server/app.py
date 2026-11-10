@@ -93,6 +93,10 @@ class App:
         #: loaded.  Downstream code (admin extensions) uses it to change the
         #: live source list.
         self.source_manager = None
+        #: Upstream OAuth provider built from the config, when the file
+        #: declares a protected MCP source.  Kept so the stores can be
+        #: closed and so an embedder can reach the panel-facing interface.
+        self.mcp_oauth_provider = None
         #: The running config watcher, when ``config_reload`` is enabled.
         self.config_watcher = None
         #: The gateway adapter created by :meth:`create_gateway`, if any.
@@ -135,8 +139,15 @@ class App:
         elif config_path is not None:
             from toolregistry import ToolRegistry as _ToolRegistry
 
+            from .mcp_oauth.config import load_mcp_oauth
+            from .mcp_oauth.provider import MCPOAuthProvider
+
             config = load_config(config_path)
             registry = _ToolRegistry()
+            declarations = load_mcp_oauth(config_path, config)
+            self.mcp_oauth_provider = (
+                MCPOAuthProvider(declarations) if declarations else None
+            )
             # The manager owns the source list from startup: it registers the
             # sources, records which names each produced, and is the object a
             # runtime add/remove/replace mutates.
@@ -147,6 +158,7 @@ class App:
                 profile=profile,
                 strict_spec_regex=kwargs.get("strict_spec_regex", False),
                 write_config=kwargs.get("write_config", True),
+                oauth_provider=self.mcp_oauth_provider,
             )
             manager.apply_initial()
         else:
@@ -246,6 +258,23 @@ class App:
             return
         watcher.stop(timeout=timeout)
         self.config_watcher = None
+
+    def close_mcp_oauth(self) -> None:
+        """Close the upstream OAuth token stores, if any.
+
+        A server process releases them at exit; an embedder or a test can
+        call this to release them sooner.  The provider is dropped, so a
+        later reload creates a new one.  A provider created by a config
+        reload lives on the source manager, so both are closed.
+        """
+        manager = self.source_manager
+        for provider in (
+            self.mcp_oauth_provider,
+            getattr(manager, "oauth_provider", None),
+        ):
+            if provider is not None:
+                provider.close()
+        self.mcp_oauth_provider = None
 
     def serve_openapi(self, **kwargs) -> None:
         """Build registry and start an OpenAPI server."""
