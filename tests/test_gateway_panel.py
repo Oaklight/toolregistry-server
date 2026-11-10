@@ -635,7 +635,7 @@ class TestCallTester:
             panel, "calc-add", {"arguments": {"a": 2, "b": 3}, "confirm": True}
         )
         assert status == 200
-        result = _json(body)["call"]
+        result = body["call"]
         assert result["ok"] is True
         assert result["result"] == 5
         assert result["duration_ms"] >= 0
@@ -656,7 +656,7 @@ class TestCallTester:
     def test_confirmation_is_required(self, panel) -> None:
         status, body = _call(panel, "files-remove_all", {"arguments": {"path": "/tmp"}})
         assert status == 409
-        payload = _json(body)
+        payload = body
         assert payload["error"] == "Confirmation Required"
         assert payload["dangerous_tags"] == ["destructive"]
 
@@ -666,7 +666,7 @@ class TestCallTester:
             panel, "calc-subtract", {"arguments": {"a": 2, "b": 1}, "confirm": True}
         )
         assert status == 409
-        assert _json(body)["error"] == "Tool Disabled"
+        assert body["error"] == "Tool Disabled"
         log = registry.get_execution_log()
         assert log is not None
         assert log.get_entries() == []
@@ -676,7 +676,7 @@ class TestCallTester:
             panel, "calc-add", {"arguments": {"a": "x"}, "confirm": True}
         )
         assert status == 422
-        assert _json(body)["error"] == "Invalid Arguments"
+        assert body["error"] == "Invalid Arguments"
 
     def test_a_failing_tool_reports_the_error_and_logs_it(
         self, registry, panel
@@ -696,7 +696,7 @@ class TestCallTester:
         finally:
             admin.stop()
         assert status == 200
-        result = _json(body)["call"]
+        result = body["call"]
         assert result["ok"] is False
         assert result["error"] == "tool exploded"
         assert result["error_type"] == "RuntimeError"
