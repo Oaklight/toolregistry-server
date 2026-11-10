@@ -13,6 +13,8 @@ const STRINGS = {
         'gw.tab.clients': 'Clients',
         'gw.tab.frontends': 'Frontends',
         'gw.tab.sources': 'Sources',
+        'gw.tab.tools': 'Tools',
+        'gw.tab.logs': 'Logs',
         'gw.refresh': 'Refresh',
         'gw.empty': 'Nothing to show',
         'gw.loading': 'Loading…',
@@ -112,12 +114,91 @@ const STRINGS = {
         'gw.sources.statusFailed': 'Failed',
         'gw.sources.persisted': 'Saved to the config file.',
         'gw.sources.notPersisted': 'Applied, but not saved: {reason}',
+        'gw.sources.edit': 'Edit',
+        'gw.sources.save': 'Save changes',
+        'gw.sources.cancel': 'Cancel edit',
+        'gw.sources.editing': 'Editing {detail}',
+        'gw.sources.test': 'Test',
+        'gw.sources.showTools': 'Tools',
+        'gw.sources.hideTools': 'Hide tools',
+        'gw.sources.testOk': 'Connected: {count} tools, server {server}.',
+        'gw.sources.testFailed': 'Test failed: {error}',
+        'gw.sources.testing': 'Testing…',
+        'gw.sources.transport': 'Transport',
+        'gw.sources.enabled': 'Enabled',
+        'gw.sources.auth': 'Authentication',
+        'gw.sources.authKeep': 'Keep stored credential',
+        'gw.sources.authNone': 'None',
+        'gw.sources.authBearer': 'Bearer token',
+        'gw.sources.authHeader': 'Custom header',
+        'gw.sources.authToken': 'Token',
+        'gw.sources.authTokenHint': 'Write-only. Leave blank to keep the stored value.',
+        'gw.sources.authHeaderName': 'Header name',
+        'gw.sources.clearSecrets': 'Remove the stored credential',
+        'gw.sources.secretStored': 'A credential is stored and is never shown.',
+        'gw.sources.noTools': 'This source registered no tools.',
+        'gw.sources.command': 'Command',
+        'gw.sources.commandHint': 'Program and arguments, space separated.',
+        'gw.sources.enabledTools': '{enabled}/{total} enabled',
+
+        'gw.tools.title': 'Tools',
+        'gw.tools.hint': 'Inspect one tool and call it as the operator. Calls are validated, policy-checked and logged.',
+        'gw.tools.name': 'Tool',
+        'gw.tools.namespace': 'Namespace',
+        'gw.tools.source': 'Source',
+        'gw.tools.enabled': 'Enabled',
+        'gw.tools.detail': 'Detail',
+        'gw.tools.inspect': 'Inspect',
+        'gw.tools.description': 'Description',
+        'gw.tools.input': 'Input schema',
+        'gw.tools.output': 'Output schema',
+        'gw.tools.tags': 'Tags',
+        'gw.tools.hints': 'Execution hints',
+        'gw.tools.dangerous': 'Dangerous call: {tags}.',
+        'gw.tools.arguments': 'Arguments (JSON)',
+        'gw.tools.confirm': 'I understand this call runs on the server',
+        'gw.tools.call': 'Call tool',
+        'gw.tools.running': 'Running…',
+        'gw.tools.result': 'Result',
+        'gw.tools.duration': 'Duration {ms} ms',
+        'gw.tools.error': 'Error',
+        'gw.tools.disabled': 'Disabled: {reason}',
+        'gw.tools.noSelection': 'Select a tool to inspect it.',
+
+        'gw.logs.title': 'Execution log',
+        'gw.logs.hint': 'Calls that reached a tool, with the principal that made them.',
+        'gw.logs.keyId': 'Key id',
+        'gw.logs.keyLabel': 'Key label',
+        'gw.logs.outcome': 'Outcome',
+        'gw.logs.tool': 'Tool',
+        'gw.logs.since': 'Since',
+        'gw.logs.until': 'Until',
+        'gw.logs.limit': 'Limit',
+        'gw.logs.apply': 'Apply',
+        'gw.logs.reset': 'Reset',
+        'gw.logs.principal': 'Principal',
+        'gw.logs.time': 'Time',
+        'gw.logs.status': 'Status',
+        'gw.logs.duration': 'Duration',
+        'gw.logs.any': 'Any',
+        'gw.logs.ok': 'ok',
+        'gw.logs.error': 'error',
+        'gw.logs.busy': 'busy',
+        'gw.logs.denied': 'denied',
+        'gw.logs.busyDenied': 'Busy and denied calls never reach the execution log; they are in the structured log.',
+        'gw.logs.count': '{count} entries',
+        'gw.logs.operator': 'operator',
+        'gw.logs.avg': 'Average duration',
+        'gw.logs.total': 'Entries',
+        'gw.logs.byKey': 'By principal',
     },
     zh: {
         'gw.tab.keys': '密钥',
         'gw.tab.clients': '客户端',
         'gw.tab.frontends': '前端',
         'gw.tab.sources': '来源',
+        'gw.tab.tools': '工具',
+        'gw.tab.logs': '日志',
         'gw.refresh': '刷新',
         'gw.empty': '暂无内容',
         'gw.loading': '加载中…',
@@ -217,6 +298,83 @@ const STRINGS = {
         'gw.sources.statusFailed': '失败',
         'gw.sources.persisted': '已写入配置文件。',
         'gw.sources.notPersisted': '已生效，但未保存：{reason}',
+        'gw.sources.edit': '编辑',
+        'gw.sources.save': '保存修改',
+        'gw.sources.cancel': '取消编辑',
+        'gw.sources.editing': '正在编辑 {detail}',
+        'gw.sources.test': '测试',
+        'gw.sources.showTools': '工具',
+        'gw.sources.hideTools': '收起工具',
+        'gw.sources.testOk': '连接成功：{count} 个工具，服务器 {server}。',
+        'gw.sources.testFailed': '测试失败：{error}',
+        'gw.sources.testing': '测试中…',
+        'gw.sources.transport': '传输方式',
+        'gw.sources.enabled': '启用',
+        'gw.sources.auth': '认证',
+        'gw.sources.authKeep': '保留已保存的凭据',
+        'gw.sources.authNone': '无',
+        'gw.sources.authBearer': 'Bearer 令牌',
+        'gw.sources.authHeader': '自定义请求头',
+        'gw.sources.authToken': '令牌',
+        'gw.sources.authTokenHint': '只写字段。留空则保留已保存的值。',
+        'gw.sources.authHeaderName': '请求头名称',
+        'gw.sources.clearSecrets': '删除已保存的凭据',
+        'gw.sources.secretStored': '已保存凭据，且不会显示。',
+        'gw.sources.noTools': '此来源未注册任何工具。',
+        'gw.sources.command': '命令',
+        'gw.sources.commandHint': '程序及参数，以空格分隔。',
+        'gw.sources.enabledTools': '已启用 {enabled}/{total}',
+
+        'gw.tools.title': '工具',
+        'gw.tools.hint': '查看单个工具并以操作员身份调用。调用会经过校验、权限策略检查并写入日志。',
+        'gw.tools.name': '工具',
+        'gw.tools.namespace': '命名空间',
+        'gw.tools.source': '来源',
+        'gw.tools.enabled': '启用',
+        'gw.tools.detail': '详情',
+        'gw.tools.inspect': '查看',
+        'gw.tools.description': '描述',
+        'gw.tools.input': '输入 schema',
+        'gw.tools.output': '输出 schema',
+        'gw.tools.tags': '标签',
+        'gw.tools.hints': '执行提示',
+        'gw.tools.dangerous': '危险调用：{tags}。',
+        'gw.tools.arguments': '参数（JSON）',
+        'gw.tools.confirm': '我确认此调用会在服务器上执行',
+        'gw.tools.call': '调用工具',
+        'gw.tools.running': '执行中…',
+        'gw.tools.result': '结果',
+        'gw.tools.duration': '耗时 {ms} 毫秒',
+        'gw.tools.error': '错误',
+        'gw.tools.disabled': '已禁用：{reason}',
+        'gw.tools.noSelection': '选择一个工具以查看详情。',
+
+        'gw.logs.title': '执行日志',
+        'gw.logs.hint': '到达工具的调用记录，以及发起调用的主体。',
+        'gw.logs.keyId': '密钥 ID',
+        'gw.logs.keyLabel': '密钥名称',
+        'gw.logs.outcome': '结果',
+        'gw.logs.tool': '工具',
+        'gw.logs.since': '起始时间',
+        'gw.logs.until': '结束时间',
+        'gw.logs.limit': '数量上限',
+        'gw.logs.apply': '应用',
+        'gw.logs.reset': '重置',
+        'gw.logs.principal': '主体',
+        'gw.logs.time': '时间',
+        'gw.logs.status': '状态',
+        'gw.logs.duration': '耗时',
+        'gw.logs.any': '全部',
+        'gw.logs.ok': '成功',
+        'gw.logs.error': '错误',
+        'gw.logs.busy': '繁忙',
+        'gw.logs.denied': '拒绝',
+        'gw.logs.busyDenied': '繁忙与拒绝的调用不会进入执行日志，只记录在结构化日志中。',
+        'gw.logs.count': '{count} 条记录',
+        'gw.logs.operator': '操作员',
+        'gw.logs.avg': '平均耗时',
+        'gw.logs.total': '记录数',
+        'gw.logs.byKey': '按主体统计',
     },
 };
 
@@ -231,6 +389,17 @@ const state = {
     secretKind: 'created',
     editing: null,
     detail: null,
+    sourceEditing: null,
+    sourceExpanded: null,
+    sourceTools: {},
+    sourceNotes: {},
+    tools: [],
+    toolName: null,
+    toolDetail: null,
+    toolCall: null,
+    logs: [],
+    logStats: null,
+    logFilters: {},
 };
 
 let root = null;
@@ -994,7 +1163,8 @@ function renderSources() {
     if (!host) return;
     host.replaceChildren();
 
-    const rows = state.sources.map((record) => {
+    const rows = [];
+    for (const record of state.sources) {
         const status = sourceStatus(record);
         const actions = [];
         if (record.kind === 'openapi') {
@@ -1014,13 +1184,33 @@ function renderSources() {
             }));
         }
         actions.push(el('button', {
+            class: 'gw-btn',
+            type: 'button',
+            text: T('gw.sources.edit'),
+            onclick: () => editSource(record.id),
+        }));
+        actions.push(el('button', {
+            class: 'gw-btn',
+            type: 'button',
+            text: T('gw.sources.test'),
+            onclick: () => testSource(record.id),
+        }));
+        actions.push(el('button', {
+            class: 'gw-btn',
+            type: 'button',
+            text: state.sourceExpanded === record.id
+                ? T('gw.sources.hideTools')
+                : T('gw.sources.showTools'),
+            onclick: () => toggleSourceTools(record.id),
+        }));
+        actions.push(el('button', {
             class: 'gw-btn gw-btn-danger',
             type: 'button',
             text: T('gw.sources.remove'),
             onclick: () => removeSource(record),
         }));
         const counts = record.tool_count || {};
-        return el('tr', {}, [
+        rows.push(el('tr', {}, [
             el('td', { text: record.kind || '' }),
             el('td', { class: 'gw-mono', text: record.detail || '' }),
             el('td', { text: record.namespace || '—' }),
@@ -1028,8 +1218,13 @@ function renderSources() {
             el('td', {}, [pill(status.label, status.kind)]),
             el('td', { class: 'gw-error-cell', text: record.last_error || '' }),
             el('td', {}, actions),
-        ]);
-    });
+        ]));
+        if (state.sourceExpanded === record.id) {
+            rows.push(el('tr', {}, [
+                el('td', { colspan: '7' }, [sourceToolsCell(record.id)]),
+            ]));
+        }
+    }
 
     host.appendChild(
         section('gw.sources.title', 'gw.sources.hint', [
@@ -1052,42 +1247,125 @@ function renderSources() {
                 ],
                 rows,
             ),
-            sourceForm(),
+            sourceEditor(),
         ])),
     );
 }
 
-function sourceForm() {
-    const type = el('select', { name: 'type' }, [
-        el('option', { value: 'openapi', text: 'OpenAPI' }),
-        el('option', { value: 'mcp', text: 'MCP' }),
-        el('option', { value: 'python', text: 'Python' }),
+// One cell listing the tools a source registered.  The list is fetched when
+// the row is expanded; a failed fetch leaves the error in the cell.
+function sourceToolsCell(sourceId) {
+    const tools = state.sourceTools[sourceId];
+    if (tools === null || tools === undefined) {
+        return el('p', { class: 'gw-hint', text: T('gw.loading') });
+    }
+    if (tools.error) return message(tools.error, 'error');
+    if (!tools.length) return el('p', { class: 'gw-hint', text: T('gw.sources.noTools') });
+    return el('ul', { class: 'gw-tool-list' }, tools.map((tool) => (
+        el('li', {}, [
+            el('span', { class: 'gw-mono', text: tool.name }),
+            tool.enabled === false ? pill(T('gw.sources.statusExcluded'), 'excluded') : null,
+            el('span', { class: 'gw-hint', text: tool.description || '' }),
+        ])
+    )));
+}
+
+function field(labelKey, control, hintKey) {
+    return el('label', { class: 'gw-field' }, [
+        el('span', { text: T(labelKey) }),
+        control,
+        hintKey ? el('small', { class: 'gw-hint', text: T(hintKey) }) : null,
     ]);
+}
+
+function sourceEditor() {
+    const editing = state.sourceEditing;
+    const declaration = (editing && editing.declaration) || {};
+    const type = declaration.type || declaration.kind || 'openapi';
+    const transport = declaration.transport || 'streamable-http';
+    const command = Array.isArray(declaration.command)
+        ? declaration.command.join(' ')
+        : (declaration.command || '');
+    const secretFields = declaration.secret_fields || [];
+    const hasSecret = secretFields.length > 0;
+
     return el('form', {
         class: 'gw-form',
         onsubmit: (event) => {
             event.preventDefault();
-            addSource(event.currentTarget);
+            saveSource(event.currentTarget, editing ? editing.id : null);
         },
     }, [
+        el('h4', {
+            text: editing
+                ? T('gw.sources.editing', { detail: editing.detail || editing.id })
+                : T('gw.sources.add'),
+        }),
+        field('gw.sources.kind', el('select', { name: 'type' }, [
+            el('option', { value: 'openapi', text: 'OpenAPI', selected: type === 'openapi' ? 'selected' : null }),
+            el('option', { value: 'mcp', text: 'MCP', selected: type === 'mcp' ? 'selected' : null }),
+            el('option', { value: 'python', text: 'Python', selected: type === 'python' ? 'selected' : null }),
+        ])),
+        field('gw.sources.transport', el('select', { name: 'transport' }, [
+            el('option', { value: 'streamable-http', text: 'streamable-http', selected: transport === 'streamable-http' ? 'selected' : null }),
+            el('option', { value: 'sse', text: 'sse', selected: transport === 'sse' ? 'selected' : null }),
+            el('option', { value: 'stdio', text: 'stdio', selected: transport === 'stdio' ? 'selected' : null }),
+        ])),
+        field('gw.sources.url', el('input', {
+            name: 'target', autocomplete: 'off',
+            value: declaration.url || declaration.class_path || declaration.class || '',
+        })),
+        field('gw.sources.command', el('input', {
+            name: 'command', autocomplete: 'off', value: command,
+        }), 'gw.sources.commandHint'),
+        field('gw.sources.namespace', el('input', {
+            name: 'namespace', autocomplete: 'off',
+            value: declaration.namespace || '',
+        })),
         el('label', { class: 'gw-field' }, [
-            el('span', { text: T('gw.sources.kind') }),
-            type,
+            el('span', { text: T('gw.sources.enabled') }),
+            el('input', {
+                type: 'checkbox', name: 'enabled',
+                checked: declaration.enabled === false ? null : 'checked',
+            }),
         ]),
-        el('label', { class: 'gw-field' }, [
-            el('span', { text: T('gw.sources.url') }),
-            el('input', { name: 'target', required: 'required', autocomplete: 'off' }),
-        ]),
-        el('label', { class: 'gw-field' }, [
-            el('span', { text: T('gw.sources.namespace') }),
-            el('input', { name: 'namespace', autocomplete: 'off' }),
-        ]),
+        hasSecret ? el('p', { class: 'gw-hint', text: T('gw.sources.secretStored') }) : null,
+        field('gw.sources.auth', el('select', { name: 'auth_type' }, [
+            el('option', { value: 'none', text: T('gw.sources.authNone') }),
+            el('option', { value: 'bearer', text: T('gw.sources.authBearer') }),
+            el('option', { value: 'header', text: T('gw.sources.authHeader') }),
+        ])),
+        field('gw.sources.authToken', el('input', {
+            name: 'auth_token', type: 'password', autocomplete: 'new-password',
+        }), 'gw.sources.authTokenHint'),
+        field('gw.sources.authHeaderName', el('input', {
+            name: 'auth_header', autocomplete: 'off', value: 'X-API-Key',
+        })),
+        editing ? el('label', { class: 'gw-field' }, [
+            el('span', { text: T('gw.sources.clearSecrets') }),
+            el('input', { type: 'checkbox', name: 'clear_secrets' }),
+        ]) : null,
         el('div', { class: 'gw-actions' }, [
             el('button', {
                 class: 'gw-btn gw-btn-primary',
                 type: 'submit',
-                text: T('gw.sources.add'),
+                text: editing ? T('gw.sources.save') : T('gw.sources.add'),
             }),
+            el('button', {
+                class: 'gw-btn',
+                type: 'button',
+                text: T('gw.sources.test'),
+                onclick: (event) => testDeclaration(event.currentTarget.closest('form')),
+            }),
+            editing ? el('button', {
+                class: 'gw-btn',
+                type: 'button',
+                text: T('gw.sources.cancel'),
+                onclick: () => {
+                    state.sourceEditing = null;
+                    renderSources();
+                },
+            }) : null,
         ]),
     ]);
 }
@@ -1104,23 +1382,121 @@ async function loadSources() {
     }
 }
 
-function sourcePayload(form) {
+async function editSource(sourceId) {
+    const host = root.querySelector('#gw-sources');
+    try {
+        const data = await call('get', '/sources/' + encodeURIComponent(sourceId));
+        const record = data.source || {};
+        state.sourceEditing = {
+            id: sourceId,
+            detail: record.detail || sourceId,
+            declaration: record.declaration || {},
+        };
+        renderSources();
+    } catch (error) {
+        host.appendChild(message(error.message, 'error'));
+    }
+}
+
+async function toggleSourceTools(sourceId) {
+    if (state.sourceExpanded === sourceId) {
+        state.sourceExpanded = null;
+        renderSources();
+        return;
+    }
+    state.sourceExpanded = sourceId;
+    if (state.sourceTools[sourceId] === undefined) {
+        state.sourceTools[sourceId] = null;
+        renderSources();
+        try {
+            const data = await call(
+                'get', '/sources/' + encodeURIComponent(sourceId) + '/tools');
+            state.sourceTools[sourceId] = data.tools || [];
+        } catch (error) {
+            state.sourceTools[sourceId] = { error: error.message };
+        }
+    }
+    renderSources();
+}
+
+function sourcePayload(form, editing) {
     const data = new FormData(form);
     const type = String(data.get('type') || 'openapi');
-    const target = String(data.get('target') || '').trim();
+    const payload = { type, enabled: data.get('enabled') === 'on' };
     const namespace = String(data.get('namespace') || '').trim();
-    const payload = { type };
-    if (type === 'openapi') payload.url = target;
-    else if (type === 'mcp') payload.url = target;
-    else payload.class = target;
+    const target = String(data.get('target') || '').trim();
     if (namespace) payload.namespace = namespace;
+    if (type === 'openapi') payload.url = target;
+    else if (type === 'python') payload.class = target;
+    else {
+        const transport = String(data.get('transport') || 'streamable-http');
+        payload.transport = transport;
+        if (transport === 'stdio') {
+            const command = String(data.get('command') || '').trim();
+            if (command) payload.command = command.split(/\s+/);
+        } else {
+            payload.url = target;
+        }
+        const token = String(data.get('auth_token') || '').trim();
+        if (token) {
+            const authType = String(data.get('auth_type') || 'bearer');
+            payload.auth = { type: authType === 'header' ? 'header' : 'bearer', token };
+            const headerName = String(data.get('auth_header') || '').trim();
+            if (authType === 'header' && headerName) {
+                payload.auth.header_name = headerName;
+            }
+        }
+    }
+    // Applies to every kind: an OpenAPI token is cleared the same way as an
+    // MCP header.
+    if (editing && data.get('clear_secrets') === 'on' && !payload.auth) {
+        payload.clear_secrets = true;
+    }
     return payload;
 }
 
-async function addSource(form) {
+function testNote(test) {
+    if (!test) return null;
+    if (!test.ok) {
+        return message(T('gw.sources.testFailed', { error: test.error || '' }), 'error');
+    }
+    const server = [test.server_name, test.server_version].filter(Boolean).join(' ');
+    return message(T('gw.sources.testOk', {
+        count: test.tool_count ?? 0,
+        server: server || '—',
+    }), 'ok');
+}
+
+async function testSource(sourceId) {
     const host = root.querySelector('#gw-sources');
     try {
-        const result = await call('post', '/sources', sourcePayload(form));
+        const data = await call(
+            'post', '/sources/' + encodeURIComponent(sourceId) + '/test');
+        host.appendChild(testNote(data.test));
+    } catch (error) {
+        host.appendChild(message(error.message, 'error'));
+    }
+}
+
+async function testDeclaration(form) {
+    if (!form) return;
+    const host = root.querySelector('#gw-sources');
+    try {
+        const data = await call('post', '/sources/test', sourcePayload(form, false));
+        host.appendChild(testNote(data.test));
+    } catch (error) {
+        host.appendChild(message(error.message, 'error'));
+    }
+}
+
+async function saveSource(form, sourceId) {
+    const host = root.querySelector('#gw-sources');
+    try {
+        const payload = sourcePayload(form, Boolean(sourceId));
+        const result = sourceId
+            ? await call('put', '/sources/' + encodeURIComponent(sourceId), payload)
+            : await call('post', '/sources', payload);
+        state.sourceEditing = null;
         await loadSources();
         const note = persistNote(result, 'gw.sources');
         if (note) host.appendChild(note);
@@ -1173,6 +1549,351 @@ async function removeSource(record) {
     }
 }
 
+// ---------------------------------------------------------------- tools
+
+// A JSON skeleton from the input schema: one entry per property, using the
+// first value of an enum and a type-appropriate placeholder otherwise.
+function schemaSkeleton(schema) {
+    const properties = (schema && schema.properties) || {};
+    const skeleton = {};
+    for (const [name, spec] of Object.entries(properties)) {
+        const type = Array.isArray(spec.type) ? spec.type[0] : spec.type;
+        if (Array.isArray(spec.enum) && spec.enum.length) skeleton[name] = spec.enum[0];
+        else if (type === 'number' || type === 'integer') skeleton[name] = 0;
+        else if (type === 'boolean') skeleton[name] = false;
+        else if (type === 'array') skeleton[name] = [];
+        else if (type === 'object') skeleton[name] = {};
+        else skeleton[name] = '';
+    }
+    return skeleton;
+}
+
+function renderTools() {
+    const host = root.querySelector('#gw-tools');
+    if (!host) return;
+    host.replaceChildren();
+
+    const rows = state.tools.map((record) => el('tr', {}, [
+        el('td', { class: 'gw-mono', text: record.name }),
+        el('td', { text: record.namespace || '—' }),
+        el('td', { text: record.source || '—' }),
+        el('td', {}, [pill(
+            record.enabled ? T('gw.tools.enabled') : T('gw.sources.statusExcluded'),
+            record.enabled ? 'applied' : 'excluded',
+        )]),
+        el('td', { text: (record.tags || []).join(', ') || '—' }),
+        el('td', {}, [el('button', {
+            class: 'gw-btn',
+            type: 'button',
+            text: T('gw.tools.inspect'),
+            onclick: () => inspectTool(record.name),
+        })]),
+    ]));
+
+    host.appendChild(
+        section('gw.tools.title', 'gw.tools.hint', [
+            el('button', {
+                class: 'gw-btn',
+                type: 'button',
+                text: T('gw.refresh'),
+                onclick: () => loadTools(),
+            }),
+        ], el('div', {}, [
+            table(
+                [
+                    'gw.tools.name',
+                    'gw.tools.namespace',
+                    'gw.tools.source',
+                    'gw.tools.enabled',
+                    'gw.tools.tags',
+                    'gw.tools.detail',
+                ],
+                rows,
+            ),
+            toolDetailPanel(),
+        ])),
+    );
+}
+
+function toolDetailPanel() {
+    if (!state.toolDetail) {
+        return el('p', { class: 'gw-hint', text: T('gw.tools.noSelection') });
+    }
+    const detail = state.toolDetail;
+    const dangerous = detail.dangerous_tags || [];
+    const meta = [
+        [T('gw.tools.tags'), (detail.tags || []).join(', ') || '—'],
+        [T('gw.tools.hints'), JSON.stringify(detail.execution_hints || {}, null, 2)],
+        [T('gw.tools.source'), detail.source_detail || detail.source || '—'],
+    ];
+    return el('div', { class: 'gw-tool-detail' }, [
+        el('h4', { class: 'gw-mono', text: detail.name }),
+        el('p', { text: detail.description || '' }),
+        detail.enabled ? null : message(
+            T('gw.tools.disabled', { reason: detail.disable_reason || '' }), 'warn'),
+        dangerous.length
+            ? message(T('gw.tools.dangerous', { tags: dangerous.join(', ') }), 'warn')
+            : null,
+        el('dl', { class: 'gw-meta' }, meta.flatMap(([label, value]) => [
+            el('dt', { text: label }),
+            el('dd', {}, [el('pre', { text: value })]),
+        ])),
+        el('div', { class: 'gw-schema-grid' }, [
+            el('div', {}, [
+                el('h5', { text: T('gw.tools.input') }),
+                el('pre', { text: JSON.stringify(detail.input_schema || {}, null, 2) }),
+            ]),
+            el('div', {}, [
+                el('h5', { text: T('gw.tools.output') }),
+                el('pre', {
+                    text: detail.output_schema
+                        ? JSON.stringify(detail.output_schema, null, 2)
+                        : '—',
+                }),
+            ]),
+        ]),
+        toolCallForm(detail),
+    ]);
+}
+
+function toolCallForm(detail) {
+    const textarea = el('textarea', {
+        name: 'arguments',
+        rows: '8',
+        spellcheck: 'false',
+        text: JSON.stringify(schemaSkeleton(detail.input_schema), null, 2),
+    });
+    const confirm = el('input', {
+        type: 'checkbox', name: 'confirm', disabled: detail.enabled ? null : 'disabled',
+    });
+    const callButton = el('button', {
+        class: 'gw-btn gw-btn-primary',
+        type: 'submit',
+        text: T('gw.tools.call'),
+        disabled: detail.enabled ? null : 'disabled',
+    });
+    const result = el('div', { class: 'gw-call-result' });
+    return el('form', {
+        class: 'gw-form',
+        onsubmit: async (event) => {
+            event.preventDefault();
+            if (!confirm.checked) return;
+            let parsed;
+            try {
+                parsed = JSON.parse(textarea.value || '{}');
+            } catch (error) {
+                result.replaceChildren(message(error.message, 'error'));
+                return;
+            }
+            callButton.disabled = true;
+            callButton.textContent = T('gw.tools.running');
+            try {
+                const data = await call(
+                    'post',
+                    '/tools/' + encodeURIComponent(detail.name) + '/call',
+                    { arguments: parsed, confirm: true },
+                );
+                result.replaceChildren(callResultView(data.call || {}));
+            } catch (error) {
+                result.replaceChildren(message(error.message, 'error'));
+            } finally {
+                callButton.disabled = false;
+                callButton.textContent = T('gw.tools.call');
+            }
+        },
+    }, [
+        field('gw.tools.arguments', textarea),
+        el('label', { class: 'gw-field gw-inline' }, [confirm, el('span', {
+            text: T('gw.tools.confirm'),
+        })]),
+        el('div', { class: 'gw-actions' }, [callButton]),
+        result,
+    ]);
+}
+
+function callResultView(result) {
+    const duration = T('gw.tools.duration', {
+        ms: Number(result.duration_ms || 0).toFixed(2),
+    });
+    if (result.ok === false) {
+        return el('div', {}, [
+            message(T('gw.tools.error') + ': ' + (result.error || ''), 'error'),
+            el('p', { class: 'gw-hint', text: duration }),
+        ]);
+    }
+    return el('div', {}, [
+        el('h5', { text: T('gw.tools.result') }),
+        el('pre', { text: JSON.stringify(result.result, null, 2) }),
+        el('p', { class: 'gw-hint', text: duration }),
+    ]);
+}
+
+async function loadTools() {
+    const host = root.querySelector('#gw-tools');
+    if (!host) return;
+    try {
+        const data = await call('get', '/tools');
+        state.tools = data.tools || [];
+        renderTools();
+    } catch (error) {
+        host.replaceChildren(message(error.message, 'error'));
+    }
+}
+
+async function inspectTool(name) {
+    const host = root.querySelector('#gw-tools');
+    try {
+        const data = await call('get', '/tools/' + encodeURIComponent(name));
+        state.toolName = name;
+        state.toolDetail = data.tool;
+        renderTools();
+    } catch (error) {
+        host.appendChild(message(error.message, 'error'));
+    }
+}
+
+// ---------------------------------------------------------------- logs
+
+function logQuery() {
+    const filters = state.logFilters;
+    const query = new URLSearchParams();
+    for (const [name, value] of Object.entries(filters)) {
+        if (value !== undefined && value !== null && value !== '') {
+            query.set(name, value);
+        }
+    }
+    const text = query.toString();
+    return text ? '?' + text : '';
+}
+
+function logFiltersForm() {
+    const filters = state.logFilters;
+    const input = (name, type, placeholder) => el('input', {
+        name, type: type || 'text', value: filters[name] || '',
+        autocomplete: 'off', placeholder: placeholder || '',
+    });
+    return el('form', {
+        class: 'gw-form gw-form-inline',
+        onsubmit: (event) => {
+            event.preventDefault();
+            const data = new FormData(event.currentTarget);
+            state.logFilters = {
+                key_id: String(data.get('key_id') || '').trim(),
+                key_label: String(data.get('key_label') || '').trim(),
+                outcome: String(data.get('outcome') || ''),
+                tool_name: String(data.get('tool_name') || '').trim(),
+                since: String(data.get('since') || ''),
+                until: String(data.get('until') || ''),
+                limit: String(data.get('limit') || '').trim(),
+            };
+            refreshCurrent();
+        },
+    }, [
+        field('gw.logs.keyId', input('key_id', 'text', 'key_…')),
+        field('gw.logs.keyLabel', input('key_label', 'text', 'build-bot')),
+        field('gw.logs.outcome', el('select', { name: 'outcome' }, [
+            el('option', { value: '', text: T('gw.logs.any') }),
+            el('option', { value: 'ok', text: T('gw.logs.ok') }),
+            el('option', { value: 'error', text: T('gw.logs.error') }),
+            el('option', { value: 'busy', text: T('gw.logs.busy') }),
+            el('option', { value: 'denied', text: T('gw.logs.denied') }),
+        ])),
+        field('gw.logs.tool', input('tool_name', 'text', 'calc-add')),
+        field('gw.logs.since', input('since', 'datetime-local')),
+        field('gw.logs.until', input('until', 'datetime-local')),
+        field('gw.logs.limit', input('limit', 'number')),
+        el('div', { class: 'gw-actions' }, [
+            el('button', {
+                class: 'gw-btn gw-btn-primary', type: 'submit', text: T('gw.logs.apply'),
+            }),
+            el('button', {
+                class: 'gw-btn',
+                type: 'button',
+                text: T('gw.logs.reset'),
+                onclick: () => {
+                    state.logFilters = {};
+                    renderLogs();
+                    refreshCurrent();
+                },
+            }),
+        ]),
+    ]);
+}
+
+function renderLogs() {
+    const host = root.querySelector('#gw-logs');
+    if (!host) return;
+    host.replaceChildren();
+
+    const rows = state.logs.map((entry) => {
+        const principal = entry.principal || {};
+        return el('tr', {}, [
+            el('td', { class: 'text-muted', text: formatTime(entry.timestamp) }),
+            el('td', { class: 'gw-mono', text: entry.tool_name }),
+            el('td', { text: principal.label || '—' }),
+            el('td', { class: 'gw-mono', text: principal.key_id || '—' }),
+            el('td', {}, [pill(entry.status, entry.status === 'success' ? 'applied' : 'failed')]),
+            el('td', {
+                text: entry.duration_ms ? entry.duration_ms.toFixed(2) + ' ms' : '—',
+            }),
+        ]);
+    });
+
+    const stats = state.logStats || {};
+    const byKey = Object.entries(stats.by_key || {})
+        .map(([label, count]) => label + ': ' + count)
+        .join(', ');
+
+    host.appendChild(
+        section('gw.logs.title', 'gw.logs.hint', [
+            el('button', {
+                class: 'gw-btn', type: 'button', text: T('gw.refresh'),
+                onclick: () => refreshCurrent(),
+            }),
+        ], el('div', {}, [
+            logFiltersForm(),
+            el('p', { class: 'gw-hint', text: T('gw.logs.busyDenied') }),
+            el('div', { class: 'gw-stat-row' }, [
+                el('span', { text: T('gw.logs.count', { count: state.logs.length }) }),
+                el('span', { text: T('gw.logs.total') + ': ' + (stats.total_entries ?? 0) }),
+                el('span', {
+                    text: T('gw.logs.avg') + ': '
+                        + Number(stats.avg_duration_ms || 0).toFixed(2) + ' ms',
+                }),
+                el('span', { text: T('gw.logs.byKey') + ': ' + (byKey || '—') }),
+            ]),
+            table(
+                [
+                    'gw.logs.time',
+                    'gw.logs.tool',
+                    'gw.logs.principal',
+                    'gw.logs.keyId',
+                    'gw.logs.status',
+                    'gw.logs.duration',
+                ],
+                rows,
+            ),
+        ])),
+    );
+}
+
+async function loadLogs() {
+    const host = root.querySelector('#gw-logs');
+    if (!host) return;
+    try {
+        const query = logQuery();
+        const [entries, stats] = await Promise.all([
+            call('get', '/logs' + query),
+            call('get', '/logs/stats' + query),
+        ]);
+        state.logs = entries.entries || [];
+        state.logStats = stats;
+        renderLogs();
+    } catch (error) {
+        host.replaceChildren(message(error.message, 'error'));
+    }
+}
+
 // ---------------------------------------------------------------- shell
 
 function renderTabs() {
@@ -1181,6 +1902,8 @@ function renderTabs() {
         ['clients', 'gw.tab.clients'],
         ['frontends', 'gw.tab.frontends'],
         ['sources', 'gw.tab.sources'],
+        ['tools', 'gw.tab.tools'],
+        ['logs', 'gw.tab.logs'],
     ];
     const bar = el('div', { class: 'gw-tabs', role: 'tablist' }, tabs.map(([name, key]) => (
         el('button', {
@@ -1208,6 +1931,8 @@ function render() {
         clients: el('div', { id: 'gw-clients', class: 'gw-pane', role: 'tabpanel' }),
         frontends: el('div', { id: 'gw-frontends', class: 'gw-pane', role: 'tabpanel' }),
         sources: el('div', { id: 'gw-sources', class: 'gw-pane', role: 'tabpanel' }),
+        tools: el('div', { id: 'gw-tools', class: 'gw-pane', role: 'tabpanel' }),
+        logs: el('div', { id: 'gw-logs', class: 'gw-pane', role: 'tabpanel' }),
     };
     for (const [name, pane] of Object.entries(panes)) {
         pane.style.display = name === state.tab ? '' : 'none';
@@ -1218,14 +1943,18 @@ function render() {
     if (state.tab === 'keys') renderKeys();
     else if (state.tab === 'clients') renderClients();
     else if (state.tab === 'frontends') renderFrontends();
-    else renderSources();
+    else if (state.tab === 'sources') renderSources();
+    else if (state.tab === 'tools') renderTools();
+    else renderLogs();
 }
 
 async function refreshCurrent() {
     if (state.tab === 'keys') await loadKeys();
     else if (state.tab === 'clients') await loadClients();
     else if (state.tab === 'frontends') await loadFrontends();
-    else await loadSources();
+    else if (state.tab === 'sources') await loadSources();
+    else if (state.tab === 'tools') await loadTools();
+    else await loadLogs();
 }
 
 export async function register({ container, api, i18n }) {

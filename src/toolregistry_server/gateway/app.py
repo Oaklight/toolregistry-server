@@ -858,6 +858,7 @@ class GatewayAdapter(Adapter):
             key_store=panel_key_store,
             allow_private_hosts=self._admin_allow_private_hosts,
             client_limiter=self._client_limiter,
+            route_table=self._route_table,
         )
         self._admin_proxy = GatewayAdminProxyASGI(self._admin_host)
         self._asgi = _GatewayASGI(self)

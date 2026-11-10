@@ -230,6 +230,11 @@ class FakeEntry:
     payload: Mapping[str, Any]
     status: str = "applied"
 
+    @property
+    def source(self) -> Mapping[str, Any]:
+        """The declaration, as the edit form reads it."""
+        return self.payload
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.source_id,
@@ -285,6 +290,9 @@ class FakeSources:
         entry = FakeEntry(f"s{self._next}", dict(source))
         self._entries[entry.source_id] = entry
         return FakeMutation(entry, {"registered": 1})
+
+    def get(self, ref: str) -> FakeEntry:
+        return self._entries[ref]
 
     def remove(self, ref: str) -> FakeMutation:
         entry = self._entries.pop(ref)
