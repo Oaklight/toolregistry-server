@@ -287,6 +287,104 @@ def test_a_non_auth_error_is_not_reported_as_reauth(monkeypatch, tmp_path):
     assert entry.reauth_required is False
 
 
+def _jsonrpc_error(code: int) -> BaseException:
+    """Build the MCP SDK's protocol-level error for the installed version.
+
+    The SDK renamed the class and moved the code: mcp 2.x has
+    ``MCPError(code, message)`` with a ``code`` property, mcp 1.x has
+    ``McpError(ErrorData(...))`` with no ``code`` attribute at all.  The
+    regression only exists where ``code`` is exposed, so this builds whichever
+    form is present rather than skipping the version the repo resolves to.
+    """
+    exceptions = pytest.importorskip("mcp.shared.exceptions")
+    error_cls = getattr(exceptions, "MCPError", None)
+    if error_cls is not None:
+        return error_cls(code, "forbidden")
+    error_cls = getattr(exceptions, "McpError", None)
+    if error_cls is None:  # pragma: no cover - neither SDK name is present
+        pytest.skip("no MCP protocol error class is available")
+    types = pytest.importorskip("mcp.types")
+    return error_cls(types.ErrorData(code=code, message="forbidden"))
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_a_jsonrpc_error_code_is_not_an_http_status(monkeypatch, tmp_path, code):
+    """A JSON-RPC error code must never be read as an HTTP status.
+
+    mcp 2.x exposes ``MCPError.code``; a JSON-RPC 401/403 read as HTTP would
+    mark the source for re-authorization on a protocol-level error and report
+    a false "HTTP 403 from the MCP server".
+    """
+    error = _jsonrpc_error(code)
+    # On an SDK that exposes ``code``, prove the fixture really carries one.
+    assert getattr(error, "code", code) == code
+
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = FakeProvider()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        oauth_provider=provider,
+    )
+
+    def refuse(registry, source, *, oauth_headers=None):
+        raise error
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
+    entry = manager.apply_initial()[0]
+    assert entry.status is SourceStatus.FAILED
+    assert entry.reauth_required is False
+    assert "HTTP" not in (entry.error or "")
+
+
+def test_an_http_error_from_the_mcp_client_is_recognised(monkeypatch, tmp_path):
+    """A genuine HTTP rejection still reaches the re-authorization path."""
+    import urllib.error
+
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = FakeProvider()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        oauth_provider=provider,
+    )
+
+    def refuse(registry, source, *, oauth_headers=None):
+        raise urllib.error.HTTPError(
+            "https://mcp.example.com/mcp", 403, "Forbidden", {}, None
+        )
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
+    entry = manager.apply_initial()[0]
+    assert entry.reauth_required is True
+    assert "403" in (entry.error or "")
+
+
+def test_an_exception_with_a_bare_code_attribute_is_ignored(monkeypatch, tmp_path):
+    """Nothing but an HTTP-shaped error may supply the status."""
+
+    class Coded(Exception):
+        code = 403
+
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = FakeProvider()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        oauth_provider=provider,
+    )
+
+    def refuse(registry, source, *, oauth_headers=None):
+        raise Coded("boom")
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", refuse)
+    entry = manager.apply_initial()[0]
+    assert entry.reauth_required is False
+
+
 def test_persist_preserves_server_sections(monkeypatch, tmp_path):
     _patch_registration(monkeypatch)
     path = _write(
