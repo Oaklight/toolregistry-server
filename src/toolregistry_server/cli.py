@@ -140,11 +140,11 @@ def _oauth_settings(
     """
     from .oauth import settings_from_args
     from .oauth.config import load_oauth_section
+    from .oauth.verifier import effective_identity
 
     if section is None:
         section = load_oauth_section(config_path)
-    issuer = getattr(parsed, "oauth_issuer", None) or section.get("issuer")
-    audience = getattr(parsed, "oauth_audience", None) or section.get("audience")
+    issuer, audience = effective_identity(parsed, config_section=section)
     if issuer is not None and audience is None and not default_audience:
         raise ValueError(
             "--oauth-audience is required when the server has no public URL"
@@ -166,8 +166,10 @@ def _openapi_audience(
     The issuer may come from a flag or from the configuration file; either
     way the derived audience is the bind address.
     """
+    from .oauth.verifier import effective_identity
+
     audience = f"http://{parsed.host}:{parsed.port}"
-    issuer = getattr(parsed, "oauth_issuer", None) or (section or {}).get("issuer")
+    issuer, _ = effective_identity(parsed, config_section=section)
     if issuer and parsed.host in {
         "0.0.0.0",
         "::",
