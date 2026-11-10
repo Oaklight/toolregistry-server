@@ -875,63 +875,71 @@ def settings_from_args(
         default_audience: Resource URL used when ``--oauth-audience`` is
             absent.
         config_section: The ``oauth`` mapping from the configuration file.
-            Only the introspection keys are read here; a CLI flag wins over
-            the file.
+            A CLI flag wins; the file supplies a value only when its flag is
+            absent.  The repeatable ``--oauth-scope`` flag defaults to an
+            empty list, which counts as absent so ``oauth.scope`` can apply.
 
     Returns:
         The settings, or ``None`` when no OAuth option was given.
 
     Raises:
-        ValueError: If an OAuth option is given without ``--oauth-issuer``,
-            ``--oauth-scope`` is malformed, or an introspection option lacks
-            its client credential.
+        ValueError: If an OAuth option is set without an issuer, in the flag
+            or the file; a file value has the wrong type; ``--oauth-scope``
+            or ``oauth.scope`` is malformed; or an introspection option
+            lacks its client credential.
     """
     section = dict(config_section or {})
-    issuer = getattr(parsed, "oauth_issuer", None)
-    audience = getattr(parsed, "oauth_audience", None)
-    jwks_uri = getattr(parsed, "oauth_jwks", None)
+    issuer = _config_text(parsed, "oauth_issuer", section)
+    audience = _config_text(parsed, "oauth_audience", section)
+    jwks_uri = _config_text(parsed, "oauth_jwks", section)
+    authorization_url = _config_text(parsed, "oauth_authorization_url", section)
+    token_url = _config_text(parsed, "oauth_token_url", section)
+    refresh_url = _config_text(parsed, "oauth_refresh_url", section)
     raw_scopes = getattr(parsed, "oauth_scope", None) or []
-    raw_supported = getattr(parsed, "oauth_scopes", None)
-    authorization_url = getattr(parsed, "oauth_authorization_url", None)
-    token_url = getattr(parsed, "oauth_token_url", None)
-    refresh_url = getattr(parsed, "oauth_refresh_url", None)
-    introspection_url = _config_value(parsed, "oauth_introspection_url", section)
-    introspection_client_id = _config_value(
+    raw_supported = _config_scopes(parsed, section)
+    introspection_url = _config_text(parsed, "oauth_introspection_url", section)
+    introspection_client_id = _config_text(
         parsed, "oauth_introspection_client_id", section
     )
-    introspection_client_secret = _config_value(
+    introspection_client_secret = _config_text(
         parsed, "oauth_introspection_client_secret", section
     )
-    introspection_ttl = _config_value(parsed, "oauth_introspection_cache_ttl", section)
-    introspection_optional = _config_value(
+    introspection_ttl = _config_number(parsed, "oauth_introspection_cache_ttl", section)
+    introspection_optional = _config_bool(
         parsed, "oauth_introspection_optional", section
     )
-    concurrency_claim = _config_value(parsed, "oauth_concurrency_claim", section)
+    concurrency_claim = _config_text(parsed, "oauth_concurrency_claim", section)
     raw_client_limits = getattr(parsed, "oauth_client_concurrency", None) or []
+    file_scope = section.get("scope")
     if issuer is None:
+        others = (
+            audience,
+            jwks_uri,
+            authorization_url,
+            token_url,
+            refresh_url,
+            introspection_url,
+            introspection_client_id,
+            introspection_client_secret,
+            concurrency_claim,
+        )
         if (
-            audience
-            or jwks_uri
+            any(value is not None for value in others)
             or raw_scopes
             or raw_supported is not None
-            or authorization_url
-            or token_url
-            or refresh_url
-            or introspection_url
-            or introspection_client_id
-            or introspection_client_secret
+            or file_scope is not None
             or introspection_ttl is not None
             or introspection_optional
-            or concurrency_claim
             or raw_client_limits
             or section.get("client_concurrency")
         ):
             raise ValueError(
-                "--oauth-issuer is required when other OAuth options are set"
+                "--oauth-issuer or oauth.issuer is required when other OAuth "
+                "options are set"
             )
         return None
 
-    scope_map, scope_tools = _parse_scope_entries(raw_scopes)
+    scope_map, scope_tools = _parse_scope_config(raw_scopes, file_scope)
 
     scopes_supported = None
     if raw_supported is not None:
@@ -968,7 +976,7 @@ def settings_from_args(
 def _config_value(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     """Return a CLI option, or the config-file value when the flag is absent.
 
-    The argparse default for every introspection flag is ``None``, so a
+    The argparse default for every scalar OAuth flag is ``None``, so a
     present flag is distinguishable from an absent one.
 
     Args:
@@ -986,8 +994,187 @@ def _config_value(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any
     return section.get(key)
 
 
+def _config_text(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
+    """Return a string option, rejecting a non-string file value.
+
+    Args:
+        parsed: The argparse namespace.
+        argument: The destination name without the leading dashes.
+        section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        The flag value, the file value, or ``None``.
+
+    Raises:
+        ValueError: If the file supplies a value that is not a string.
+    """
+    value = _config_value(parsed, argument, section)
+    if value is None or isinstance(value, str):
+        return value
+    key = argument.removeprefix("oauth_")
+    raise ValueError(f"oauth.{key} must be a string, got {value!r}")
+
+
+def _config_number(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
+    """Return a numeric option, rejecting a non-number file value.
+
+    Args:
+        parsed: The argparse namespace.
+        argument: The destination name without the leading dashes.
+        section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        The flag value, the file value, or ``None``.
+
+    Raises:
+        ValueError: If the file supplies a value that is not a number.
+    """
+    value = _config_value(parsed, argument, section)
+    if value is None or (
+        not isinstance(value, bool) and isinstance(value, (int, float))
+    ):
+        return value
+    key = argument.removeprefix("oauth_")
+    raise ValueError(f"oauth.{key} must be a number, got {value!r}")
+
+
+def _config_bool(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
+    """Return a boolean option, rejecting a non-boolean file value.
+
+    Args:
+        parsed: The argparse namespace.
+        argument: The destination name without the leading dashes.
+        section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        The flag value, the file value, or ``None``.
+
+    Raises:
+        ValueError: If the file supplies a value that is not a boolean.
+    """
+    value = _config_value(parsed, argument, section)
+    if value is None or isinstance(value, bool):
+        return value
+    key = argument.removeprefix("oauth_")
+    raise ValueError(f"oauth.{key} must be a boolean, got {value!r}")
+
+
+def _config_scopes(parsed: Any, section: Mapping[str, Any]) -> str | None:
+    """Return ``--oauth-scopes`` or ``oauth.scopes`` as one space-joined text.
+
+    The flag is a single space-separated string.  The file may hold the same
+    string or a list of strings, which is the natural YAML form.
+
+    Args:
+        parsed: The argparse namespace.
+        section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        The scopes as one space-joined string, or ``None`` when unset.
+
+    Raises:
+        ValueError: If ``oauth.scopes`` is neither a string nor a list of
+            strings.
+    """
+    value = getattr(parsed, "oauth_scopes", None)
+    if value is not None:
+        return value
+    value = section.get("scopes")
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)) and all(
+        isinstance(item, str) for item in value
+    ):
+        return " ".join(value)
+    raise ValueError(
+        f"oauth.scopes must be a string or a list of strings, got {value!r}"
+    )
+
+
+def _parse_scope_config(
+    raw_scopes: Sequence[str], file_scope: Any
+) -> tuple[dict[str, tuple[str, ...]], dict[str, dict[str, bool]]]:
+    """Build the scope tables from the flag list or the ``oauth.scope`` value.
+
+    The flag wins when it holds at least one value.  Its argparse default is
+    an empty list, so an empty list falls through to the file, which is the
+    only way a file-supplied mapping can apply without changing flag
+    semantics.
+
+    Args:
+        raw_scopes: The repeated ``--oauth-scope`` values.
+        file_scope: The ``oauth.scope`` value: a mapping from a scope to its
+            entries, a list of ``SCOPE=ENTRY[,ENTRY]`` strings, or ``None``.
+
+    Returns:
+        ``(scope_map, scope_tools)``.
+
+    Raises:
+        ValueError: If the flag or the file value is malformed; the message
+            names its source.
+    """
+    if raw_scopes:
+        return _parse_scope_entries(raw_scopes)
+    if file_scope is None:
+        return {}, {}
+    if isinstance(file_scope, Mapping):
+        return _parse_scope_mapping(file_scope)
+    if isinstance(file_scope, (list, tuple)):
+        return _parse_scope_entries(list(file_scope), source="oauth.scope")
+    raise ValueError(
+        "oauth.scope must be a mapping from a scope to its entries, or a list "
+        f"of SCOPE=ENTRY[,ENTRY] strings, got {file_scope!r}"
+    )
+
+
+def _parse_scope_mapping(
+    mapping: Mapping[Any, Any],
+) -> tuple[dict[str, tuple[str, ...]], dict[str, dict[str, bool]]]:
+    """Parse the ``oauth.scope`` mapping form into the scope tables.
+
+    Each key is a token scope and each value the entries that scope grants,
+    given as one comma-separated string or as a list of strings.  The entries
+    use the same grammar as :func:`_parse_scope_entry`.
+
+    Args:
+        mapping: The ``oauth.scope`` value.
+
+    Returns:
+        ``(scope_map, scope_tools)``.
+
+    Raises:
+        ValueError: If an entry is malformed or grants nothing; the message
+            names ``oauth.scope``.
+    """
+    scope_map: dict[str, tuple[str, ...]] = {}
+    scope_tools: dict[str, dict[str, bool]] = {}
+    for scope, entries in mapping.items():
+        if isinstance(entries, str):
+            values = entries
+        elif isinstance(entries, (list, tuple)) and all(
+            isinstance(item, str) for item in entries
+        ):
+            values = ",".join(entries)
+        else:
+            raise ValueError(
+                "oauth.scope values must be a comma-separated string or a "
+                f"list of entry strings, got {entries!r} for {scope!r}"
+            )
+        scope_text, namespaces, tools = _parse_scope_entry(
+            f"{scope}={values}", source="oauth.scope"
+        )
+        scope_map[scope_text] = namespaces
+        if tools:
+            scope_tools[scope_text] = tools
+    return scope_map, scope_tools
+
+
 def _parse_scope_entries(
     raw_scopes: Sequence[str],
+    *,
+    source: str = "--oauth-scope",
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, dict[str, bool]]]:
     """Parse ``--oauth-scope`` values into namespace and tool tables.
 
@@ -997,6 +1184,7 @@ def _parse_scope_entries(
 
     Args:
         raw_scopes: The repeated flag values.
+        source: Name used in the error message for a malformed entry.
 
     Returns:
         ``(scope_map, scope_tools)``.
@@ -1007,7 +1195,7 @@ def _parse_scope_entries(
     scope_map: dict[str, tuple[str, ...]] = {}
     scope_tools: dict[str, dict[str, bool]] = {}
     for entry in raw_scopes:
-        scope, namespaces, tools = _parse_scope_entry(entry)
+        scope, namespaces, tools = _parse_scope_entry(entry, source=source)
         scope_map[scope] = namespaces
         if tools:
             scope_tools[scope] = tools
@@ -1016,11 +1204,14 @@ def _parse_scope_entries(
 
 def _parse_scope_entry(
     entry: str,
+    *,
+    source: str = "--oauth-scope",
 ) -> tuple[str, tuple[str, ...], dict[str, bool]]:
     """Parse one ``SCOPE=ENTRY[,ENTRY]`` value.
 
     Args:
         entry: One ``--oauth-scope`` value.
+        source: Name used in the error message.
 
     Returns:
         ``(scope, namespaces, tool_overrides)``.
@@ -1029,7 +1220,7 @@ def _parse_scope_entry(
         ValueError: If the value is malformed or grants nothing.
     """
     message = (
-        f"--oauth-scope expects SCOPE=ENTRY[,ENTRY], got {entry!r}; "
+        f"{source} expects SCOPE=ENTRY[,ENTRY], got {entry!r}; "
         "an entry is a namespace, +tool or -tool"
     )
     if "=" not in entry:

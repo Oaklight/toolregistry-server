@@ -121,25 +121,30 @@ def _oauth_settings(
     *,
     default_audience: str | None,
     config_path: str | None = None,
+    section: dict[str, Any] | None = None,
 ) -> Any:
     """Build OAuth settings from parsed arguments, or ``None``.
 
     Args:
         parsed: The argparse namespace.
-        default_audience: Resource URL used when ``--oauth-audience`` is
-            absent.
+        default_audience: Resource URL used when neither the flag nor the
+            file supplies an audience.
         config_path: Configuration file whose ``oauth`` section may supply
-            the introspection settings.  A command-line flag wins.
+            any OAuth setting.  A command-line flag wins.
+        section: The already-loaded ``oauth`` section.  When given,
+            ``config_path`` is not read again.
 
     Raises:
         ValueError: If an OAuth option is set without an issuer or audience,
-            or ``--oauth-scope`` is malformed.
+            or a scope entry is malformed.
     """
     from .oauth import settings_from_args
     from .oauth.config import load_oauth_section
 
-    issuer = getattr(parsed, "oauth_issuer", None)
-    audience = getattr(parsed, "oauth_audience", None)
+    if section is None:
+        section = load_oauth_section(config_path)
+    issuer = getattr(parsed, "oauth_issuer", None) or section.get("issuer")
+    audience = getattr(parsed, "oauth_audience", None) or section.get("audience")
     if issuer is not None and audience is None and not default_audience:
         raise ValueError(
             "--oauth-audience is required when the server has no public URL"
@@ -147,18 +152,23 @@ def _oauth_settings(
     return settings_from_args(
         parsed,
         default_audience=default_audience or "",
-        config_section=load_oauth_section(config_path),
+        config_section=section,
     )
 
 
-def _openapi_audience(parsed: argparse.Namespace) -> str:
+def _openapi_audience(
+    parsed: argparse.Namespace, section: dict[str, Any] | None = None
+) -> str:
     """Return the OpenAPI command's default audience.
 
     A bind address is what the process listens on, not what a client calls,
     so a reverse-proxy deployment has to name its public URL explicitly.
+    The issuer may come from a flag or from the configuration file; either
+    way the derived audience is the bind address.
     """
     audience = f"http://{parsed.host}:{parsed.port}"
-    if getattr(parsed, "oauth_issuer", None) and parsed.host in {
+    issuer = getattr(parsed, "oauth_issuer", None) or (section or {}).get("issuer")
+    if issuer and parsed.host in {
         "0.0.0.0",
         "::",
         "[::]",
@@ -599,12 +609,15 @@ class CLI:
         keys_db = getattr(parsed, "keys_db", None)
 
         if parsed.command == "openapi":
+            from .oauth.config import load_oauth_section
+
+            section = load_oauth_section(config_path)
             options: dict[str, Any] = {
                 "config_path": config_path,
                 "oauth": _oauth_settings(
                     parsed,
-                    default_audience=_openapi_audience(parsed),
-                    config_path=config_path,
+                    default_audience=_openapi_audience(parsed, section),
+                    section=section,
                 ),
                 "profile": getattr(parsed, "profile", None),
                 "host": parsed.host,

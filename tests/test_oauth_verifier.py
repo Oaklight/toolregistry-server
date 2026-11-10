@@ -980,3 +980,277 @@ class TestSettingsFromConfig:
 
         with pytest.raises(ValueError, match=r"oauth\.client_concurrency"):
             _oauth_settings(parsed, default_audience=AUDIENCE, config_path=str(path))
+
+
+class TestOAuthSectionSurface:
+    """Every Track A setting is available in the ``oauth`` config section."""
+
+    def _settings(self, tmp_path, body: str, **namespace):
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(f"oauth:\n{body}", encoding="utf-8")
+        parsed = argparse.Namespace(**namespace)
+        return _oauth_settings(parsed, default_audience=AUDIENCE, config_path=str(path))
+
+    def test_the_issuer_alone_enables_oauth(self, tmp_path):
+        settings = self._settings(tmp_path, f"  issuer: {ISSUER}\n")
+
+        assert settings is not None
+        assert settings.issuer == ISSUER
+        assert settings.audience == AUDIENCE
+
+    def test_a_file_issuer_still_requires_an_audience_without_a_url(self, tmp_path):
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(f"oauth:\n  issuer: {ISSUER}\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="--oauth-audience"):
+            _oauth_settings(
+                argparse.Namespace(), default_audience=None, config_path=str(path)
+            )
+
+    def test_the_audience_comes_from_the_file(self, tmp_path):
+        settings = self._settings(
+            tmp_path,
+            f"  issuer: {ISSUER}\n  audience: https://file.example.com/mcp\n",
+        )
+
+        assert settings is not None
+        assert settings.audience == "https://file.example.com/mcp"
+
+    def test_the_openapi_endpoints_come_from_the_file(self, tmp_path):
+        settings = self._settings(
+            tmp_path,
+            f"  issuer: {ISSUER}\n"
+            "  jwks: https://file.example.com/jwks\n"
+            "  authorization_url: https://file.example.com/authorize\n"
+            "  token_url: https://file.example.com/token\n"
+            "  refresh_url: https://file.example.com/refresh\n",
+        )
+
+        assert settings is not None
+        assert settings.jwks_url == "https://file.example.com/jwks"
+        assert settings.authorization_url == "https://file.example.com/authorize"
+        assert settings.token_url == "https://file.example.com/token"
+        assert settings.refresh_url == "https://file.example.com/refresh"
+
+    def test_the_scope_mapping_comes_from_the_file(self, tmp_path):
+        settings = self._settings(
+            tmp_path,
+            f"  issuer: {ISSUER}\n"
+            "  scope:\n"
+            "    tools:read: [calculator, +web-search, -calculator-danger]\n"
+            "    tools:admin: 'web/*'\n",
+        )
+
+        assert settings is not None
+        assert settings.scope_map["tools:read"] == ("calculator",)
+        assert settings.scope_tools["tools:read"] == {
+            "web-search": True,
+            "calculator-danger": False,
+        }
+        assert settings.scope_map["tools:admin"] == ("web/*",)
+
+    def test_the_scope_flag_list_form_is_accepted_in_the_file(self, tmp_path):
+        settings = self._settings(
+            tmp_path,
+            f"  issuer: {ISSUER}\n"
+            "  scope:\n"
+            "    - tools:read=calculator\n"
+            "    - tools:admin=web/*\n",
+        )
+
+        assert settings is not None
+        assert settings.scope_map == {
+            "tools:read": ("calculator",),
+            "tools:admin": ("web/*",),
+        }
+
+    def test_a_bad_scope_type_names_the_key(self, tmp_path):
+        with pytest.raises(ValueError, match="oauth.scope"):
+            self._settings(tmp_path, f"  issuer: {ISSUER}\n  scope: 42\n")
+
+    def test_a_bad_scope_entry_names_the_source(self, tmp_path):
+        with pytest.raises(ValueError, match="oauth.scope"):
+            self._settings(
+                tmp_path,
+                f"  issuer: {ISSUER}\n  scope:\n    tools:read: ''\n",
+            )
+
+    def test_the_scopes_list_comes_from_the_file(self, tmp_path):
+        settings = self._settings(
+            tmp_path,
+            f"  issuer: {ISSUER}\n  scopes: [openid, profile, email]\n",
+        )
+
+        assert settings is not None
+        assert settings.scopes_supported == ("openid", "profile", "email")
+
+    def test_the_scopes_string_form_is_accepted_in_the_file(self, tmp_path):
+        settings = self._settings(
+            tmp_path, f"  issuer: {ISSUER}\n  scopes: openid profile\n"
+        )
+
+        assert settings is not None
+        assert settings.scopes_supported == ("openid", "profile")
+
+    def test_a_bad_scopes_type_names_the_key(self, tmp_path):
+        with pytest.raises(ValueError, match="oauth.scopes"):
+            self._settings(
+                tmp_path, f"  issuer: {ISSUER}\n  scopes:\n    openid: true\n"
+            )
+
+    def test_a_flag_wins_over_the_file(self, tmp_path):
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            "oauth:\n"
+            "  issuer: https://file.example.com\n"
+            "  audience: https://file.example.com/mcp\n"
+            "  scope:\n"
+            "    tools:read: [calculator]\n"
+            "  scopes: [openid]\n",
+            encoding="utf-8",
+        )
+        parsed = argparse.Namespace(
+            oauth_issuer=ISSUER,
+            oauth_audience=AUDIENCE,
+            oauth_scope=["tools:admin=web"],
+            oauth_scopes="admin",
+        )
+
+        settings = _oauth_settings(parsed, default_audience=None, config_path=str(path))
+
+        assert settings is not None
+        assert settings.issuer == ISSUER
+        assert settings.audience == AUDIENCE
+        # The flag replaces the file mapping; it does not merge into it.
+        assert settings.scope_map == {"tools:admin": ("web",)}
+        assert "tools:read" not in settings.scope_map
+        assert settings.scopes_supported == ("admin",)
+
+    def test_an_empty_scope_flag_falls_through_to_the_file(self, tmp_path):
+        """The repeatable flag defaults to ``[]``, which must not mask the file."""
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            f"oauth:\n  issuer: {ISSUER}\n  scope:\n    tools:read: [calculator]\n",
+            encoding="utf-8",
+        )
+        parsed = argparse.Namespace(oauth_issuer=ISSUER, oauth_scope=[])
+
+        settings = _oauth_settings(
+            parsed, default_audience=AUDIENCE, config_path=str(path)
+        )
+
+        assert settings is not None
+        assert settings.scope_map == {"tools:read": ("calculator",)}
+
+    def test_a_non_string_issuer_in_the_file_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match=r"oauth\.issuer"):
+            self._settings(tmp_path, "  issuer: 42\n")
+
+    def test_a_non_boolean_introspection_flag_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match=r"oauth\.introspection_optional"):
+            self._settings(
+                tmp_path,
+                f"  issuer: {ISSUER}\n  introspection_optional: 'yes'\n",
+            )
+
+    def test_a_non_numeric_ttl_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match=r"oauth\.introspection_cache_ttl"):
+            self._settings(
+                tmp_path,
+                f"  issuer: {ISSUER}\n  introspection_cache_ttl: soon\n",
+            )
+
+    def test_an_unknown_key_is_still_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="issuer_url"):
+            self._settings(tmp_path, f"  issuer: {ISSUER}\n  issuer_url: typo\n")
+
+    def test_a_setting_without_any_issuer_names_both_sources(self, tmp_path):
+        with pytest.raises(ValueError, match="oauth.issuer"):
+            self._settings(tmp_path, f"  audience: {AUDIENCE}\n")
+
+    def test_a_file_issuer_warns_about_a_wildcard_bind(self, tmp_path, monkeypatch):
+        from toolregistry_server import cli as cli_module
+        from toolregistry_server.oauth.config import load_oauth_section
+
+        class _Recorder:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            def _record(self, message, *args, **kwargs) -> None:
+                self.messages.append(str(message))
+
+            debug = info = warning = error = _record
+
+        recorder = _Recorder()
+        monkeypatch.setattr(cli_module, "logger", recorder)
+        path = tmp_path / "tools.yaml"
+        path.write_text(f"oauth:\n  issuer: {ISSUER}\n", encoding="utf-8")
+        parsed = argparse.Namespace(host="0.0.0.0", port=8000)
+
+        audience = cli_module._openapi_audience(parsed, load_oauth_section(str(path)))
+
+        assert audience == "http://0.0.0.0:8000"
+        assert len(recorder.messages) == 1
+        assert "--oauth-audience" in recorder.messages[0]
+
+    def test_a_file_issuer_does_not_warn_on_a_specific_bind(
+        self, tmp_path, monkeypatch
+    ):
+        from toolregistry_server import cli as cli_module
+        from toolregistry_server.oauth.config import load_oauth_section
+
+        class _Recorder:
+            def __init__(self) -> None:
+                self.messages: list[str] = []
+
+            def _record(self, message, *args, **kwargs) -> None:
+                self.messages.append(str(message))
+
+            debug = info = warning = error = _record
+
+        recorder = _Recorder()
+        monkeypatch.setattr(cli_module, "logger", recorder)
+        path = tmp_path / "tools.yaml"
+        path.write_text(f"oauth:\n  issuer: {ISSUER}\n", encoding="utf-8")
+
+        cli_module._openapi_audience(
+            argparse.Namespace(host="127.0.0.1", port=8000),
+            load_oauth_section(str(path)),
+        )
+
+        assert recorder.messages == []
+
+    def test_a_file_issuer_requires_an_audience_on_a_local_hub(self, tmp_path):
+        from toolregistry_server.cli import CLI
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(f"oauth:\n  issuer: {ISSUER}\n", encoding="utf-8")
+        parser = CLI().create_parser()
+        parsed = parser.parse_args(["local-hub", "run", "--config", str(path)])
+
+        with pytest.raises(ValueError, match="--oauth-audience"):
+            CLI._gateway_options(str(path), parsed)
+
+    def test_a_file_audience_satisfies_the_local_hub(self, tmp_path):
+        from toolregistry_server.cli import CLI
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            f"oauth:\n  issuer: {ISSUER}\n  audience: {AUDIENCE}\n",
+            encoding="utf-8",
+        )
+        parser = CLI().create_parser()
+        parsed = parser.parse_args(["local-hub", "run", "--config", str(path)])
+
+        options = CLI._gateway_options(str(path), parsed)
+
+        assert options["oauth"].issuer == ISSUER
+        assert options["oauth"].audience == AUDIENCE
