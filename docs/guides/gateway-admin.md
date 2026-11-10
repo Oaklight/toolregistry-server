@@ -1,13 +1,16 @@
 # Gateway Admin Panel
 
 The `gateway` subcommand can host the core ToolRegistry admin panel and load
-the gateway admin extension, which adds three operator pages:
+the gateway admin extension, which adds six operator pages:
 
 | Page | What it manages |
 |------|-----------------|
 | **Keys** | Inbound client keys for the OpenAPI and MCP frontends |
+| **Clients** | Live per-client call counters |
 | **Frontends** | The enable flag and mount path of every gateway frontend |
-| **Sources** | Tool sources added, retried or removed at runtime |
+| **Sources** | Tool sources added, edited, tested or removed at runtime |
+| **Tools** | One tool's schema and a guarded call tester |
+| **Logs** | The execution log filtered by principal, outcome, tool and time |
 
 The panel is an operator surface. It uses the core panel's own token and
 session authentication and is deliberately not part of the `--tokens` set
@@ -40,9 +43,10 @@ toolregistry-server gateway \
 
 Once enabled, the panel shell is served at the mount path, `http://host:8000/admin/`
 by default, and the gateway pages live under it:
-`/admin/ext/gateway/keys`, `/admin/ext/gateway/frontends` and
-`/admin/ext/gateway/sources`. In the console navigation the extension is a
-tab named **Gateway**, and it opens on **Keys**.
+`/admin/ext/gateway/keys`, `/admin/ext/gateway/clients`,
+`/admin/ext/gateway/frontends`, `/admin/ext/gateway/sources`,
+`/admin/ext/gateway/tools` and `/admin/ext/gateway/logs`. In the console
+navigation the extension is a tab named **Gateway**, and it opens on **Keys**.
 
 Disabling the admin frontend makes the panel root and every extension page
 answer `404` on the next request. No restart is needed.
@@ -88,7 +92,8 @@ it lists the keys.
     key counters are cumulative and unbounded, so past that window the two
     views diverge by design: the Keys page keeps counting while the Logs page
     has already dropped the oldest entries. Compare a key's counts with the
-    Logs page only inside the log's current window.
+    Logs page only inside the log's current window. The gateway's own Logs tab
+    reads the same ring and filters it by principal, outcome, tool and time.
 
 A key with no recorded call shows zeros. A usage response never includes a
 secret.
@@ -224,17 +229,60 @@ Actions:
 
 - **Add source** — choose a kind (`OpenAPI`, `MCP`, `Python`), give the spec or
   server URL, or the module/class for a Python source, and optionally a
-  namespace. The gateway validates the declaration and turns it into the same
-  typed source object the config file produces, applies the deployment
-  profile, and persists the addition through the source manager.
+  namespace. An MCP source also takes a transport (`streamable-http`, `sse` or
+  `stdio`) and, for the HTTP transports, an optional credential. The gateway
+  validates the declaration and turns it into the same typed source object the
+  config file produces, applies the deployment profile, and persists the
+  addition through the source manager.
+- **Edit** — opens the same form, prefilled from the stored declaration through
+  `GET /ext/gateway/sources/<id>`, and saves with
+  `PUT /ext/gateway/sources/<id>`. Saving replaces the declaration in one diff:
+  the old tools are unregistered and the new set registered. Fields the form
+  does not show — `tags`, `include`, `exclude`, and `persistent` for MCP or
+  `base_url` for OpenAPI — are carried over from the stored declaration, so
+  saving an unrelated field does not reset them.
+- **Test** — checks a declaration without registering anything.
+  `POST /ext/gateway/sources/test` tests what the form currently holds;
+  `POST /ext/gateway/sources/<id>/test` tests the stored source. An MCP source
+  opens a throwaway session, runs `initialize` and `tools/list`, and reports the
+  tool count with the server name and version. An OpenAPI source fetches and
+  parses the document and counts its operations. A failure is returned verbatim
+  with its exception type, with credentials in a URL redacted.
+- **Tools** — expands the row and lists the tools the source registered, with
+  each tool's name, a short description and its enabled state
+  (`GET /ext/gateway/sources/<id>/tools`). A name the registry no longer holds
+  is not reported as enabled.
 - **Retry** — shown only for a `Failed` source. It re-applies the unchanged
   declaration; a partial registration is rolled back, so a retry never
   duplicates tools. A source that is not failed is left untouched.
 - **Remove** — unregisters the source's tools and persists the removal.
-- **Replace** — the page does not have a replace control. Replacing a
-  declaration wholesale is available through the extension route
-  `PUT /admin/ext/gateway/sources/{id}` with the same body as **Add source**;
-  it unregisters the old tools and registers the new set in one diff.
+
+### Secrets are write-only
+
+A declaration may carry credentials: MCP `headers`, a Python source's
+constructor `kwargs`, and an OpenAPI `auth.token`. No GET response ever
+contains their values. `GET /ext/gateway/sources/<id>` returns the declaration
+with those fields removed and lists their names under `secret_fields`, for
+example `["headers.Authorization"]`, so the form can say that a credential is
+stored and ask for it again. Credentials embedded in `url` or `base_url` — the
+`user:password@` part — are redacted the same way, and the field itself is
+named in `secret_fields`. A URL the form submits back unchanged, or does not
+send at all, keeps the stored value with its userinfo.
+
+One field is deliberately not treated as a secret: an MCP stdio source's
+`command` is returned verbatim, because it is the only way to edit the
+declaration. A credential belongs in `env`, whose values are withheld.
+
+Because the form never receives the value, a blank credential field on save
+keeps the stored one. To delete a credential, tick **Remove the stored
+credential**, which sends `clear_secrets: true`; that removes the stored
+`headers`, `env`, `kwargs` and `auth.token` instead of merging them. A request
+that carries both `auth` and `clear_secrets` is refused.
+
+For an MCP source, the form's credential is stored as the header the config
+file uses: a bearer token becomes `Authorization: Bearer <token>`, and a custom
+header stores the token under the header name given. A header name already set
+in `headers` is refused, so the credential has one home.
 
 When the config file cannot be written, the change still applies in memory and
 the page says it was not saved, with the reason. A read-only configuration is
@@ -247,6 +295,79 @@ exactly the ticked names and persists through the same hook. Use it when you
 want to see the tool list before adding a source; the Gateway Sources page is
 the shorter path for sources you already know.
 
+## Tools page
+
+The Tools page lists every registered tool, disabled ones included, with its
+namespace, source, enabled state and tags (`GET /ext/gateway/tools`).
+**Inspect** opens the detail view for one tool (`GET /ext/gateway/tools/<name>`):
+the full description, the input schema a client is served, the output schema,
+tags, namespace, enabled state and the reason it is disabled, the source and
+its redacted detail, and the execution hints. A tool tagged `destructive` or
+`privileged` is called out before it can be run.
+
+The detail view also hosts the call tester. It is not a second execution path:
+the call runs through the same steps as a client call — the shared argument
+validator against the served schema, the process permission policy, the route
+handler, and the attributed execution-log record under the operator principal.
+
+- The arguments box starts from a skeleton built from the input schema and is
+  sent as JSON.
+- Every call needs **I understand this call runs on the server** ticked, which
+  sends `confirm: true`; without it the route answers `409`.
+- A disabled tool is refused with `409` before it runs, and the detail view
+  disables the form. Enable the tool first.
+- Invalid arguments answer `400` with the validator's detail; a policy refusal
+  answers `403`.
+- A handler failure is returned as `ok: false` with the verbatim error and its
+  exception type, and is recorded in the log with its outcome.
+- A refusal — disabled, unconfirmed or policy-denied — is recorded in the log
+  with outcome `denied` under the operator principal, so it shows up in the
+  Logs page filter just like a client call the policy refuses. An
+  invalid-argument refusal is returned to the page and not logged, because
+  nothing was attempted.
+- A successful call shows the encoded result and the duration in milliseconds.
+
+The tester is an operator surface: every route answers `401` without the
+panel's operator session, and no tool can be called from the page without one.
+
+## Logs page
+
+The Logs tab reads the registry execution log and filters it by principal,
+outcome, tool and time range (`GET /ext/gateway/logs`). The same filters feed
+`GET /ext/gateway/logs/stats`, so the counters always describe the rows the
+table shows.
+
+| Filter | Value |
+|--------|-------|
+| Key id | A stored key id. `operator` selects entries attributed to the operator principal, never anonymous ones |
+| Key label | The recorded principal label, case-insensitive |
+| Outcome | `ok`, `error`, `busy`, `denied`, `timeout` or `disabled` |
+| Tool | Exact tool name |
+| Since / Until | Inclusive ISO 8601 bounds on the entry time |
+| Limit | Rows to return, 1 to 1000 (default 100) |
+
+All filters combine, and rows come back newest first. The outcome filter reads
+the outcome recorded with the entry (`metadata.outcome`) and falls back to the
+entry status, so `busy` and `denied` rows match when the backend recorded them:
+an MCP refusal and an OpenAPI scope, proxy-target or policy refusal are
+recorded as `denied`, and a call that never got a concurrency slot is recorded
+as `busy`.
+
+Each row shows the time, tool, principal, key id, status and duration. The
+principal column is the recorded client identity: an API key shows its key
+label, an OAuth principal shows its OAuth client id, a call made from the Tools
+tester shows `operator`, and a call with no attribution shows `anonymous`. The
+stats block reports the entry count, the average duration and a breakdown by
+status, tool and principal.
+
+!!! note "The extension Logs tab and the core Logs page"
+    The core panel's own Logs page is served by the installed `toolregistry`
+    package at `/api/logs` and offers a tool, status and warnings filter only.
+    The gateway cannot add query parameters to a handler it does not own, so
+    the filtered view is served at `/ext/gateway/logs` and rendered in the
+    extension's own tab. The tab supplements the core page rather than
+    replacing it; both read the same in-memory log.
+
 ## Security notes
 
 - The panel and its extension pages are operator-only. A client key never
@@ -257,6 +378,13 @@ the shorter path for sources you already know.
   secret only in memory.
 - Every request path is checked in the panel before a page handler runs; an
   unknown path under the extension returns the panel's JSON error shape.
+- Source credentials are write-only. A GET response names the stored secret
+  fields and never returns their values, and credentials in a URL userinfo are
+  redacted. A blank field on save keeps the stored value; deleting one is an
+  explicit action.
+- The call tester uses the client execution path, so it cannot bypass the
+  argument validator, the process permission policy or the execution log. It
+  requires an operator session and an explicit confirmation per call.
 
 ## Related
 

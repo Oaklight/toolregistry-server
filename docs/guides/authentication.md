@@ -198,14 +198,18 @@ policy allows.
 
 ### Execution log
 
-A deployment that configures `--keys-db` also enables the registry execution
-log: a keyed deployment is where a call has a stable identity worth keeping.
-Every call that reaches a tool handler — MCP, and OpenAPI on both backends —
-writes one entry with the tool, its arguments, the result or the error, the
-duration, and `metadata={"key_id": ..., "client_id": ...}`. A call refused by
-key scope, the proxy-target check or the process permission policy never
-reaches a handler and is not logged; an MCP refusal is still attributed in the
-structured log, while an OpenAPI refusal is not recorded server-side.
+A deployment that configures `--keys-db` or an OAuth issuer also enables the
+registry execution log: that is where a call has a stable client identity worth
+keeping. Every call that reaches a tool handler — MCP, and OpenAPI on both
+backends — writes one entry with the tool, its arguments, the result or the
+error, the duration, and `metadata={"key_id": ..., "client_id": ...}`.
+
+A refused call is recorded too, with its real outcome in
+`metadata["outcome"]`: a key scope, proxy-target or process policy refusal
+writes `denied` on MCP and on both OpenAPI backends, and a call the concurrency
+limiter turns away writes `busy` on MCP. A refusal row keeps its arguments
+empty, and its status is `error` for a denial and `success` for a busy call, so
+filter on the recorded outcome rather than on the status.
 
 The structured attribution line is written for every attempt past
 authentication, with one of four outcomes: `ok`, `error`, `busy` (the
