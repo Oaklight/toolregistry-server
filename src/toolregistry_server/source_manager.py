@@ -84,7 +84,6 @@ if TYPE_CHECKING:
     from toolregistry.config import ToolSource
     from toolregistry.events import RefreshResult
 
-    from .oauth.upstream.provider import OAuthClientError
     from .route_table import RouteTable
 
 logger = get_logger()
@@ -721,6 +720,7 @@ class SourceManager:
         with self._lock:
             tools = (*self.config.tools, source)
             new_config = dataclasses.replace(self.config, tools=tools)
+            self._validate_oauth_clients(new_config)
             counts = self._apply_diff(new_config)
             key = self._key_at(tools, len(tools) - 1)
             return self._finish(self._entries[key], counts)
@@ -771,6 +771,7 @@ class SourceManager:
             tools[position] = source
             new_tools = tuple(tools)
             new_config = dataclasses.replace(self.config, tools=new_tools)
+            self._validate_oauth_clients(new_config)
             counts = self._apply_diff(new_config)
             key_now = self._key_at(new_tools, position)
             return self._finish(self._entries[key_now], counts)
@@ -1197,6 +1198,65 @@ class SourceManager:
 
     # ---- Internals -------------------------------------------------------
 
+    def _validate_oauth_clients(self, config: ToolConfig) -> None:
+        """Reject a mutation that would invalidate ``oauth.clients``.
+
+        The section is matched against the source list, so an edit can make a
+        ``url:`` selector name no source, or a new source share a namespace
+        with an existing one and make a ``namespace:`` selector ambiguous.
+        Rejecting before the diff runs keeps the file, the registry and the
+        declarations consistent; proceeding would leave a reachable source
+        silently unauthenticated.
+
+        Args:
+            config: The prospective configuration.
+
+        Raises:
+            toolregistry.config.ConfigError: If the section no longer matches.
+        """
+        if not self.config_path:
+            return
+        from .oauth.upstream.config import load_oauth_clients
+
+        load_oauth_clients(self.config_path, config)
+
+    def _sync_oauth_declarations(self) -> None:
+        """Drop declarations whose selector no longer matches a source.
+
+        A panel mutation writes the file and prunes its ``clients`` entries,
+        but the running provider still holds the declarations loaded from the
+        old file, and the watcher ignores the manager's own write.  Filtering
+        after a successful write keeps the in-memory set in step, and clears
+        the token row of every declaration that left, so re-adding a source
+        cannot mint a token with the removed declaration.
+        """
+        provider = self.oauth_provider
+        if provider is None:
+            return
+        from .oauth.upstream.config import selector_matches_source
+
+        declarations = provider.declarations
+        kept = tuple(
+            declaration
+            for declaration in declarations
+            if any(
+                selector_matches_source(declaration.source, source)
+                for source in self.config.tools
+            )
+        )
+        kept_selectors = {declaration.source for declaration in kept}
+        for declaration in declarations:
+            if declaration.source in kept_selectors:
+                continue
+            try:
+                provider.clear_stored_token(declaration.source)
+            except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+                logger.warning(
+                    f"Could not clear the stored OAuth token for "
+                    f"{declaration.source!r}: {_safe_error(exc)}"
+                )
+        provider.replace_declarations(kept)
+
     def _apply_source(
         self,
         key: SourceKey,
@@ -1208,11 +1268,13 @@ class SourceManager:
             return SourceEntry(key, source, frozenset(), SourceStatus.EXCLUDED)
         oauth_headers: Mapping[str, str] | None = None
         if isinstance(source, MCPSource) and self.oauth_provider is not None:
-            from .oauth.upstream.provider import OAuthClientError
-
             try:
                 oauth_headers = self.oauth_provider.headers_for(source)
-            except OAuthClientError as exc:
+            except Exception as exc:  # noqa: BLE001 - one source must not abort
+                # A store failure is typed as ``TransientOAuthError`` by the
+                # provider; anything else reaching here is a bug, but it still
+                # becomes a FAILED entry rather than killing startup or a
+                # mutation.  ``BaseException`` is deliberately not caught.
                 return self._oauth_failure(key, source, exc)
         before_integrations = len(self.registry._openapi_integrations)
         try:
@@ -1271,7 +1333,7 @@ class SourceManager:
         self,
         key: SourceKey,
         source: ToolSource,
-        exc: OAuthClientError,
+        exc: BaseException,
     ) -> SourceEntry:
         """Record an upstream OAuth failure for one source.
 
@@ -1289,8 +1351,14 @@ class SourceManager:
         Returns:
             A ``FAILED`` entry carrying the redacted reason.
         """
+        from .oauth.upstream.provider import OAuthClientError
+
         reauth = bool(getattr(exc, "reauth_required", False))
         message = _safe_error(exc)
+        if not isinstance(exc, OAuthClientError):
+            # The guard layer also catches bugs; the type is the only clue an
+            # operator gets that this is not a credential or network problem.
+            message = f"{type(exc).__name__}: {message}"
         logger.warning(
             f"OAuth failed for {_describe_source(source)}"
             f"{' (re-authorization required)' if reauth else ''}: {message}"
@@ -1303,6 +1371,20 @@ class SourceManager:
             message,
             reauth_required=reauth,
         )
+
+    def _unexpected_failure(
+        self, key: SourceKey, source: ToolSource, exc: BaseException
+    ) -> SourceEntry:
+        """Build a ``FAILED`` entry for an error no layer classified.
+
+        The exception type is part of the message: a ``KeyError`` or a
+        ``TypeError`` is a bug, and the operator should be able to tell it
+        apart from a timeout.  It is still recorded, never re-raised, so one
+        source cannot abort startup or a mutation.
+        """
+        message = f"{type(exc).__name__}: {_safe_error(exc)}"
+        logger.warning(f"Failed to apply {_describe_source(source)}: {message}")
+        return SourceEntry(key, source, frozenset(), SourceStatus.FAILED, message)
 
     def _remember_integration(
         self, key: SourceKey, source: ToolSource, before: int
@@ -1346,14 +1428,18 @@ class SourceManager:
                     _remove_names(self.registry, entry.names, counts)
 
             for key, source in new_sources.items():
-                entry, added = self._apply_one(
-                    key,
-                    source,
-                    old_sources.get(key),
-                    self._entries.get(key),
-                    new_config,
-                    counts,
-                )
+                try:
+                    entry, added = self._apply_one(
+                        key,
+                        source,
+                        old_sources.get(key),
+                        self._entries.get(key),
+                        new_config,
+                        counts,
+                    )
+                except Exception as exc:  # noqa: BLE001 - isolate one source
+                    self._openapi_integrations.pop(key, None)
+                    entry, added = self._unexpected_failure(key, source, exc), set()
                 entries[key] = entry
                 new_names.update(added)
 
@@ -1480,6 +1566,8 @@ class SourceManager:
     ) -> MutationResult:
         """Persist an API-originated mutation and build its result."""
         persisted, error, backup, warnings = self._persist()
+        if persisted:
+            self._sync_oauth_declarations()
         return MutationResult(
             entry=entry,
             counts=counts,
@@ -1507,6 +1595,7 @@ class SourceManager:
             )
         path = Path(self.config_path)
         backup: str | None = None
+        pruned: tuple[str, ...] = ()
         try:
             from ._config_file import (
                 _WRITE_LOCK,
@@ -1524,16 +1613,20 @@ class SourceManager:
                 for key in _CORE_CONFIG_KEYS:
                     data.pop(key, None)
                 data.update(serialized)
-                self._prune_oauth_section(data)
+                pruned = self._prune_oauth_section(data)
                 if path.exists():
                     backup = f"{path}.bak"
                 write_config_mapping(data, path)
             self._last_written_hash = _file_hash(path)
-            return True, None, backup, (COMMENTS_WARNING,)
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             return False, _safe_error(exc), backup, ()
+        # Only after the write committed: a failed write must leave the token
+        # rows of the still-declared sources untouched.
+        if pruned:
+            self._clear_stored_tokens(pruned)
+        return True, None, backup, (COMMENTS_WARNING,)
 
-    def _prune_oauth_section(self, data: dict[str, Any]) -> None:
+    def _prune_oauth_section(self, data: dict[str, Any]) -> tuple[str, ...]:
         """Drop ``oauth.clients`` entries whose source is no longer declared.
 
         The section is server-owned and is preserved verbatim, so a literal
@@ -1546,16 +1639,21 @@ class SourceManager:
 
         Args:
             data: The configuration mapping about to be written.
+
+        Returns:
+            The selectors that were removed.  The caller clears their token
+            rows only after the write commits, so a failed write cannot
+            destroy a credential the file still declares.
         """
         from .oauth.config import OAUTH_SECTION
         from .oauth.upstream.config import OAUTH_CLIENTS_KEY, selector_matches_source
 
         section = data.get(OAUTH_SECTION)
         if not isinstance(section, dict):
-            return
+            return ()
         entries = section.get(OAUTH_CLIENTS_KEY)
         if not isinstance(entries, list):
-            return
+            return ()
         kept = [
             entry
             for entry in entries
@@ -1581,8 +1679,6 @@ class SourceManager:
             and isinstance(entry, dict)
             and isinstance(entry.get("source"), str)
         ]
-        if pruned:
-            self._clear_stored_tokens(pruned)
         if kept:
             section[OAUTH_CLIENTS_KEY] = kept
         else:
@@ -1591,6 +1687,7 @@ class SourceManager:
             # Only drop the whole section when nothing else was configured;
             # ``issuer`` and the other resource-server keys belong to it too.
             data.pop(OAUTH_SECTION, None)
+        return tuple(pruned)
 
     def _mark_oauth_rejection(self, source: ToolSource) -> None:
         """Record that the resource server rejected the credential.

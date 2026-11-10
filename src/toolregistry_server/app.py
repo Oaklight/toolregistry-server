@@ -167,11 +167,14 @@ class App:
                 "Pass a config file path or a pre-built ToolRegistry."
             )
 
-        if manager is not None and self.oauth_client_provider is not None:
+        if manager is not None:
             import atexit
 
             # The token stores are SQLite connections; release them when the
-            # process ends.  A test or embedder calls close_oauth_clients itself.
+            # process ends.  A provider created by a config reload lives on
+            # the manager, so registration cannot depend on a startup
+            # provider existing.  A test or embedder calls
+            # close_oauth_clients itself.
             atexit.register(self.close_oauth_clients)
 
         if profile is not None:
@@ -269,12 +272,13 @@ class App:
     def close_oauth_clients(self) -> None:
         """Close the upstream OAuth token stores, if any.
 
-        :meth:`prepare_registry` registers this with :mod:`atexit` when it
-        creates a provider, so a server process releases the stores at exit;
-        an embedder or a test can also call this to release them sooner.  The
-        provider is dropped, so a later reload creates a new one.  A provider
-        created by a config reload lives on the source manager, so both are
-        closed.  Calling it twice is harmless.
+        :meth:`prepare_registry` registers this with :mod:`atexit` whenever it
+        builds a source manager, because a config reload can create the
+        provider later; an embedder or a test can also call this to release
+        the stores sooner.  Both references are dropped, so a later reload
+        creates a new provider instead of using a closed connection.  A
+        provider created by a config reload lives on the source manager, so
+        both are closed.  Calling it twice is harmless.
         """
         manager = self.source_manager
         for provider in (
@@ -284,6 +288,8 @@ class App:
             if provider is not None:
                 provider.close()
         self.oauth_client_provider = None
+        if manager is not None:
+            manager.oauth_provider = None
 
     def serve_openapi(self, **kwargs) -> None:
         """Build registry and start an OpenAPI server."""
