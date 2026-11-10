@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -872,3 +875,77 @@ class TestMissingCollaborators:
                 assert "no " in json.loads(body)["message"]
         finally:
             admin.stop()
+
+
+# ------------------------------------------------------------- asset logic
+
+_ASSET = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "toolregistry_server"
+    / "ext"
+    / "gateway"
+    / "assets"
+    / "main.js"
+)
+_NODE = shutil.which("node")
+
+
+def _run_asset_expression(expression: str) -> Any:
+    """Import ``main.js`` in Node and return one expression's JSON value."""
+    script = (
+        f"import * as asset from {json.dumps(_ASSET.as_uri())};\n"
+        "globalThis.window = {};\n"
+        f"console.log(JSON.stringify({expression}));\n"
+    )
+    completed = subprocess.run(
+        [_NODE, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is required for the asset logic")
+class TestKeyUpdatePayload:
+    def test_an_untouched_expiry_is_not_resent(self) -> None:
+        """Re-sending the minute-rounded prefill moves expiry up to 59s earlier."""
+        payload = _run_asset_expression(
+            "asset.keyUpdatePayload({"
+            "label: 'ci', namespaces: ['default'], tools: {}, "
+            "max_concurrency: 2, "
+            "expires_original: '2026-12-01T10:30', "
+            "expires_at: '2026-12-01T10:30'})"
+        )
+        assert "expires_at" not in payload
+        assert payload["label"] == "ci"
+        assert payload["max_concurrency"] == 2
+
+    def test_a_changed_expiry_is_sent(self) -> None:
+        payload = _run_asset_expression(
+            "asset.keyUpdatePayload({"
+            "label: 'ci', namespaces: [], tools: {}, max_concurrency: null, "
+            "expires_original: '2026-12-01T10:30', "
+            "expires_at: '2026-12-02T10:30'})"
+        )
+        assert payload["expires_at"].startswith("2026-12-02T")
+
+    def test_an_invalid_concurrency_is_reported_not_thrown(self) -> None:
+        """The form reports the error; the helper only names it."""
+        values = _run_asset_expression(
+            "asset.keyEditValues("
+            "{querySelector: () => ({dataset: {original: ''}})}, "
+            "{get: (name) => ({label: 'ci', scopes: 'default', tools: '', "
+            "max_concurrency: '0', expires_at: ''})[name]})"
+        )
+        assert values["concurrency_invalid"] is True
+
+    def test_clearing_the_expiry_sends_null(self) -> None:
+        payload = _run_asset_expression(
+            "asset.keyUpdatePayload({"
+            "label: 'ci', namespaces: [], tools: {}, max_concurrency: null, "
+            "expires_original: '2026-12-01T10:30', expires_at: ''})"
+        )
+        assert payload["expires_at"] is None

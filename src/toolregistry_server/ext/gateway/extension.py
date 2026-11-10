@@ -468,6 +468,9 @@ class GatewayAdminExtension:
         route_table: Any | None = None,
         allow_private_hosts: bool = False,
     ) -> None:
+        # ``allow_private_hosts`` is the admin host's own fetch permission.
+        # A source test follows registration, which reads the declaration's
+        # own flag, so this value stays only for callers that still pass it.
         self._key_store = key_store
         self._frontends = frontends
         self._sources = sources
@@ -680,7 +683,9 @@ class GatewayAdminExtension:
 
         An MCP ``auth`` block is translated into the ``headers`` entry the
         config file stores.  On an edit, a secret field the form left blank
-        keeps the stored value (see :func:`~.panel_sources.merge_secrets`).
+        keeps the stored value (see :func:`~.panel_sources.merge_secrets`),
+        and every declaration field the form does not render is carried over
+        because the replacement is a full declaration.
         """
         sources = self._require(self._sources, "source manager")
         parse_source = self._require(self._parse_source, "source declaration parser")
@@ -694,6 +699,7 @@ class GatewayAdminExtension:
             payload = mcp_auth_to_headers(payload)
         if stored is not None:
             payload = merge_secrets(payload, stored)
+            self._carry_unmanaged(payload, stored)
             # The edit form may not show this switch; keep the stored value
             # rather than silently turning the permission back off.
             if "allow_private_hosts" not in payload:
@@ -768,14 +774,53 @@ class GatewayAdminExtension:
             "tools": _source_tools(entry, self._registry),
         }
 
+    #: Source fields the edit form does not render.  ``PUT /sources/<id>``
+    #: is a full replace, so a stored value must be carried into the new
+    #: declaration explicitly; otherwise saving an unrelated field silently
+    #: resets it.  ``allow_private_hosts`` is handled the same way below.
+    _UNMANAGED_FIELDS = ("tags", "include", "exclude")
+
+    #: Extra unmanaged fields that only one source kind declares.
+    _KIND_UNMANAGED_FIELDS = {
+        "mcp": ("persistent",),
+        "openapi": ("base_url",),
+    }
+
+    def _carry_unmanaged(self, payload: dict[str, Any], stored: Any) -> None:
+        """Copy declaration fields the edit form cannot send from *stored*.
+
+        Args:
+            payload: The operator's declaration, mutated in place.
+            stored: The declaration being replaced.
+        """
+        kind = payload.get("type") or payload.get("kind")
+        fields = (*self._UNMANAGED_FIELDS, *self._KIND_UNMANAGED_FIELDS.get(kind, ()))
+        for name in fields:
+            if name in payload or not hasattr(stored, name):
+                continue
+            value = getattr(stored, name)
+            if name in self._UNMANAGED_FIELDS and value is not None:
+                payload[name] = list(value)
+            elif value is not None:
+                payload[name] = value
+
     @_guard
     def test_source(self, request: Any, source_id: str) -> dict[str, Any]:
-        """Test a stored source without registering or changing anything."""
+        """Test a stored source under the policy registration would apply.
+
+        Registration uses the declaration's own ``allow_private_hosts``, so
+        the test does too.  The admin host's flag is not consulted: it would
+        make a source look reachable when a restart would refuse it, or the
+        reverse.
+        """
         sources = self._require(self._sources, "source manager")
         entry = sources.get(source_id)
         return {
             "test": test_connection(
-                entry.source, allow_private_hosts=self._allow_private_hosts
+                entry.source,
+                allow_private_hosts=bool(
+                    getattr(entry.source, "allow_private_hosts", False)
+                ),
             )
         }
 
@@ -787,9 +832,11 @@ class GatewayAdminExtension:
         kind = payload.get("type") or payload.get("kind")
         if kind == "mcp":
             payload = mcp_auth_to_headers(payload)
+        source = parse_source(payload)
         return {
             "test": test_connection(
-                parse_source(payload), allow_private_hosts=self._allow_private_hosts
+                source,
+                allow_private_hosts=bool(getattr(source, "allow_private_hosts", False)),
             )
         }
 

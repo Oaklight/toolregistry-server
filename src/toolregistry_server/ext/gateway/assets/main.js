@@ -185,7 +185,11 @@ const STRINGS = {
         'gw.logs.error': 'error',
         'gw.logs.busy': 'busy',
         'gw.logs.denied': 'denied',
-        'gw.logs.busyDenied': 'Busy and denied calls never reach the execution log; they are in the structured log.',
+        'gw.logs.busyDenied': 'Busy and denied calls are recorded with their own outcome; calls refused before the execution log are only in the structured log.',
+        'gw.logs.warnings': 'Warnings',
+        'gw.logs.warningsAny': 'Any',
+        'gw.logs.warningsOnly': 'With warnings',
+        'gw.logs.warningsNone': 'Without warnings',
         'gw.logs.count': '{count} entries',
         'gw.logs.operator': 'operator',
         'gw.logs.avg': 'Average duration',
@@ -369,7 +373,11 @@ const STRINGS = {
         'gw.logs.error': '错误',
         'gw.logs.busy': '繁忙',
         'gw.logs.denied': '拒绝',
-        'gw.logs.busyDenied': '繁忙与拒绝的调用不会进入执行日志，只记录在结构化日志中。',
+        'gw.logs.busyDenied': '繁忙与拒绝的调用会记录各自的结果；在执行日志之前被拒绝的调用只出现在结构化日志中。',
+        'gw.logs.warnings': '警告',
+        'gw.logs.warningsAny': '全部',
+        'gw.logs.warningsOnly': '有警告',
+        'gw.logs.warningsNone': '无警告',
         'gw.logs.count': '{count} 条记录',
         'gw.logs.operator': '操作员',
         'gw.logs.avg': '平均耗时',
@@ -691,7 +699,8 @@ function editCard(record) {
         el('label', { class: 'gw-field' }, [
             el('span', { text: T('gw.keys.expires') }),
             el('input', { name: 'expires_at', type: 'datetime-local',
-                          value: toLocalInput(record.expires_at) }),
+                          value: toLocalInput(record.expires_at),
+                          'data-original': toLocalInput(record.expires_at) }),
             el('small', { class: 'gw-hint', text: T('gw.keys.expiresHint') }),
         ]),
         el('div', { class: 'gw-actions' }, [
@@ -973,37 +982,65 @@ async function showKey(record) {
     }
 }
 
-async function saveKey(record, form) {
-    const host = root.querySelector('#gw-keys');
-    const data = new FormData(form);
+export function keyUpdatePayload(values) {
+    // The expiry input only holds minutes, so re-sending an untouched value
+    // would move the stored expiry up to 59 seconds earlier (or refuse a key
+    // that has just expired).  Send the field only when the operator changed
+    // it; leave it out otherwise, and the store keeps the exact value.
+    const originalRaw = String(values.expires_original || '');
+    const expiresRaw = String(values.expires_at || '');
+    const payload = {
+        label: String(values.label || '').trim(),
+        scopes: { namespaces: values.namespaces, tools: values.tools },
+        max_concurrency: values.max_concurrency,
+    };
+    if (expiresRaw !== originalRaw) {
+        payload.expires_at = expiresRaw ? new Date(expiresRaw).toISOString() : null;
+    }
+    return payload;
+}
+
+export function keyEditValues(form, data) {
     const namespaces = String(data.get('scopes') || '')
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
     const overrides = parseOverrides(data.get('tools'));
-    if (overrides.invalid.length) {
+    const concurrencyRaw = String(data.get('max_concurrency') || '').trim();
+    let maxConcurrency = null;
+    let concurrencyInvalid = false;
+    if (concurrencyRaw) {
+        maxConcurrency = Number(concurrencyRaw);
+        concurrencyInvalid = !Number.isInteger(maxConcurrency) || maxConcurrency < 1;
+    }
+    return {
+        label: data.get('label'),
+        namespaces,
+        tools: overrides.tools,
+        invalid: overrides.invalid,
+        concurrency_invalid: concurrencyInvalid,
+        max_concurrency: maxConcurrency,
+        expires_at: data.get('expires_at'),
+        expires_original: form.querySelector('[name="expires_at"]')?.dataset.original,
+    };
+}
+
+async function saveKey(record, form) {
+    const host = root.querySelector('#gw-keys');
+    const data = new FormData(form);
+    const values = keyEditValues(form, data);
+    if (values.invalid.length) {
         host?.appendChild(message(
-            T('gw.keys.toolsInvalid', { lines: overrides.invalid.join(', ') }),
+            T('gw.keys.toolsInvalid', { lines: values.invalid.join(', ') }),
             'error',
         ));
         return;
     }
-    const concurrencyRaw = String(data.get('max_concurrency') || '').trim();
-    let maxConcurrency = null;
-    if (concurrencyRaw) {
-        maxConcurrency = Number(concurrencyRaw);
-        if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-            host?.appendChild(message(T('gw.keys.concurrencyInvalid'), 'error'));
-            return;
-        }
+    if (values.concurrency_invalid) {
+        host?.appendChild(message(T('gw.keys.concurrencyInvalid'), 'error'));
+        return;
     }
-    const expiresRaw = String(data.get('expires_at') || '');
-    const payload = {
-        label: String(data.get('label') || '').trim(),
-        scopes: { namespaces, tools: overrides.tools },
-        max_concurrency: maxConcurrency,
-        expires_at: expiresRaw ? new Date(expiresRaw).toISOString() : null,
-    };
+    const payload = keyUpdatePayload(values);
     try {
         await call('patch', '/keys/' + encodeURIComponent(record.id), payload);
         state.editing = null;
@@ -1781,6 +1818,7 @@ function logFiltersForm() {
                 key_id: String(data.get('key_id') || '').trim(),
                 key_label: String(data.get('key_label') || '').trim(),
                 outcome: String(data.get('outcome') || ''),
+                has_warnings: String(data.get('has_warnings') || ''),
                 tool_name: String(data.get('tool_name') || '').trim(),
                 since: String(data.get('since') || ''),
                 until: String(data.get('until') || ''),
@@ -1797,6 +1835,20 @@ function logFiltersForm() {
             el('option', { value: 'error', text: T('gw.logs.error') }),
             el('option', { value: 'busy', text: T('gw.logs.busy') }),
             el('option', { value: 'denied', text: T('gw.logs.denied') }),
+        ])),
+        field('gw.logs.warnings', el('select', { name: 'has_warnings' }, [
+            el('option', {
+                value: '', text: T('gw.logs.warningsAny'),
+                selected: filters.has_warnings ? null : 'selected',
+            }),
+            el('option', {
+                value: 'true', text: T('gw.logs.warningsOnly'),
+                selected: filters.has_warnings === 'true' ? 'selected' : null,
+            }),
+            el('option', {
+                value: 'false', text: T('gw.logs.warningsNone'),
+                selected: filters.has_warnings === 'false' ? 'selected' : null,
+            }),
         ])),
         field('gw.logs.tool', input('tool_name', 'text', 'calc-add')),
         field('gw.logs.since', input('since', 'datetime-local')),
