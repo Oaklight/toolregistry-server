@@ -30,7 +30,8 @@ title: OAuth 参考
 ### 优先级
 
 - **JWKS**：`--oauth-jwks`，否则 RFC 8414 元数据中的 `jwks_uri`，否则 OIDC 发现，最后是
-  `<issuer>/.well-known/jwks.json`。
+  `<issuer>`（去掉末尾斜杠）`/.well-known/jwks.json`。issuer 带路径时先尝试 RFC 8414
+  形式（well-known 段在路径之前），再尝试后缀形式。
 - **OpenAPI 端点**：显式选项，否则 RFC 8414 或 OIDC 元数据中的 `authorization_endpoint` /
   `token_endpoint`。两者都无法提供完整端点时，OAuth2 方案会被省略并记录警告。
 - **Audience**：`--oauth-audience`，否则按命令推导的 URL（见下表）。不会隐式回退到 issuer。
@@ -44,7 +45,7 @@ title: OAuth 参考
 | `openapi` | `http://<host>:<port>` | host 为绑定地址（`0.0.0.0`、`::`）时告警；反向代理后请用 `--oauth-audience` 传入公开源 |
 | `mcp` | `--server-url`，否则 `http://<host>:<port>/mcp` | 仅 HTTP 传输；`stdio` 会警告并忽略 OAuth 选项 |
 | `gateway` | `--server-url`，否则 `http://<host>:<port><mcp 路径>` | 在 `/.well-known/oauth-protected-resource<mcp 路径>` 公布 PRM；绑定 Unix socket 且无 `--server-url` 时不公布 PRM，401 只发送裸 `WWW-Authenticate: Bearer` |
-| `local-hub` | `--server-url`，否则必须提供 `--oauth-audience` | hub 绑定 Unix socket 或 `127.0.0.1:0`，没有可推导的公开 URL；设置 `--oauth-issuer` 时必须显式给出 audience |
+| `local-hub` | `--server-url`，否则必须提供 `--oauth-audience` | hub 绑定 Unix socket 或 `127.0.0.1:0`，两者都不是公开 audience；设置 `--oauth-issuer` 时必须显式给出 audience，无论是否使用 `--socket` |
 
 ## 服务器公布与期望的内容
 
@@ -59,6 +60,9 @@ title: OAuth 参考
 
 目前 OAuth 只能通过命令行选项配置。工具来源配置文件（`--config`）没有 OAuth 段，因此容器或
 服务管理器必须传递这些选项，或使用由环境变量生成的等价命令行。见[已知缺口](#已知缺口)。
+
+独立 `openapi` 命令上的 OAuth 需要带加密后端的 PyJWT：请安装
+`toolregistry-server[openapi]`。基础安装仍不含第三方包，`[gateway]`/`[mcp]` 已自带该依赖。
 
 ## 已知缺口
 

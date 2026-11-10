@@ -242,12 +242,16 @@ toolregistry-server gateway \
 ### 校验规则
 
 - 仅接受 RS256 与 ES256 签名。`none` 与 HMAC 算法会被拒绝，`kid` 未公布的令牌也会被拒绝。
-- `iss` 必须与 `--oauth-issuer` 完全一致；令牌的 `aud` 或 RFC 8707 `resource` 声明必须包含期望的 audience。
+- `iss` 必须与 `--oauth-issuer` 逐字节完全一致。末尾斜杠是有意义的：部分授权服务器公布的
+  `iss` 带末尾斜杠。只有在拼接元数据与 JWKS URL 时才会去掉它。
+- 令牌的 `aud` 或 RFC 8707 `resource` 声明必须包含期望的 audience。
 - `exp` 与 `nbf` 生效，允许 60 秒时钟偏差。
-- JWKS 端点优先取 `--oauth-jwks`。否则依次从 RFC 8414 元数据
-  （`<issuer>/.well-known/oauth-authorization-server`）、OIDC 发现
+- JWKS 端点优先取 `--oauth-jwks`。否则依次从 RFC 8414 元数据、OIDC 发现
   （`<issuer>/.well-known/openid-configuration`）读取，最后回退到
-  `<issuer>/.well-known/jwks.json`。若提供方的 JWKS 未通过这两份元数据公布，必须显式传入该参数。
+  `<issuer>/.well-known/jwks.json`。issuer 带路径时，RFC 8414 的 URL 把 well-known
+  段放在路径之前（`scheme://host/.well-known/oauth-authorization-server<issuer 路径>`），
+  随后再尝试后缀形式（`<issuer>/.well-known/oauth-authorization-server`）。
+  若提供方的 JWKS 未通过这两份元数据公布，必须显式传入该参数。
 - JWKS 缓存 5 分钟。未知 `kid` 可触发重新拉取，但最多每 30 秒一次，因此随机 `kid` 无法驱动
   出站请求；轮换密钥在该窗口之后被接受。
 - JWKS 拉取失败时拒绝令牌；启动时的预取是尽力而为，只记录警告。预取失败不会阻止第一个请求
