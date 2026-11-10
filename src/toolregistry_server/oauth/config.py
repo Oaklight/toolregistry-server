@@ -6,6 +6,12 @@ The server reads its own ``oauth`` section from the same file, following the
 pattern :mod:`toolregistry_server.gateway.persistence` uses for ``gateway``::
 
     oauth:
+      issuer: https://idp.example.com/realms/dev
+      audience: https://tools.example.com/mcp
+      jwks: https://idp.example.com/realms/dev/jwks
+      scope:
+        tools:read: [calculator, +web-search, -calculator-danger]
+      scopes: [openid, profile, email]
       introspection_url: https://idp.example.com/introspect
       introspection_client_id: toolregistry
       introspection_client_secret: ...
@@ -14,9 +20,13 @@ pattern :mod:`toolregistry_server.gateway.persistence` uses for ``gateway``::
       client_concurrency:
         reports-bot: 2
 
-Only values the operator did not pass on the command line are read; the CLI
-wins.  The file is parsed again, independently of the registry loader, so a
-typo in this section cannot change how tools are registered.
+Every key is named after the ``--oauth-`` flag with the prefix removed, so
+``--oauth-jwks`` maps to ``jwks`` and ``--oauth-introspection-url`` maps to
+``introspection_url``.  Only values the operator did not pass on the command
+line are read; the CLI wins, and an empty repeatable flag counts as absent so
+the file still supplies ``scope``.  The file is parsed again, independently of
+the registry loader, so a typo in this section cannot change how tools are
+registered.
 """
 
 from __future__ import annotations
@@ -30,9 +40,18 @@ OAUTH_SECTION = "oauth"
 
 #: Keys :func:`settings_from_args` reads from the section.  Anything else is
 #: rejected: a typo such as ``introspection_ur1`` would otherwise leave a
-#: security control switched off without a diagnostic.
+#: security control switched off without a diagnostic.  Each key is the
+#: matching ``--oauth-`` flag with the prefix removed.
 OAUTH_SECTION_KEYS = frozenset(
     {
+        "issuer",
+        "audience",
+        "jwks",
+        "scope",
+        "scopes",
+        "authorization_url",
+        "token_url",
+        "refresh_url",
         "introspection_url",
         "introspection_client_id",
         "introspection_client_secret",
