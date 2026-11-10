@@ -235,6 +235,7 @@ toolregistry-server gateway \
 | `--oauth-audience URL` | 期望的 `aud` 或 RFC 8707 `resource` 值，默认为对外公布的 MCP URL |
 | `--oauth-jwks URL` | JWKS 端点（默认：`<issuer>/.well-known/jwks.json`） |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | 把一个作用域映射到命名空间模式；可重复 |
+| `--oauth-scopes "SCOPE ..."` | 在受保护资源元数据中公布的作用域。为空时省略；配置 issuer 后默认省略 |
 
 `openapi`、`mcp`（HTTP 传输）、`gateway` 与 `local-hub` 都接受这些选项。
 
@@ -268,6 +269,18 @@ toolregistry-server mcp \
 在 MCP streamable-HTTP 上，RFC 9728 受保护资源元数据的 `authorization_servers` 会公布配置的
 issuer，客户端据此发现授权服务器。绑定 Unix socket 的 hub 没有可推导的 URL：请显式传入
 `--oauth-audience`（若希望客户端发现元数据，还需传入 `--server-url`）。
+
+配置外部 issuer 后，`scopes_supported` 变为显式开启：授权服务器会校验它签发的作用域，可能在
+authorize 阶段拒绝通用的 `mcp` 作用域。请列出部署实际签发的作用域：
+
+```bash
+toolregistry-server gateway \
+  --config config.yaml \
+  --oauth-issuer https://idp.example.com/realms/dev \
+  --oauth-scopes "openid profile email offline_access"
+```
+
+`--oauth-scopes ""` 会省略该字段。未配置 `--oauth-issuer` 时，元数据仍像以前一样公布 `mcp`。
 
 ### 限制
 

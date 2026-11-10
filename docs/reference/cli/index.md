@@ -52,6 +52,7 @@ toolregistry-server openapi [选项]
 | `--oauth-audience URL` | 由 `--host`/`--port` 推导 | 期望的 `aud` 或 RFC 8707 `resource` 值。无法推导 URL 时必须显式提供 |
 | `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | 把一个令牌作用域映射到命名空间模式；可重复。未映射的作用域不授予任何权限 |
+| `--oauth-scopes "SCOPE ..."` | - | 在受保护资源元数据中公布的作用域，空格分隔。为空时省略；配置 issuer 后默认省略；未配置 OAuth 时仍公布 `mcp` |
 | `--max-body-size BYTES` | `1048576`（1 MiB） | 接受的最大请求体。必须为正数；超限返回带 JSON 错误的 `413` |
 | `--profile PROFILE` | - | 部署配置：`remote`、`local`，或配置文件 `profiles:` 中声明的名称 |
 | `--regex-timeout SECONDS` | `0.05` | 来自 spec 的正则单次匹配上限（需要 `regex` extra）。`0` 禁用执行 |
@@ -90,6 +91,7 @@ toolregistry-server mcp [选项]
 | `--oauth-audience URL` | 由 `--host`/`--port` 推导 | 期望的 `aud` 或 RFC 8707 `resource` 值。无法推导 URL 时必须显式提供 |
 | `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | 把一个令牌作用域映射到命名空间模式；可重复。未映射的作用域不授予任何权限 |
+| `--oauth-scopes "SCOPE ..."` | - | 在受保护资源元数据中公布的作用域，空格分隔。为空时省略；配置 issuer 后默认省略；未配置 OAuth 时仍公布 `mcp` |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 在 OAuth 受保护资源元数据中公布的公开 URL（反向代理后必需） |
 | `--tools-list-ttl-ms MS` | `300000` | `tools/list` 的 `ttlMs` 缓存提示；`0` 禁用缓存 |
 | `--tools-list-cache-scope {public,private}` | `private` | `tools/list` 的 `cacheScope` 提示 |
@@ -146,6 +148,7 @@ toolregistry-server gateway [选项]
 | `--oauth-audience URL` | 由 `--host`/`--port` 推导 | 期望的 `aud` 或 RFC 8707 `resource` 值。无法推导 URL 时必须显式提供 |
 | `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | 把一个令牌作用域映射到命名空间模式；可重复。未映射的作用域不授予任何权限 |
+| `--oauth-scopes "SCOPE ..."` | - | 在受保护资源元数据中公布的作用域，空格分隔。为空时省略；配置 issuer 后默认省略；未配置 OAuth 时仍公布 `mcp` |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 受保护资源元数据中使用的公开 MCP URL |
 | `--backend {fastapi,httpserver}` | `fastapi` | 多个前端必须使用 `fastapi`；`httpserver` 只能提供 openapi 前端 |
 | `--openapi-path PATH` | `/openapi` | OpenAPI 挂载路径（`--backend httpserver` 下会被拒绝，因为该后端在监听器根路径提供服务） |
