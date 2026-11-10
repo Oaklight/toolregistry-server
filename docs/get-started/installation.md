@@ -31,8 +31,16 @@ This additionally installs:
 - `FastAPI` (>=0.119.0)
 - `Uvicorn` with standard extras (>=0.24.0)
 
-The standalone `openapi` command does not need this extra. `[openapi]` is kept
-as an empty alias so existing requirements still resolve; it installs nothing.
+The standalone `openapi` command does not need this extra. Its own extra stays
+small and now carries `PyJWT` with a crypto backend, so the OAuth resource
+server works there without installing `[gateway]` or `[mcp]`:
+
+```bash
+pip install toolregistry-server[openapi]
+```
+
+Without any extra, the base install remains free of third-party packages
+(including PyJWT).
 
 ### MCP Support
 

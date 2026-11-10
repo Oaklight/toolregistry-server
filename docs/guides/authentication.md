@@ -286,15 +286,21 @@ The flags are accepted by `openapi`, `mcp` (HTTP transports), `gateway` and
 
 - Signature algorithms are limited to RS256 and ES256. `none` and HMAC
   algorithms are rejected, and so is a token whose `kid` is not published.
-- `iss` must match `--oauth-issuer` exactly. The token's `aud`, or its RFC 8707
-  `resource` claim, must contain the expected audience.
+- `iss` must match `--oauth-issuer` exactly, byte for byte. A trailing slash is
+  significant: some authorization servers publish `iss` with one. Stripping it
+  is only done when composing metadata and JWKS URLs.
+- The token's `aud`, or its RFC 8707 `resource` claim, must contain the
+  expected audience.
 - `exp` and `nbf` are enforced with 60 seconds of clock leeway.
 - The JWKS endpoint is taken from `--oauth-jwks` when given. Otherwise it is
-  read from RFC 8414 metadata
-  (`<issuer>/.well-known/oauth-authorization-server`), then OIDC discovery
+  read from RFC 8414 metadata, then OIDC discovery
   (`<issuer>/.well-known/openid-configuration`), and finally falls back to
-  `<issuer>/.well-known/jwks.json`. A provider whose JWKS is not published
-  through either metadata document needs the explicit flag.
+  `<issuer>/.well-known/jwks.json`. For an issuer with a path, the RFC 8414
+  URL places the well-known segment before the path
+  (`scheme://host/.well-known/oauth-authorization-server<issuer-path>`); the
+  suffix form (`<issuer>/.well-known/oauth-authorization-server`) is tried
+  next. A provider whose JWKS is not published through either metadata
+  document needs the explicit flag.
 - The JWKS is cached for 5 minutes. An unknown `kid` may force a refetch, but
   at most once per 30 seconds, so random `kid` values cannot drive outbound
   requests; a rotated key is picked up after that window.

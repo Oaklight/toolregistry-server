@@ -35,7 +35,9 @@ verification uses the issuer, audience and JWKS.
 ### Precedence
 
 - **JWKS**: `--oauth-jwks`, else `jwks_uri` from RFC 8414 metadata, else from
-  OIDC discovery, else `<issuer>/.well-known/jwks.json`.
+  OIDC discovery, else `<issuer>` (trailing slash removed)
+  `/.well-known/jwks.json`. A path-bearing issuer is tried in the RFC 8414
+  form first (well-known segment before the path), then the suffix form.
 - **OpenAPI endpoints**: explicit flag, else `authorization_endpoint` /
   `token_endpoint` from RFC 8414 or OIDC metadata. If neither source supplies
   both endpoints, the OAuth2 scheme is omitted with a warning.
@@ -52,7 +54,7 @@ configured audience.
 | `openapi` | `http://<host>:<port>` | Warns when the host is a bind address (`0.0.0.0`, `::`); behind a reverse proxy pass `--oauth-audience` with the public origin |
 | `mcp` | `--server-url`, else `http://<host>:<port>/mcp` | HTTP transports only; `stdio` warns and ignores the OAuth options |
 | `gateway` | `--server-url`, else `http://<host>:<port><mcp path>` | Publishes PRM at `/.well-known/oauth-protected-resource<mcp path>`; a Unix-socket gateway with no `--server-url` publishes no PRM and sends a bare `WWW-Authenticate: Bearer` |
-| `local-hub` | `--server-url`, else requires `--oauth-audience` | The hub binds a Unix socket or `127.0.0.1:0`; there is no public URL to derive, so the audience must be explicit whenever `--oauth-issuer` is set |
+| `local-hub` | `--server-url`, else requires `--oauth-audience` | The hub binds a Unix socket or `127.0.0.1:0`; neither is a public audience, so the audience must be explicit whenever `--oauth-issuer` is set — with or without `--socket` |
 
 ## What the server publishes and expects
 
@@ -69,6 +71,10 @@ OAuth is currently configured by command-line flags only. The tool-source
 configuration file (`--config`) has no OAuth section, so a container or
 service manager must pass the flags or the equivalent environment-driven
 command line. See [Known gaps](#known-gaps).
+
+On the standalone `openapi` command, OAuth needs PyJWT with a crypto backend:
+install `toolregistry-server[openapi]`. The base install stays free of
+third-party packages, and `[gateway]`/`[mcp]` already carry it.
 
 ## Known gaps
 
