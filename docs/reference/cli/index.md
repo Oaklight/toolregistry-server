@@ -253,6 +253,28 @@ schema 与一组缓存。仅支持 POSIX；Windows 上动作会被拒绝并提�
 | `--idle-timeout SECONDS` | `0` | 在该秒数内既无请求也无打开的 MCP/SSE 会话后退出；`0` 表示常驻 |
 | `--timeout SECONDS` | - | `ensure` 与 `stop` 的等待上限 |
 | `--json` | 关闭 | `status` 输出 endpoint 文档 |
+| `--oauth-issuer URL` | - | 接受的授权服务器 issuer（`iss`）。启用 OAuth Bearer 校验，令牌在本地用该服务器的 JWKS 验证 |
+| `--oauth-audience URL` | 来自 `--server-url`，否则必需 | 期望的 `aud` 或 RFC 8707 `resource` 值。hub 绑定回环地址或 Unix 套接字，因此设置 issuer 时必须显式给出 audience |
+| `--oauth-jwks URL` | 从 RFC 8414/OIDC 元数据发现，否则 `<issuer>/.well-known/jwks.json` | JWKS 端点覆盖 |
+| `--oauth-scope SCOPE=ENTRY[,ENTRY]` | - | 把一个令牌作用域映射到命名空间模式与工具覆盖；可重复。每个条目是命名空间模式、`+tool-name`（允许单个工具）或 `-tool-name`（拒绝单个工具）。未映射的作用域不授予任何权限 |
+| `--oauth-scopes "SCOPE ..."` | - | 在受保护资源元数据中公布的作用域，空格分隔。为空时省略；配置 issuer 后默认省略；未配置 OAuth 时仍公布 `mcp` |
+| `--oauth-authorization-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的授权端点 |
+| `--oauth-token-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的令牌端点 |
+| `--oauth-refresh-url URL` | - | 可选的 `refreshUrl`；未设置时省略 |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略，更宽的值不会提高客户端当前生效的预算 |
+| `--oauth-client-concurrency CLIENT=LIMIT` | - | 单个 OAuth 客户端的静态在途调用上限；可重复。有效的并发声明优先 |
+| `--oauth-introspection-url URL` | - | RFC 7662 内省端点；每个本地校验通过的令牌都会向它确认 |
+| `--oauth-introspection-client-id ID` | - | 内省端点使用的客户端 id（HTTP Basic）；与 URL 同时必需 |
+| `--oauth-introspection-client-secret SECRET` | - | 内省端点使用的客户端密钥（HTTP Basic）；与 URL 同时必需 |
+| `--oauth-introspection-cache-ttl SECONDS` | `5` | 一次内省结果的复用时长；决定被撤销的令牌还会被接受多久。`0` 关闭缓存 |
+| `--oauth-introspection-optional` | `false` | 内省端点失败时回退到本地校验；默认情况下失败即拒绝令牌 |
+| `--server-url URL` | 由 `--host`/`--port` 推导 | 在受保护资源元数据中公布的公开 MCP URL |
+
+!!! note
+    只要设置了 issuer，hub 就必须显式给出 audience，无论是否使用 `--socket`：
+    它绑定 `127.0.0.1` 的临时端口或 Unix 套接字，两者都不是客户端能放进令牌的地址。
+    `--oauth-audience` 或 `--server-url` 都可提供，可来自选项，也可来自配置文件的
+    [`oauth` 段](../oauth.md#配置文件)。见 [OAuth 参考](../oauth.md#各命令的行为)。
 
 hub 会发布 endpoint 文档并持有独占锁，使所有权无歧义。hub 运行时 `status` 退出 `0`，
 否则退出 `3`；没有属主时 `stop` 退出 `3`，且当公布地址无人接受连接时拒绝发信号，

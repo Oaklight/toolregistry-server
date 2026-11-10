@@ -31,6 +31,8 @@
 
 - **OAuth 部署与客户端文档**（#240）：新增页面完整覆盖资源服务器——[OAuth 参考](reference/oauth.md) 列出全部选项、优先级与各命令推导的 audience；[部署指南](guides/oauth-deployment.md) 说明发现链、反向代理、最小权限作用域映射与故障排查；[客户端配置](guides/oauth-clients.md) 覆盖 Gemini 自定义连接应用（机密客户端、Google 托管重定向 URI）、Claude 与 ChatGPT 连接器（CIMD、DCR 或手动注册）以及 Swagger UI。对 #234 与 #235 的条目只做交叉引用，不再重复。这些页面也记录了当时的缺口——不支持内省、没有内置授权服务器，以及内置 Swagger UI 页面缺少 `oauth2-redirect.html`；其中第一项与最后一项已由下方 #253 与 #245 补上。
 
+- **`oauth` 配置段承载全部 Track A 设置**（#240）：该段此前只读取内省相关键与静态客户端上限，因此 issuer、audience、JWKS 端点、OpenAPI 流程端点与作用域映射只能通过选项设置。现在每个键都是对应选项去掉 `oauth_` 前缀（`issuer`、`audience`、`jwks`、`authorization_url`、`token_url`、`refresh_url`、`scope`、`scopes`，以及原有的 `introspection_*` 与 `concurrency_claim`）。`scope` 接受从作用域到其条目的映射，也接受选项的 `SCOPE=ENTRY[,ENTRY]` 列表；`scopes` 接受字符串列表或空格分隔的字符串。选项仍然优先，文件只在对应选项缺席时生效；可重复的 `--oauth-scope` 选项空默认值会回退到文件，因此文件中的 `scope` 无法在命令行上覆盖为空。类型错误的值会以 `oauth.<key>` 指明键名；仅凭文件中的 `issuer` 即可像 `--oauth-issuer` 一样开启 OAuth。issuer/audience 的检查现在针对合并后的值：仅由文件配置的 `local-hub` 部署仍需要显式 audience，而 `openapi` 在通配符绑定上使用文件提供的 issuer 时仍会给出反向代理警告。CLI 参考补齐了 `local-hub` 缺失的 `--oauth-*` 行，OAuth 参考记录了完整的配置段并删除了对应的缺口条目。
+
 ### 修复
 
 - **末尾带斜杠的 issuer 不再产生双斜杠的 JWKS 回退地址**（#246）：最后的回退改用与 `OAuthSettings.jwks_url` 相同的拼接方式，会去掉末尾斜杠，因此以 `https://auth.example.com/` 公布且元数据不可达的 issuer 会请求 `https://auth.example.com/.well-known/jwks.json`，而不是 `https://auth.example.com//.well-known/jwks.json`。`iss` 仍逐字节比较。

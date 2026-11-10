@@ -165,26 +165,70 @@ OAuth 令牌与 API 密钥产生同类 principal，因此授权层在每个前�
 
 ## 配置文件
 
-工具来源配置文件（`--config`）可以带 `oauth` 段。只有内省设置与静态客户端上限从中读取；
-每个键都以命令行选项优先。
+工具来源配置文件（`--config`）可以带 `oauth` 段。所有 OAuth 设置都可在其中给出，键名
+是对应选项去掉 `oauth_` 前缀，与 `introspection_url` 一致；每个键都以命令行选项优先，
+文件只在该选项缺席时生效。
 
 ```yaml
 oauth:
+  issuer: https://auth.example.com
+  audience: https://tools.example.com/mcp
+  jwks: https://auth.example.com/.well-known/jwks.json
+  scope:
+    tools:read: [calculator, web/*, +web-search, -calculator-danger]
+    tools:admin: web/*
+  scopes: [openid, profile, email]
+  authorization_url: https://auth.example.com/authorize
+  token_url: https://auth.example.com/token
+  refresh_url: https://auth.example.com/refresh
   introspection_url: https://auth.example.com/introspect
   introspection_client_id: toolregistry
   introspection_client_secret: change-me
   introspection_cache_ttl: 5
   introspection_optional: false
+  concurrency_claim: max_concurrency
   client_concurrency:
     reports-bot: 2
 ```
 
-issuer、audience 与作用域映射仍是命令行选项，因此 OAuth 仍需要相应的选项。该段会被
-校验：服务器不读取的键会在启动时被拒绝，否则像 `introspection_ur1` 这样的拼写错误会让
-一项安全控制静默关闭。接受的键是 `introspection_url`、`introspection_client_id`、
-`introspection_client_secret`、`introspection_cache_ttl`、`introspection_optional`、
-`concurrency_claim` 与 `client_concurrency`。非法的按客户端上限会指明来源，例如
+`issuer` 是开启 OAuth 唯一需要的键：文件中有它而命令行没有任何 OAuth 选项时，行为与
+`--oauth-issuer` 完全相同。`audience` 取代推导出的 audience。`jwks`、
+`authorization_url`、`token_url` 与 `refresh_url` 覆盖对应选项的元数据发现结果。其余键
+是 `introspection_url`、`introspection_client_id`、`introspection_client_secret`、
+`introspection_cache_ttl`、`introspection_optional`、`concurrency_claim` 与
+`client_concurrency`。
+
+| 键 | 选项 | 接受的值 |
+|----|------|----------|
+| `issuer` | `--oauth-issuer` | 字符串 |
+| `audience` | `--oauth-audience` | 字符串 |
+| `jwks` | `--oauth-jwks` | 字符串 |
+| `authorization_url` | `--oauth-authorization-url` | 字符串 |
+| `token_url` | `--oauth-token-url` | 字符串 |
+| `refresh_url` | `--oauth-refresh-url` | 字符串 |
+| `scope` | `--oauth-scope` | 从作用域到其条目的映射；每个值是一个条目列表或一个逗号分隔的字符串。也接受选项的 `[SCOPE=ENTRY[,ENTRY], ...]` 列表形式 |
+| `scopes` | `--oauth-scopes` | 字符串列表，或一个空格分隔的字符串 |
+
+`scope` 的条目语法与选项相同：命名空间模式、`+tool-name`（允许单个工具）或
+`-tool-name`（拒绝单个工具）。未映射的作用域仍然不授予任何权限，因此在由文件驱动的
+部署中，最小权限由 `scope` 表达。
+
+优先级是替换，而不是合并。只要给出了任何一个 `--oauth-scope` 值，文件中的 `scope`
+映射就整体被忽略，而不是与之合并；`client_concurrency` 同样如此。可重复的
+`--oauth-scope` 选项默认是空列表，因此"未给出值"与"完全省略"无法区分：空列表会回退到
+文件，而文件中的 `scope` 无法在命令行上覆盖为*空*。需要时请删除该键。
+
+该段会被校验：服务器不读取的键会在启动时被拒绝，否则像 `introspection_ur1` 这样的
+拼写错误会让一项安全控制静默关闭。类型错误的值会指明键名，例如
+`oauth.scope must be a mapping from a scope to its entries, or a list of
+SCOPE=ENTRY[,ENTRY] strings` 或 `oauth.scopes must be a string or a list of
+strings`。非法的按客户端上限会指明来源，例如
 `oauth.client_concurrency['reports-bot'] must be a positive integer`。
+
+文件中设置了某项、但文件与选项都没有 issuer 时，与选项的情形一样是启动错误。audience
+的检查针对合并后的值：`openapi`、`mcp` 与 `gateway` 命令在能推导时推导 audience，而
+`local-hub` 需要显式的 `audience` 或 `--server-url`，因为它的绑定地址永远不是公开
+audience。
 
 独立 `openapi` 命令上的 OAuth 需要带加密后端的 PyJWT：请安装
 `toolregistry-server[openapi]`。基础安装仍不含第三方包，`[gateway]`/`[mcp]` 已自带该依赖。
@@ -195,7 +239,6 @@ issuer、audience 与作用域映射仍是命令行选项，因此 OAuth 仍需�
 
 - 没有内置授权服务器，也没有客户端注册命令。
 - 内省不会让不透明令牌可用：本地 JWT 校验仍先执行。
-- `oauth` 配置段只覆盖内省与静态客户端上限；issuer、audience 与作用域映射仍是选项。
 
 ## 另见
 
