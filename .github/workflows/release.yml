@@ -89,7 +89,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A pre-release version must not become the repository's Latest
+          # release: `/releases/latest` would then point at a dev build.
+          # The pattern covers the PEP 440 suffixes this project uses.
+          PRERELEASE_FLAGS=""
+          if printf '%s' "${{ inputs.version }}" \
+            | grep -Eq '(\.dev[0-9]+|a[0-9]+|b[0-9]+|rc[0-9]+)$'; then
+            PRERELEASE_FLAGS="--prerelease --latest=false"
+          fi
           gh release create "v${{ inputs.version }}" dist/* \
             --repo "${{ github.repository }}" \
             --title "v${{ inputs.version }}" \
+            $PRERELEASE_FLAGS \
             --generate-notes
