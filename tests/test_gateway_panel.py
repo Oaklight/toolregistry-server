@@ -34,6 +34,7 @@ from toolregistry_server.ext.gateway import (
 )
 from toolregistry_server.gateway.admin import parse_source_payload
 from toolregistry_server.route_table import RouteTable
+from toolregistry_server.source_manager import _redact_url_userinfo
 
 # ---------------------------------------------------------------- sources
 
@@ -64,10 +65,14 @@ class FakeEntry:
 
     def to_dict(self) -> dict[str, Any]:
         declaration = _declaration_dict(self.source)
+        detail = declaration.get("url") or declaration.get("class", "")
         return {
             "id": self.source_id,
             "kind": declaration.get("type"),
-            "detail": declaration.get("url") or declaration.get("class", ""),
+            # The real entry redacts the detail; the fake must too, or a test
+            # that reads the whole GET response sees a credential production
+            # never sends.
+            "detail": _redact_url_userinfo(str(detail)),
             "namespace": declaration.get("namespace"),
             "enabled": declaration.get("enabled", True),
             "status": self.status,
@@ -504,6 +509,49 @@ class TestSourceEditing:
         stored = sources.get("cred").source
         assert stored.url == original
         assert stored.namespace == "renamed"
+
+    def test_edit_that_omits_the_url_keeps_the_stored_value(
+        self, panel, sources
+    ) -> None:
+        original = "https://user:pass@mcp.example.test/mcp"
+        sources._entries["cred"] = FakeEntry(
+            "cred",
+            MCPSource(transport="streamable-http", url=original),
+        )
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/cred",
+            method="PUT",
+            data={
+                "type": "mcp",
+                "transport": "streamable-http",
+                "namespace": "renamed",
+            },
+        )
+        assert status == 200
+        stored = sources.get("cred").source
+        assert stored.url == original
+        assert stored.namespace == "renamed"
+
+    def test_edit_with_a_new_url_stores_the_new_value(self, panel, sources) -> None:
+        sources._entries["cred"] = FakeEntry(
+            "cred",
+            MCPSource(
+                transport="streamable-http",
+                url="https://user:pass@mcp.example.test/mcp",
+            ),
+        )
+        replacement = "https://other:secret@mcp.example.test/mcp"
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/cred",
+            method="PUT",
+            data={
+                "type": "mcp",
+                "transport": "streamable-http",
+                "url": replacement,
+            },
+        )
+        assert status == 200
+        assert sources.get("cred").source.url == replacement
 
     def test_openapi_base_url_userinfo_is_redacted_and_restored(
         self, panel, sources
