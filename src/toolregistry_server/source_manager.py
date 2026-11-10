@@ -211,18 +211,30 @@ def _auth_rejection_status(exc: BaseException) -> int | None:
 def _status_of(exc: BaseException) -> int | None:
     """Return the HTTP status an exception carries, if any.
 
-    ``httpx.HTTPStatusError`` keeps it on ``response``, an
-    ``http.client``-style error puts it on ``code``, and
-    ``http.HTTPStatus`` exposes ``status_code`` directly.
+    Only HTTP-shaped errors are read.  An MCP ``McpError`` carries a JSON-RPC
+    error code, and a JSON-RPC ``403`` (or ``401``) is a protocol code, not an
+    HTTP response: reading it as a status would mark a source for
+    re-authorization on an unrelated failure.  The status is therefore taken
+    from ``httpx.HTTPStatusError`` (which keeps it on ``response``) or from a
+    genuine ``http.client``/``urllib`` error (``HTTPError.code``), never from
+    an arbitrary ``code`` attribute.
+
+    Args:
+        exc: One exception from a cause chain or a group.
+
+    Returns:
+        The HTTP status, or ``None`` when the exception is not HTTP-shaped.
     """
-    response = getattr(exc, "response", None)
-    for value in (
-        getattr(exc, "status_code", None),
-        getattr(response, "status_code", None),
-        getattr(exc, "code", None),
-    ):
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
+    import urllib.error
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - the mcp extra always brings httpx
+        return None
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code
     return None
 
 
