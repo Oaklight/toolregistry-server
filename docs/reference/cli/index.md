@@ -53,6 +53,7 @@ The gateway command keeps its `--backend` choice.
 | `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
 | `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
+| `--oauth-scopes "SCOPE ..."` | - | Space-separated scopes advertised in protected-resource metadata. Omitted when empty, and by default when an issuer is set; without OAuth the metadata keeps advertising `mcp` |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest accepted request body. Must be positive; a larger body returns `413` with a JSON error |
 | `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
 | `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes (requires the `regex` extra). `0` disables execution |
@@ -91,6 +92,7 @@ toolregistry-server mcp [options]
 | `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
 | `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
+| `--oauth-scopes "SCOPE ..."` | - | Space-separated scopes advertised in protected-resource metadata. Omitted when empty, and by default when an issuer is set; without OAuth the metadata keeps advertising `mcp` |
 | `--server-url URL` | derived from `--host`/`--port` | Public URL advertised in OAuth protected-resource metadata (required behind a reverse proxy) |
 | `--tools-list-ttl-ms MS` | `300000` | `ttlMs` cache hint for `tools/list`; `0` disables caching |
 | `--tools-list-cache-scope {public,private}` | `private` | `cacheScope` hint for `tools/list` |
@@ -149,6 +151,7 @@ every request. The admin panel is disabled by default.
 | `--oauth-audience URL` | derived from `--host`/`--port` | Expected `aud` or RFC 8707 `resource` value. Required when the URL cannot be derived |
 | `--oauth-jwks URL` | `<issuer>/.well-known/jwks.json` | JWKS endpoint override |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | Map one token scope to namespace patterns; repeatable. Unmapped scopes grant nothing |
+| `--oauth-scopes "SCOPE ..."` | - | Space-separated scopes advertised in protected-resource metadata. Omitted when empty, and by default when an issuer is set; without OAuth the metadata keeps advertising `mcp` |
 | `--server-url URL` | derived from `--host`/`--port` | Public MCP URL used in protected-resource metadata |
 | `--backend {fastapi,httpserver}` | `fastapi` | Multiple frontends require `fastapi`; `httpserver` can serve only the openapi frontend |
 | `--openapi-path PATH` | `/openapi` | OpenAPI mount path (rejected with `--backend httpserver`, which serves at the listener root) |

@@ -277,6 +277,7 @@ toolregistry-server gateway \
 | `--oauth-audience URL` | Expected `aud` or RFC 8707 `resource` value. Defaults to the advertised MCP URL |
 | `--oauth-jwks URL` | JWKS endpoint (default: `<issuer>/.well-known/jwks.json`) |
 | `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | Map one scope to namespace patterns; repeatable |
+| `--oauth-scopes "SCOPE ..."` | Scopes advertised in the protected-resource metadata. Omitted when empty, and by default when an issuer is set |
 
 The flags are accepted by `openapi`, `mcp` (HTTP transports), `gateway` and
 `local-hub`.
@@ -321,6 +322,21 @@ the configured issuer in `authorization_servers`, so a client can discover the
 authorization server. A hub bound to a Unix socket has no derivable URL: pass
 `--oauth-audience` explicitly (and `--server-url` if clients should discover
 the metadata).
+
+`scopes_supported` is opt-in once an external issuer is configured, because
+the authorization server validates the scopes it issues and may reject the
+generic `mcp` scope at authorize time. List the scopes the deployment really
+issues:
+
+```bash
+toolregistry-server gateway \
+  --config config.yaml \
+  --oauth-issuer https://idp.example.com/realms/dev \
+  --oauth-scopes "openid profile email offline_access"
+```
+
+`--oauth-scopes ""` omits the field. Without `--oauth-issuer`, the metadata
+keeps advertising `mcp`, as before.
 
 ### Limitations
 
