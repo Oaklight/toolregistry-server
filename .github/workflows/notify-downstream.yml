@@ -6,6 +6,10 @@ on:
 
 jobs:
   notify-downstream:
+    # ``release: published`` fires for pre-releases too.  A dev build must not
+    # ask downstream to test against it: the hub workflow opens an issue when
+    # the check fails, and a pre-release is not a supported target.
+    if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
