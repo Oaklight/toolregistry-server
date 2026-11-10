@@ -411,6 +411,7 @@ def _add_openapi_route(
     version: str,
     description: str,
     principal_resolver: Any | None = None,
+    openapi_auth: Any | None = None,
 ) -> None:
     """Register ``GET /openapi.json`` from the RouteTable builder."""
     from .spec import build_openapi_schema
@@ -422,17 +423,20 @@ def _add_openapi_route(
         if request.headers.get("if-none-match") == etag:
             return Response(status_code=304, headers=headers)
         principal = getattr(request.state, "principal", None)
+        security_schemes: dict[str, Any] | None = None
+        security: list[dict[str, list[str]]] | None = None
+        if openapi_auth is not None:
+            security_schemes, security = openapi_auth.build()
+        elif principal_resolver is not None:
+            security_schemes = {"HTTPBearer": {"type": "http", "scheme": "bearer"}}
+            security = [{"HTTPBearer": []}]
         document = build_openapi_schema(
             route_table,
             title=title,
             version=version,
             description=description,
-            security_schemes=(
-                {"HTTPBearer": {"type": "http", "scheme": "bearer"}}
-                if principal_resolver is not None
-                else None
-            ),
-            security=([{"HTTPBearer": []}] if principal_resolver is not None else None),
+            security_schemes=security_schemes,
+            security=security,
             route_filter=(
                 None
                 if principal_resolver is None
@@ -800,6 +804,7 @@ def create_httpserver_app(
     regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
     regex_budget: float = DEFAULT_REGEX_BUDGET,
     principal_resolver: Any | None = None,
+    openapi_auth: Any | None = None,
 ) -> App:
     """Build a :class:`~httpserver.App` exposing the RouteTable.
 
@@ -825,6 +830,10 @@ def create_httpserver_app(
             authentication runs through the SQLite store and the caller's
             scope filters tool routes, ``/tools``, ``/openapi.json`` and
             ``/events``. Static *tokens* keep full, unscoped access.
+        openapi_auth: Optional document-security builder (an
+            :class:`~toolregistry_server.oauth.OpenAPIAuth`).  When set, its
+            schemes and requirements replace the legacy bearer-only
+            document; ``None`` keeps the previous behaviour.
 
     Returns:
         An :class:`~httpserver.App` with the tool routes, ``/tools``,
@@ -853,7 +862,13 @@ def create_httpserver_app(
 
     _add_tools_route(app, route_table, principal_resolver)
     _add_openapi_route(
-        app, route_table, title, version, description, principal_resolver
+        app,
+        route_table,
+        title,
+        version,
+        description,
+        principal_resolver,
+        openapi_auth,
     )
     _add_docs_route(app, title)
     _add_redoc_route(app, title)

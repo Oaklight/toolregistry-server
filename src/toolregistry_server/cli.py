@@ -425,9 +425,38 @@ class CLI:
             metavar="SCOPE ...",
             help=(
                 "Space-separated scopes advertised in protected-resource "
-                "metadata.  The field is omitted when this is empty and, by "
-                "default, whenever an issuer is configured; a server without "
-                "OAuth keeps advertising 'mcp'"
+                "metadata and in the OpenAPI OAuth2 scheme.  The field is "
+                "omitted when this is empty and, by default, whenever an "
+                "issuer is configured; a server without OAuth keeps "
+                "advertising 'mcp'"
+            ),
+        )
+        group.add_argument(
+            "--oauth-authorization-url",
+            default=None,
+            metavar="URL",
+            help=(
+                "Authorization endpoint for the OpenAPI authorizationCode "
+                "flow (default: authorization_endpoint from the issuer's "
+                "metadata)"
+            ),
+        )
+        group.add_argument(
+            "--oauth-token-url",
+            default=None,
+            metavar="URL",
+            help=(
+                "Token endpoint for the OpenAPI authorizationCode flow "
+                "(default: token_endpoint from the issuer's metadata)"
+            ),
+        )
+        group.add_argument(
+            "--oauth-refresh-url",
+            default=None,
+            metavar="URL",
+            help=(
+                "Optional refreshUrl for the OpenAPI authorizationCode flow; "
+                "omitted unless set"
             ),
         )
 

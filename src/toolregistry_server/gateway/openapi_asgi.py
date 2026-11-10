@@ -1052,6 +1052,7 @@ def setup_dynamic_openapi(
     app: "FastAPI",
     route_table: RouteTable,
     principal_resolver: Any | None = None,
+    openapi_auth: Any | None = None,
 ) -> None:
     """Serve ``/openapi.json`` from the RouteTable itself.
 
@@ -1072,15 +1073,27 @@ def setup_dynamic_openapi(
         app: The FastAPI application instance.
         route_table: The route table to describe.
         principal_resolver: Optional API key resolver.
+        openapi_auth: Optional document-security builder (an
+            :class:`~toolregistry_server.oauth.OpenAPIAuth`).  When set, its
+            schemes and requirements replace the legacy bearer-only
+            document.
     """
     from ..adapters.openapi.spec import build_openapi_schema
 
+    def _document_security() -> tuple[Any, Any]:
+        if openapi_auth is not None:
+            return openapi_auth.build()
+        return None, None
+
     def custom_openapi() -> dict[str, Any]:
+        security_schemes, security = _document_security()
         return build_openapi_schema(
             route_table,
             title=app.title,
             version=app.version,
             description=app.description,
+            security_schemes=security_schemes,
+            security=security,
         )
 
     app.openapi = custom_openapi  # ty: ignore[invalid-assignment]
@@ -1104,13 +1117,17 @@ def setup_dynamic_openapi(
     @app.get(openapi_path, include_in_schema=False)
     async def _scoped_openapi(request: Request) -> JSONResponse:
         principal = getattr(request.state, "principal", None)
+        security_schemes, security = _document_security()
+        if openapi_auth is None:
+            security_schemes = {"HTTPBearer": {"type": "http", "scheme": "bearer"}}
+            security = [{"HTTPBearer": []}]
         document = build_openapi_schema(
             route_table,
             title=app.title,
             version=app.version,
             description=app.description,
-            security_schemes={"HTTPBearer": {"type": "http", "scheme": "bearer"}},
-            security=[{"HTTPBearer": []}],
+            security_schemes=security_schemes,
+            security=security,
             route_filter=lambda route: principal_resolver.allows_route(
                 principal, route
             ),
@@ -1135,6 +1152,7 @@ def create_openapi_app(
     regex_timeout: float = DEFAULT_REGEX_TIMEOUT,
     regex_budget: float = DEFAULT_REGEX_BUDGET,
     principal_resolver: Any | None = None,
+    openapi_auth: Any | None = None,
 ) -> "FastAPI":
     """Create a FastAPI application from a RouteTable.
 
@@ -1164,6 +1182,10 @@ def create_openapi_app(
             the app-level dependency returned by
             :func:`toolregistry_server.auth.create_scoped_bearer_dependency`.
             ``None`` keeps the previous behaviour.
+        openapi_auth: Optional document-security builder (an
+            :class:`~toolregistry_server.oauth.OpenAPIAuth`).  When set, the
+            served document describes the OAuth2 scheme and, when keys or
+            static tokens are also accepted, the OR of both credentials.
 
     Returns:
         A configured FastAPI application with:
@@ -1274,7 +1296,7 @@ def create_openapi_app(
     app.include_router(router)
 
     # Setup dynamic OpenAPI schema that filters disabled tools
-    setup_dynamic_openapi(app, route_table, principal_resolver)
+    setup_dynamic_openapi(app, route_table, principal_resolver, openapi_auth)
 
     # Added last so it wraps every other middleware: an oversized body is
     # rejected before routing, auth or ETag short-circuits see it.

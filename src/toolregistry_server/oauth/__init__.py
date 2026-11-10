@@ -1,10 +1,11 @@
 """OAuth 2.0 resource-server support.
 
 Public surface: :class:`OAuthSettings`, :class:`OAuthTokenVerifier`,
-:class:`OAuthResolver`, :class:`CompositePrincipalResolver`, the resolver
-builders, and :func:`settings_from_args`.
+:class:`OAuthResolver`, :class:`CompositePrincipalResolver`,
+:class:`OpenAPIAuth`, the resolver builders, and :func:`settings_from_args`.
 """
 
+from .openapi import OpenAPIAuth
 from .verifier import (
     CompositePrincipalResolver,
     OAuthResolver,
@@ -18,6 +19,7 @@ from .verifier import (
 __all__ = [
     "CompositePrincipalResolver",
     "OAuthResolver",
+    "OpenAPIAuth",
     "OAuthSettings",
     "OAuthTokenVerifier",
     "build_oauth_resolver",
