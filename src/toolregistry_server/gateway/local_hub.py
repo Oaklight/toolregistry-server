@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -653,6 +654,11 @@ def _published(endpoint: HubEndpoint, quiet: bool) -> int:
 #: credential, so the hub a shim starts must not inherit it.
 HUB_KEY_ENV = "TOOLREGISTRY_HUB_KEY"
 
+#: Environment variable overriding the command that starts a resident hub.
+#: A Hub deployment sets it to ``toolregistry-hub`` so a hub started by
+#: ``ensure`` or a shim keeps the Hub launcher's registry policy.
+HUB_COMMAND_ENV = "TOOLREGISTRY_LOCAL_HUB_COMMAND"
+
 
 def _child_environment() -> dict[str, str]:
     """Return the environment for a hub this process starts.
@@ -705,7 +711,30 @@ def _spawn_hub(
 
 
 def _hub_command() -> list[str]:
-    """Return the command that starts this package's CLI."""
+    """Return the command prefix that starts the resident hub.
+
+    Precedence:
+
+    1. ``TOOLREGISTRY_LOCAL_HUB_COMMAND`` when set to non-blank text.  The
+       value is split with :func:`shlex.split` and used verbatim, so a
+       launcher with options (a wrapper, a different interpreter) can be
+       named.  A Hub deployment points it at ``toolregistry-hub``; a hub
+       spawned by ``ensure`` or a shim then keeps the Hub launcher's registry
+       policy instead of falling back to plain ``toolregistry-server``.
+    2. ``toolregistry-server`` on ``PATH``.
+    3. This interpreter with the package bootstrap.
+
+    The variable is inherited by the child unchanged: :func:`_child_environment`
+    removes only the shim's key, so a hub starts its own children the same
+    way.
+
+    Returns:
+        The leading argv entries; the ``local-hub run ...`` arguments are
+        appended by the caller.
+    """
+    override = os.environ.get(HUB_COMMAND_ENV, "")
+    if override.strip():
+        return shlex.split(override)
     executable = shutil.which("toolregistry-server")
     if executable:
         return [executable]

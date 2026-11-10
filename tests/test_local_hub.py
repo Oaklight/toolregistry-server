@@ -647,6 +647,50 @@ class TestHubIsolation:
         assert options["allow_operator_token"] is False
 
 
+class TestHubCommand:
+    """The resident hub command can be pointed at a launcher."""
+
+    def test_the_override_wins_over_path_lookup(self, monkeypatch):
+        monkeypatch.setenv(
+            local_hub.HUB_COMMAND_ENV, "toolregistry-hub --config /etc/hub.yaml"
+        )
+        monkeypatch.setattr(
+            local_hub.shutil, "which", lambda _name: "/must/not/be/used"
+        )
+
+        assert local_hub._hub_command() == [
+            "toolregistry-hub",
+            "--config",
+            "/etc/hub.yaml",
+        ]
+
+    def test_an_unset_override_uses_the_server_executable(self, monkeypatch):
+        monkeypatch.delenv(local_hub.HUB_COMMAND_ENV, raising=False)
+        monkeypatch.setattr(
+            local_hub.shutil, "which", lambda _name: "/opt/bin/toolregistry-server"
+        )
+
+        assert local_hub._hub_command() == ["/opt/bin/toolregistry-server"]
+
+    def test_a_blank_override_uses_the_server_executable(self, monkeypatch):
+        monkeypatch.setenv(local_hub.HUB_COMMAND_ENV, "   ")
+        monkeypatch.setattr(
+            local_hub.shutil, "which", lambda _name: "/opt/bin/toolregistry-server"
+        )
+
+        assert local_hub._hub_command() == ["/opt/bin/toolregistry-server"]
+
+    def test_without_an_executable_it_bootstraps_this_interpreter(self, monkeypatch):
+        monkeypatch.delenv(local_hub.HUB_COMMAND_ENV, raising=False)
+        monkeypatch.setattr(local_hub.shutil, "which", lambda _name: None)
+
+        assert local_hub._hub_command() == [
+            sys.executable,
+            "-c",
+            "from toolregistry_server.cli import main; main()",
+        ]
+
+
 class TestChildEnvironment:
     """A hub the shim starts must not inherit the shim's credential."""
 
