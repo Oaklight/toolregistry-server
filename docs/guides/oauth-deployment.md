@@ -170,6 +170,8 @@ curl -s https://auth.example.com/.well-known/oauth-authorization-server | jq
 - 同样的设置可以写在配置文件的 `oauth:` 段中：`introspection_url`、
   `introspection_client_id`、`introspection_client_secret`、`introspection_cache_ttl`
   与 `introspection_optional`，按客户端上限写在 `client_concurrency`。选项优先于文件。
+  该段中未知的键会在启动时被拒绝而不是被忽略，非法的按客户端上限会指明来源
+  （`oauth.client_concurrency['reports-bot']`）。
 
 内省端点需要自己的客户端凭据，它不是最终用户授权的那个客户端。若进程列表可见，不要让该
 密钥出现在命令行中——配置文件是更合适的位置。
@@ -183,8 +185,15 @@ curl -s https://auth.example.com/.well-known/oauth-authorization-server | jq
 --oauth-concurrency-claim max_concurrency
 ```
 
-声明中的正整数优先于静态条目。无效的声明会被忽略，而不是拒绝令牌。上限按 OAuth 客户端
-生效，因此同一用户的两个客户端从不共享预算，等待超时的调用会以 `busy` 结果记录。
+声明中的正整数优先于静态条目。无效的声明会被忽略，而不是拒绝令牌。
+
+预算属于 OAuth 客户端，而不是它的某个用户：同一客户端代表的所有 `sub` 共享一个在途
+上限，键为 `oauth:<client_id>`。预算按客户端单调不增——声明值宽于当前生效的上限时不会
+提高它，更窄的声明则会降低它——因此一个用户无法扩大其他人共享的上限。两个不同的客户端
+从不共享预算。
+
+记账仍按 principal：执行日志行与密钥计数依然带上客户端与 `sub`，因此同一客户端的两个
+用户虽然共享上限，仍可区分。等待超时的调用会以 `busy` 结果记录。
 
 ## 故障排查
 
@@ -199,7 +208,7 @@ curl -s https://auth.example.com/.well-known/oauth-authorization-server | jq
 | 客户端提示不支持动态注册 | AS 关闭了 DCR，或客户端需要 CIMD | 在 AS 启用 DCR 或 CIMD，或预先注册客户端并手动填入凭据 |
 | Swagger 的 Authorize 没有反应 | 文档没有 OAuth2 方案 | 确认设置了 `--oauth-issuer` 且端点可解析；否则方案会被省略并记录警告 |
 | AS 回调后 Swagger 停在 404 | AS 注册的重定向 URI 与服务提供的重定向页不一致 | 注册 `<公开源><openapi 路径>/oauth2-redirect.html`；页面随 `--openapi-path` 移动 |
-| 启用内省后所有令牌都被拒绝 | 端点不可达，或客户端 id 与密钥有误 | 检查启动日志与端点；加上 `--oauth-introspection-optional` 回退到本地校验可确认这一判断 |
+| 启用内省后所有令牌都被拒绝 | 端点不可达，或客户端 id 与密钥有误 | 检查启动日志与端点；加上 `--oauth-introspection-optional` 回退到本地校验可确认这一判断。失败结果会按 TTL 缓存，下一次探测在一个 TTL 之后，而不是下一个请求 |
 | 已撤销的令牌仍然可用 | 未配置内省端点，或缓存 TTL 尚未到期 | 配置 `--oauth-introspection-url`，并缩短 `--oauth-introspection-cache-ttl`（默认 5 秒） |
 
 ## 另见

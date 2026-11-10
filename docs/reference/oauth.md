@@ -103,6 +103,10 @@ Swagger UI 在授权码流程结束时打开文档页旁的 `oauth2-redirect.htm
     回调变成 `401`，流程无法完成。页面是静态的，不加载任何外部资源，不包含密钥，只把授权
     响应交回打开它的 Swagger UI 窗口。
 
+该页面与上游 `swagger-ui-dist` 重定向脚本的解析逻辑一致：对每个回调参数做百分号解码，
+接受带前导 `?` 的 hash 形式（`#?code=...`），并识别 `accessCode`、`authorizationCode`
+与 `authorization_code` 三种流程名。
+
 在授权服务器上注册的重定向 URI 就是该页面的公开地址：独立服务器为
 `<公开源>/oauth2-redirect.html`，gateway 为 `<公开源><openapi 路径>/oauth2-redirect.html`。
 
@@ -127,7 +131,8 @@ toolregistry-server gateway --config config.yaml \
   SHA-256 摘要，从不保存令牌本身，肯定与否定应答都会缓存。该 TTL 就是被撤销令牌仍被
   接受的最长时间；`0` 关闭缓存，每个请求都内省。
 - 端点失败时拒绝令牌。`--oauth-introspection-optional` 改为回退到本地结果，用撤销延迟
-  换取可用性。
+  换取可用性。失败结果同样按 TTL 缓存，因此一次故障每个 TTL 只探测一次，而不是每个请求
+  都等一次超时。
 - 令牌与请求体从不写入日志；失败只记录端点与异常类型。
 - 设置 URL 却没有客户端 id 与密钥会导致启动失败。不设置 URL 则只做本地校验，这是默认行为。
 
@@ -140,12 +145,14 @@ OAuth 令牌与 API 密钥产生同类 principal，因此授权层在每个前�
 
 - **名称** —— `sub` 声明，否则 `client_id`/`azp`，否则 `oauth`。
 - **客户端** —— `client_id`，否则 `azp`。它与 `sub` 分开保存，因此同一用户的两个客户端是
-  不同的 principal，作用域、并发预算与执行日志行都各自独立。
+  不同的 principal，作用域、执行日志行与计数都各自独立。
 - **作用域** —— 只由 `--oauth-scope` 映射决定。未映射的作用域不授予任何权限，
   `+tool`/`-tool` 条目在命名空间之上生效。
 - **并发** —— `--oauth-concurrency-claim` 或 `--oauth-client-concurrency`；只能收紧进程的
-  `--client-concurrency`，不能放宽。同一用户的两个客户端从不共享预算，记账键为
-  `oauth:<client_id>:<label>`。
+  `--client-concurrency`，不能放宽。预算属于 OAuth 客户端：该客户端代表的所有用户共享
+  同一个在途上限，限流键为 `oauth:<client_id>`。预算按客户端单调不增——声明值宽于当前
+  生效的上限时不会提高它，更窄的声明则会降低它。记账仍按 principal：执行日志行与计数
+  同时带上客户端与 `sub`（`oauth:<client_id>:<label>`），因此同一客户端的两个用户仍可区分。
 - **列表** —— MCP 的 `tools/list` 与 OpenAPI 前端的 `/tools`、`/openapi.json` 只显示该
   令牌可调用的工具。
 - **执行日志** —— 每次调用记录 `client_id`（OAuth 客户端）与 `outcome`（`ok`、`error`、
@@ -172,7 +179,12 @@ oauth:
     reports-bot: 2
 ```
 
-issuer、audience 与作用域映射仍是命令行选项，因此 OAuth 仍需要相应的选项。
+issuer、audience 与作用域映射仍是命令行选项，因此 OAuth 仍需要相应的选项。该段会被
+校验：服务器不读取的键会在启动时被拒绝，否则像 `introspection_ur1` 这样的拼写错误会让
+一项安全控制静默关闭。接受的键是 `introspection_url`、`introspection_client_id`、
+`introspection_client_secret`、`introspection_cache_ttl`、`introspection_optional`、
+`concurrency_claim` 与 `client_concurrency`。非法的按客户端上限会指明来源，例如
+`oauth.client_concurrency['reports-bot'] must be a positive integer`。
 
 独立 `openapi` 命令上的 OAuth 需要带加密后端的 PyJWT：请安装
 `toolregistry-server[openapi]`。基础安装仍不含第三方包，`[gateway]`/`[mcp]` 已自带该依赖。

@@ -56,7 +56,7 @@ toolregistry-server openapi [选项]
 | `--oauth-authorization-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的授权端点 |
 | `--oauth-token-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的令牌端点 |
 | `--oauth-refresh-url URL` | - | 可选的 `refreshUrl`；未设置时省略 |
-| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略 |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略，更宽的值不会提高客户端当前生效的预算 |
 | `--oauth-client-concurrency CLIENT=LIMIT` | - | 单个 OAuth 客户端的静态在途调用上限；可重复。有效的并发声明优先 |
 | `--oauth-introspection-url URL` | - | RFC 7662 内省端点；每个本地校验通过的令牌都会向它确认 |
 | `--oauth-introspection-client-id ID` | - | 内省端点使用的客户端 id（HTTP Basic）；与 URL 同时必需 |
@@ -105,7 +105,7 @@ toolregistry-server mcp [选项]
 | `--oauth-authorization-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的授权端点 |
 | `--oauth-token-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的令牌端点 |
 | `--oauth-refresh-url URL` | - | 可选的 `refreshUrl`；未设置时省略 |
-| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略 |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略，更宽的值不会提高客户端当前生效的预算 |
 | `--oauth-client-concurrency CLIENT=LIMIT` | - | 单个 OAuth 客户端的静态在途调用上限；可重复。有效的并发声明优先 |
 | `--oauth-introspection-url URL` | - | RFC 7662 内省端点；每个本地校验通过的令牌都会向它确认 |
 | `--oauth-introspection-client-id ID` | - | 内省端点使用的客户端 id（HTTP Basic）；与 URL 同时必需 |
@@ -172,7 +172,7 @@ toolregistry-server gateway [选项]
 | `--oauth-authorization-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的授权端点 |
 | `--oauth-token-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 流程的令牌端点 |
 | `--oauth-refresh-url URL` | - | 可选的 `refreshUrl`；未设置时省略 |
-| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略 |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略，更宽的值不会提高客户端当前生效的预算 |
 | `--oauth-client-concurrency CLIENT=LIMIT` | - | 单个 OAuth 客户端的静态在途调用上限；可重复。有效的并发声明优先 |
 | `--oauth-introspection-url URL` | - | RFC 7662 内省端点；每个本地校验通过的令牌都会向它确认 |
 | `--oauth-introspection-client-id ID` | - | 内省端点使用的客户端 id（HTTP Basic）；与 URL 同时必需 |
