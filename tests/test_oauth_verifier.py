@@ -1330,8 +1330,21 @@ class TestOAuthSectionSurface:
         assert "oauth.introspection_client_secret" in message
         assert "hunter2" not in message
 
-    def test_a_digit_only_secret_is_accepted_as_a_string(self, tmp_path):
-        """YAML turns an unquoted digit-only secret into an int; keep it."""
+    @pytest.mark.parametrize(
+        ("lexeme", "resolved"),
+        [
+            ("9182736450", "9182736450"),
+            ("0123", "83"),
+            ("0755", "493"),
+            ("007", "7"),
+            ("0x1f", "31"),
+            ("1_000", "1000"),
+        ],
+    )
+    def test_a_numeric_secret_is_rejected_and_says_to_quote_it(
+        self, tmp_path, lexeme, resolved
+    ):
+        """The YAML parser rewrites 0123/0x1f/1_000, so never stringify it."""
         from toolregistry_server.cli import _oauth_settings
 
         path = tmp_path / "tools.yaml"
@@ -1339,7 +1352,32 @@ class TestOAuthSectionSurface:
             f"oauth:\n  issuer: {ISSUER}\n"
             "  introspection_url: https://idp.example.com/introspect\n"
             "  introspection_client_id: toolregistry\n"
-            "  introspection_client_secret: 9182736450\n",
+            f"  introspection_client_secret: {lexeme}\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            _oauth_settings(
+                argparse.Namespace(), default_audience=AUDIENCE, config_path=str(path)
+            )
+
+        message = str(excinfo.value)
+        assert "oauth.introspection_client_secret must be a string" in message
+        assert "quote a numeric secret" in message
+        # The resolved value never reaches the log; the one number in the
+        # message is the fixed example, never the operator's text.
+        if resolved != "9182736450":
+            assert resolved not in message
+
+    def test_a_numeric_secret_still_works_when_quoted(self, tmp_path):
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            f"oauth:\n  issuer: {ISSUER}\n"
+            "  introspection_url: https://idp.example.com/introspect\n"
+            "  introspection_client_id: toolregistry\n"
+            '  introspection_client_secret: "0123"\n',
             encoding="utf-8",
         )
 
@@ -1348,7 +1386,20 @@ class TestOAuthSectionSurface:
         )
 
         assert settings is not None
-        assert settings.introspection_client_secret == "9182736450"
+        assert settings.introspection_client_secret == "0123"
+
+    def test_a_numeric_client_id_says_to_quote_it(self, tmp_path):
+        """A numeric id and a numeric secret fail the same way."""
+        with pytest.raises(ValueError) as excinfo:
+            self._settings(
+                tmp_path,
+                f"  issuer: {ISSUER}\n  introspection_client_id: 12345\n",
+            )
+
+        message = str(excinfo.value)
+        assert "oauth.introspection_client_id must be a string" in message
+        assert "quote a numeric value" in message
+        assert "12345" not in message
 
     @pytest.mark.parametrize("value", ["[hunter2]", "{'a': 1}", "true"])
     def test_a_non_string_secret_is_rejected_without_echoing_it(self, tmp_path, value):
