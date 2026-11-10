@@ -240,7 +240,8 @@ class TestPageScript:
         )
 
         assert captured["code"] == "a+b/c=d%e"
-        assert captured["token"] is None
+        # The access-code branch hands back a code, never a token.
+        assert "token" not in captured
         assert captured["closed"] is True
         assert "error" not in captured
 
