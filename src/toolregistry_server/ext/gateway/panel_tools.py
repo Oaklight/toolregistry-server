@@ -6,7 +6,10 @@ permission policy, the handler itself, and the attributed execution-log
 record — rather than calling the tool's callable directly, so a call the
 panel makes is indistinguishable from a client's in the ways that matter: it
 is validated against the served schema, it is refused by a policy that denies
-it, and it appears in the log under the operator principal.
+it, and it appears in the log under the operator principal.  A refused call
+is recorded too, with outcome ``denied``, so a denial is as visible as an
+execution.  The tester does not take a ``ClientLimiter`` slot: that budget
+belongs to client keys, and the tester runs under the operator session.
 
 Nothing here is reachable without the panel's operator session: the host
 answers 401 for every route before an extension handler runs.
@@ -19,7 +22,7 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from ...adapters.openapi.adapter import RequestValidationError, _validate_arguments
 from ...adapters.openapi.serialisation import encode_tool_result
@@ -270,6 +273,56 @@ def _arguments(payload: Mapping[str, Any], view: ToolView) -> dict[str, Any]:
         ) from exc
 
 
+def _raw_arguments(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the submitted arguments without validating them."""
+    raw = payload.get("arguments")
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def _refuse(
+    registry: Any,
+    name: str,
+    arguments: Mapping[str, Any],
+    principal: Any,
+    status: int,
+    error: str,
+    message: str,
+    extra: Mapping[str, Any] | None = None,
+) -> NoReturn:
+    """Record a refused tester call under *principal*, then raise it.
+
+    The execution log makes the refusal visible with outcome ``denied``, the
+    same way a client call the policy refuses is recorded (#252).
+
+    Args:
+        registry: The live registry.
+        name: The tool the tester addressed.
+        arguments: The arguments that were submitted or validated.
+        principal: The operator principal, or ``None`` for the default.
+        status: HTTP status code.
+        error: Short error name for the panel's error envelope.
+        message: Operator-facing explanation.
+        extra: Additional JSON fields merged into the response body.
+
+    Raises:
+        PanelRefusal: Always, carrying the response the panel sends.
+    """
+    refusal = PanelRefusal(status, error, message, extra)
+    if principal is None:
+        from ...keystore import Principal
+
+        principal = Principal.operator()
+    record_tool_call(
+        registry,
+        name,
+        arguments,
+        principal=principal,
+        error=refusal,
+        outcome="denied",
+    )
+    raise refusal
+
+
 def _invoke(view: ToolView, arguments: Mapping[str, Any]) -> Any:
     """Run the route handler, awaiting a coroutine result.
 
@@ -321,14 +374,22 @@ def call_tool(
     view = resolve_tool(registry, route_table, name)
     tags = dangerous_tags(view.tool)
     if not view.enabled:
-        raise PanelRefusal(
+        _refuse(
+            registry,
+            name,
+            _raw_arguments(payload),
+            principal,
             409,
             "Tool Disabled",
             f"Tool {name!r} is disabled; enable it before calling it from the panel",
             {"disable_reason": view.disable_reason},
         )
     if not payload.get("confirm"):
-        raise PanelRefusal(
+        _refuse(
+            registry,
+            name,
+            _raw_arguments(payload),
+            principal,
             409,
             "Confirmation Required",
             f"Confirm the call to {name!r}",
@@ -342,9 +403,9 @@ def call_tool(
             "gateway mode with this page wired",
         )
     arguments = _arguments(payload, view)
-    refusal = policy_refusal_sync(registry, view.route, arguments)
-    if refusal is not None:
-        raise PanelRefusal(403, "Forbidden", refusal)
+    denial = policy_refusal_sync(registry, view.route, arguments)
+    if denial is not None:
+        _refuse(registry, name, arguments, principal, 403, "Forbidden", denial)
 
     if principal is None:
         from ...keystore import Principal
