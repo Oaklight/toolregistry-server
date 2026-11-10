@@ -244,6 +244,10 @@ See [`examples/config.yaml`](examples/config.yaml) and [`examples/config.jsonc`]
 
 - [Full Documentation](https://toolregistry-server.readthedocs.io)
 - [Configuration Guide](https://toolregistry-server.readthedocs.io/guides/configuration/)
+- [Authentication & OAuth](https://toolregistry-server.readthedocs.io/guides/authentication/)
+- [Deploying with an External Authorization Server](https://toolregistry-server.readthedocs.io/guides/oauth-deployment/)
+- [Connecting OAuth Clients](https://toolregistry-server.readthedocs.io/guides/oauth-clients/)
+- [OAuth Reference](https://toolregistry-server.readthedocs.io/reference/oauth/)
 - [API Reference](https://toolregistry-server.readthedocs.io/reference/)
 
 ## Contributing
