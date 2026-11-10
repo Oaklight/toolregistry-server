@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from toolregistry_server.mcp_oauth.store import (
+from toolregistry_server.oauth.upstream.store import (
     PendingAuthorization,
     TokenRecord,
     TokenStore,

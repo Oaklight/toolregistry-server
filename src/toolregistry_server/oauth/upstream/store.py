@@ -40,7 +40,7 @@ __all__ = [
 ]
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
+CREATE TABLE IF NOT EXISTS oauth_client_tokens (
     source_id TEXT PRIMARY KEY,
     issuer TEXT NOT NULL,
     client_id TEXT NOT NULL,
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
     needs_reauth INTEGER NOT NULL DEFAULT 0,
     error TEXT
 );
-CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
+CREATE TABLE IF NOT EXISTS oauth_client_pending (
     state TEXT PRIMARY KEY,
     source_id TEXT NOT NULL,
     code_verifier TEXT NOT NULL,
@@ -251,7 +251,7 @@ class TokenStore:
         """Return the stored record for *source_id*, or ``None``."""
         with self._lock:
             row = self._connection.execute(
-                "SELECT * FROM mcp_oauth_tokens WHERE source_id = ?",
+                "SELECT * FROM oauth_client_tokens WHERE source_id = ?",
                 (source_id,),
             ).fetchone()
         return _record_from_row(row) if row is not None else None
@@ -278,7 +278,7 @@ class TokenStore:
         with self._lock:
             self._connection.execute(
                 """
-                INSERT INTO mcp_oauth_tokens (
+                INSERT INTO oauth_client_tokens (
                     source_id, issuer, client_id, scopes, access_token,
                     refresh_token, token_type, expires_at, updated_at,
                     needs_reauth, error
@@ -324,7 +324,7 @@ class TokenStore:
         with self._lock:
             self._connection.execute(
                 """
-                INSERT INTO mcp_oauth_tokens (
+                INSERT INTO oauth_client_tokens (
                     source_id, issuer, client_id, scopes, updated_at,
                     needs_reauth, error
                 ) VALUES (?, ?, ?, '[]', ?, 1, ?)
@@ -343,7 +343,7 @@ class TokenStore:
         """Delete the stored record for *source_id*."""
         with self._lock:
             self._connection.execute(
-                "DELETE FROM mcp_oauth_tokens WHERE source_id = ?", (source_id,)
+                "DELETE FROM oauth_client_tokens WHERE source_id = ?", (source_id,)
             )
             self._connection.commit()
 
@@ -352,7 +352,7 @@ class TokenStore:
         with self._lock:
             self._connection.execute(
                 """
-                INSERT OR REPLACE INTO mcp_oauth_pending (
+                INSERT OR REPLACE INTO oauth_client_pending (
                     state, source_id, code_verifier, redirect_uri,
                     created_at, expires_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
@@ -376,12 +376,12 @@ class TokenStore:
         """
         with self._lock:
             row = self._connection.execute(
-                "SELECT * FROM mcp_oauth_pending WHERE state = ?", (state,)
+                "SELECT * FROM oauth_client_pending WHERE state = ?", (state,)
             ).fetchone()
             if row is None:
                 return None
             self._connection.execute(
-                "DELETE FROM mcp_oauth_pending WHERE state = ?", (state,)
+                "DELETE FROM oauth_client_pending WHERE state = ?", (state,)
             )
             self._connection.commit()
         return _pending_from_row(row)
@@ -391,7 +391,7 @@ class TokenStore:
         moment = now or self._clock()
         with self._lock:
             cursor = self._connection.execute(
-                "DELETE FROM mcp_oauth_pending WHERE expires_at <= ?",
+                "DELETE FROM oauth_client_pending WHERE expires_at <= ?",
                 (_format_time(moment),),
             )
             self._connection.commit()

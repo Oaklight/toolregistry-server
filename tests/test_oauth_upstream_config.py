@@ -1,4 +1,4 @@
-"""Tests for the ``mcp_oauth`` configuration section (#254, stage 1).
+"""Tests for the ``oauth.clients`` configuration section (#254, stage 1).
 
 Every test writes its own JSONC/YAML file and parses it with the real core
 loader, so the section is checked against the same source objects the server
@@ -12,10 +12,10 @@ import textwrap
 import pytest
 from toolregistry.config import ConfigError, ToolConfig, load_config
 
-from toolregistry_server.mcp_oauth.config import (
-    MCPOAuthConfig,
+from toolregistry_server.oauth.upstream.config import (
+    OAuthClientConfig,
     default_token_store_path,
-    load_mcp_oauth,
+    load_oauth_clients,
     selector_matches_source,
 )
 
@@ -38,25 +38,27 @@ def _write(tmp_path, body: str, name: str = "tools.yaml") -> str:
 def _declaration(tmp_path, oauth_body: str, tools: str = TOOLS):
     path = _write(
         tmp_path,
-        tools + "mcp_oauth:\n" + textwrap.indent(textwrap.dedent(oauth_body), "  "),
+        tools
+        + "oauth:\n  clients:\n"
+        + textwrap.indent(textwrap.dedent(oauth_body), "    "),
     )
     return path, load_config(path)
 
 
 def _load(tmp_path, oauth_body: str, tools: str = TOOLS):
     path, config = _declaration(tmp_path, oauth_body, tools)
-    return load_mcp_oauth(path, config)
+    return load_oauth_clients(path, config)
 
 
 def test_absent_section_yields_no_declarations(tmp_path):
     path = _write(tmp_path, TOOLS)
-    assert load_mcp_oauth(path, load_config(path)) == ()
+    assert load_oauth_clients(path, load_config(path)) == ()
 
 
 def test_missing_path_yields_no_declarations():
     # A missing path is not an error for this helper: the core loader already
     # reported it before this is called.
-    assert load_mcp_oauth(None, ToolConfig()) == ()
+    assert load_oauth_clients(None, ToolConfig()) == ()
 
 
 def test_valid_client_credentials_declaration(tmp_path, monkeypatch):
@@ -70,12 +72,12 @@ def test_valid_client_credentials_declaration(tmp_path, monkeypatch):
           client_secret_env: MCP_SECRET
           scopes: [read, write, read]
           token_endpoint: https://idp.example.com/oauth/token
-          token_store: /var/lib/toolregistry/mcp-oauth.db
+          token_store: /var/lib/toolregistry/oauth-clients.db
         """,
     )
     assert len(declarations) == 1
     declaration = declarations[0]
-    assert isinstance(declaration, MCPOAuthConfig)
+    assert isinstance(declaration, OAuthClientConfig)
     assert declaration.source == "namespace:example"
     assert declaration.issuer == "https://idp.example.com"
     assert declaration.client_secret == "top-secret"
@@ -84,8 +86,8 @@ def test_valid_client_credentials_declaration(tmp_path, monkeypatch):
     assert declaration.grant == "client_credentials"
     assert declaration.client_auth == "client_secret_post"
     assert declaration.token_endpoint == "https://idp.example.com/oauth/token"
-    assert declaration.token_store == "/var/lib/toolregistry/mcp-oauth.db"
-    assert declaration.store_path == "/var/lib/toolregistry/mcp-oauth.db"
+    assert declaration.token_store == "/var/lib/toolregistry/oauth-clients.db"
+    assert declaration.store_path == "/var/lib/toolregistry/oauth-clients.db"
 
 
 def test_secret_is_never_serialised(tmp_path, monkeypatch):
@@ -390,18 +392,29 @@ def test_relative_token_store_is_rejected(tmp_path):
               issuer: https://idp.example.com
               client_id: toolregistry
               client_secret: secret
-              token_store: state/mcp-oauth.db
+              token_store: state/oauth-clients.db
             """,
         )
 
 
-def test_section_must_be_a_list(tmp_path):
+def test_clients_must_be_a_list(tmp_path):
     path = _write(
         tmp_path,
-        TOOLS + "mcp_oauth:\n" + "  source: namespace:example\n",
+        TOOLS + "oauth:\n  clients:\n    source: namespace:example\n",
     )
     with pytest.raises(ConfigError, match="must be a list"):
-        load_mcp_oauth(path, load_config(path))
+        load_oauth_clients(path, load_config(path))
+
+
+def test_section_must_be_a_mapping(tmp_path):
+    path = _write(tmp_path, TOOLS + "oauth: not-a-mapping\n")
+    with pytest.raises(ConfigError, match="must be a mapping"):
+        load_oauth_clients(path, load_config(path))
+
+
+def test_clients_absent_yields_no_declarations(tmp_path):
+    path = _write(tmp_path, TOOLS + "oauth:\n  introspection_optional: false\n")
+    assert load_oauth_clients(path, load_config(path)) == ()
 
 
 def test_selector_matches_source_requires_an_http_transport(tmp_path):
@@ -415,4 +428,6 @@ def test_selector_matches_source_requires_an_http_transport(tmp_path):
 
 def test_default_token_store_honours_xdg_state_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    assert default_token_store_path() == str(tmp_path / "toolregistry" / "mcp-oauth.db")
+    assert default_token_store_path() == str(
+        tmp_path / "toolregistry" / "oauth-clients.db"
+    )

@@ -93,10 +93,10 @@ class App:
         #: loaded.  Downstream code (admin extensions) uses it to change the
         #: live source list.
         self.source_manager = None
-        #: Upstream OAuth provider built from the config, when the file
-        #: declares a protected MCP source.  Kept so the stores can be
-        #: closed and so an embedder can reach the panel-facing interface.
-        self.mcp_oauth_provider = None
+        #: Upstream OAuth client provider built from the config, when the
+        #: file declares one.  Kept so the stores can be closed and so an
+        #: embedder can reach the panel-facing interface.
+        self.oauth_client_provider = None
         #: The running config watcher, when ``config_reload`` is enabled.
         self.config_watcher = None
         #: The gateway adapter created by :meth:`create_gateway`, if any.
@@ -139,14 +139,14 @@ class App:
         elif config_path is not None:
             from toolregistry import ToolRegistry as _ToolRegistry
 
-            from .mcp_oauth.config import load_mcp_oauth
-            from .mcp_oauth.provider import MCPOAuthProvider
+            from .oauth.upstream.config import load_oauth_clients
+            from .oauth.upstream.provider import OAuthClientProvider
 
             config = load_config(config_path)
             registry = _ToolRegistry()
-            declarations = load_mcp_oauth(config_path, config)
-            self.mcp_oauth_provider = (
-                MCPOAuthProvider(declarations) if declarations else None
+            declarations = load_oauth_clients(config_path, config)
+            self.oauth_client_provider = (
+                OAuthClientProvider(declarations) if declarations else None
             )
             # The manager owns the source list from startup: it registers the
             # sources, records which names each produced, and is the object a
@@ -158,7 +158,7 @@ class App:
                 profile=profile,
                 strict_spec_regex=kwargs.get("strict_spec_regex", False),
                 write_config=kwargs.get("write_config", True),
-                oauth_provider=self.mcp_oauth_provider,
+                oauth_provider=self.oauth_client_provider,
             )
             manager.apply_initial()
         else:
@@ -167,12 +167,12 @@ class App:
                 "Pass a config file path or a pre-built ToolRegistry."
             )
 
-        if manager is not None and self.mcp_oauth_provider is not None:
+        if manager is not None and self.oauth_client_provider is not None:
             import atexit
 
             # The token stores are SQLite connections; release them when the
-            # process ends.  A test or embedder calls close_mcp_oauth itself.
-            atexit.register(self.close_mcp_oauth)
+            # process ends.  A test or embedder calls close_oauth_clients itself.
+            atexit.register(self.close_oauth_clients)
 
         if profile is not None:
             apply_profile(registry, profile)
@@ -266,7 +266,7 @@ class App:
         watcher.stop(timeout=timeout)
         self.config_watcher = None
 
-    def close_mcp_oauth(self) -> None:
+    def close_oauth_clients(self) -> None:
         """Close the upstream OAuth token stores, if any.
 
         :meth:`prepare_registry` registers this with :mod:`atexit` when it
@@ -278,12 +278,12 @@ class App:
         """
         manager = self.source_manager
         for provider in (
-            self.mcp_oauth_provider,
+            self.oauth_client_provider,
             getattr(manager, "oauth_provider", None),
         ):
             if provider is not None:
                 provider.close()
-        self.mcp_oauth_provider = None
+        self.oauth_client_provider = None
 
     def serve_openapi(self, **kwargs) -> None:
         """Build registry and start an OpenAPI server."""

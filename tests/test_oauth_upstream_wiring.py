@@ -14,12 +14,12 @@ from toolregistry.config import MCPSource, ToolConfig, load_config
 
 from toolregistry_server import source_manager as source_manager_module
 from toolregistry_server._config_file import read_config_mapping
-from toolregistry_server.mcp_oauth.provider import (
-    MCPOAuthError,
+from toolregistry_server.oauth.upstream.provider import (
+    OAuthClientError,
     ReauthorizationRequired,
     TransientOAuthError,
 )
-from toolregistry_server.mcp_oauth.store import TokenRecord
+from toolregistry_server.oauth.upstream.store import TokenRecord
 from toolregistry_server.source_manager import (
     _CORE_CONFIG_KEYS,
     SourceManager,
@@ -42,12 +42,15 @@ MCP_SOURCE_DISABLED = """\
 """
 
 OAUTH_SECTION = """\
-mcp_oauth:
-  - source: "namespace:example"
-    issuer: https://idp.example.com
-    client_id: toolregistry
-    client_secret: literal-secret
-    token_endpoint: https://idp.example.com/token
+oauth:
+  client_concurrency:
+    reports-bot: 2
+  clients:
+    - source: "namespace:example"
+      issuer: https://idp.example.com
+      client_id: toolregistry
+      client_secret: literal-secret
+      token_endpoint: https://idp.example.com/token
 """
 
 
@@ -301,8 +304,10 @@ def test_persist_preserves_server_sections(monkeypatch, tmp_path):
 
     data = read_config_mapping(path)
     assert data["gateway"]["frontends"]["mcp"]["enabled"] is True
-    assert data["mcp_oauth"][0]["client_secret"] == "literal-secret"
-    assert data["mcp_oauth"][0]["source"] == "namespace:example"
+    assert data["oauth"]["clients"][0]["client_secret"] == "literal-secret"
+    assert data["oauth"]["clients"][0]["source"] == "namespace:example"
+    # The resource-server keys in the same section survive the rewrite.
+    assert data["oauth"]["client_concurrency"]["reports-bot"] == 2
 
 
 def test_core_config_keys_come_from_the_installed_dataclass():
@@ -343,7 +348,10 @@ def test_persist_prunes_an_orphan_oauth_declaration(monkeypatch, tmp_path):
     persisted, error, _backup, _warnings = manager._persist()
     assert persisted is True
     assert error is None
-    assert "mcp_oauth" not in read_config_mapping(path)
+    data = read_config_mapping(path)
+    assert "clients" not in data["oauth"]
+    # Pruning the last client must not delete the resource-server settings.
+    assert data["oauth"]["client_concurrency"]["reports-bot"] == 2
 
 
 def test_pruning_an_orphan_declaration_clears_its_stored_token(monkeypatch, tmp_path):
@@ -394,7 +402,7 @@ def test_reload_clears_a_token_minted_for_the_previous_issuer(monkeypatch, tmp_p
     """Re-pointing a source at another IdP must not keep the old token."""
     _patch_registration(monkeypatch)
     store_path = tmp_path / "tokens.db"
-    section = OAUTH_SECTION + f"    token_store: {store_path}\n"
+    section = OAUTH_SECTION + f"      token_store: {store_path}\n"
     path = _write(tmp_path, MCP_SOURCE_DISABLED, section)
     manager = SourceManager(ToolRegistry(), _config(path), config_path=path)
     manager.apply_initial()
@@ -421,13 +429,13 @@ def test_reload_clears_a_token_minted_for_the_previous_issuer(monkeypatch, tmp_p
     # test stays offline.
     class Unreachable:
         def get_json(self, url, timeout):
-            raise MCPOAuthError("offline")
+            raise OAuthClientError("offline")
 
         def post_form(self, url, fields, headers, timeout):
-            raise MCPOAuthError("offline")
+            raise OAuthClientError("offline")
 
     provider._transport = Unreachable()
-    with pytest.raises(MCPOAuthError, match="offline"):
+    with pytest.raises(OAuthClientError, match="offline"):
         provider.access_token(provider.declarations[0])
     assert store.get("namespace:example") is None
 
@@ -455,7 +463,7 @@ def test_reload_rejects_a_bad_oauth_section(monkeypatch, tmp_path):
     path = _write(
         tmp_path,
         MCP_SOURCE,
-        OAUTH_SECTION + "    grant: magic\n",
+        OAUTH_SECTION + "      grant: magic\n",
     )
     manager = SourceManager(ToolRegistry(), _config(path), config_path=path)
     assert manager.reload_from_path() is False

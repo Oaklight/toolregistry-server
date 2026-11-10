@@ -19,6 +19,17 @@ pattern :mod:`toolregistry_server.gateway.persistence` uses for ``gateway``::
       introspection_optional: false
       client_concurrency:
         reports-bot: 2
+      clients:
+        - source: "namespace:reports"
+          issuer: https://idp.example.com
+          client_id: toolregistry-reports
+          client_secret_env: MCP_REPORTS_CLIENT_SECRET
+
+The section has two directions.  The resource-server keys (``issuer``,
+``audience``, ``jwks``, ``scope``, ``scopes``, the ``introspection_*`` keys and
+the concurrency keys) configure what this server accepts; ``clients``
+declares the credentials it presents upstream, and is read by
+:mod:`toolregistry_server.oauth.upstream.config`.
 
 Every key is named after the ``--oauth-`` flag with the prefix removed, so
 ``--oauth-jwks`` maps to ``jwks`` and ``--oauth-introspection-url`` maps to
@@ -41,7 +52,9 @@ OAUTH_SECTION = "oauth"
 #: Keys :func:`settings_from_args` reads from the section.  Anything else is
 #: rejected: a typo such as ``introspection_ur1`` would otherwise leave a
 #: security control switched off without a diagnostic.  Each key is the
-#: matching ``--oauth-`` flag with the prefix removed.
+#: matching ``--oauth-`` flag with the prefix removed, except ``clients``,
+#: which is read by the upstream half so the section accepts one shape
+#: instead of two.
 OAUTH_SECTION_KEYS = frozenset(
     {
         "issuer",
@@ -59,6 +72,7 @@ OAUTH_SECTION_KEYS = frozenset(
         "introspection_optional",
         "concurrency_claim",
         "client_concurrency",
+        "clients",
     }
 )
 

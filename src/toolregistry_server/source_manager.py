@@ -83,7 +83,7 @@ if TYPE_CHECKING:
     from toolregistry.config import ToolSource
     from toolregistry.events import RefreshResult
 
-    from .mcp_oauth.provider import MCPOAuthError
+    from .oauth.upstream.provider import OAuthClientError
     from .route_table import RouteTable
 
 logger = get_logger()
@@ -100,7 +100,7 @@ CONFIG_DISABLE_REASON = "Disabled by config (runtime source change)"
 COMMENTS_WARNING = "the config file was rewritten; comments are not preserved"
 
 #: Top-level keys the core ``ToolConfig`` owns.  A rewrite replaces these and
-#: leaves every other section (``gateway``, ``oauth``, ``mcp_oauth``) as it
+#: leaves every other section (``gateway``, ``oauth``) as it
 #: was, so a source edit cannot erase a server-owned setting.  The list is
 #: taken from the installed dataclass: a key this server knows but the
 #: installed core does not (``tool_parameters`` before core 0.21) must not be
@@ -1078,7 +1078,7 @@ class SourceManager:
         return True
 
     def _reload_oauth_declarations(self, path: str, config: ToolConfig) -> None:
-        """Reload the ``mcp_oauth`` section and hand it to the provider.
+        """Reload ``oauth.clients`` and hand it to the provider.
 
         A malformed section raises, which skips the whole reload: the live
         registry keeps the previous declarations instead of half-applying a
@@ -1092,13 +1092,13 @@ class SourceManager:
         Raises:
             toolregistry.config.ConfigError: If the section is invalid.
         """
-        from .mcp_oauth.config import load_mcp_oauth
-        from .mcp_oauth.provider import MCPOAuthProvider
+        from .oauth.upstream.config import load_oauth_clients
+        from .oauth.upstream.provider import OAuthClientProvider
 
-        declarations = load_mcp_oauth(path, config)
+        declarations = load_oauth_clients(path, config)
         if self.oauth_provider is None:
             if declarations:
-                self.oauth_provider = MCPOAuthProvider(declarations)
+                self.oauth_provider = OAuthClientProvider(declarations)
             return
         previous = self.oauth_provider.declarations
         # A declaration that left the file must take its stored token with it;
@@ -1140,11 +1140,11 @@ class SourceManager:
             return SourceEntry(key, source, frozenset(), SourceStatus.EXCLUDED)
         oauth_headers: Mapping[str, str] | None = None
         if isinstance(source, MCPSource) and self.oauth_provider is not None:
-            from .mcp_oauth.provider import MCPOAuthError
+            from .oauth.upstream.provider import OAuthClientError
 
             try:
                 oauth_headers = self.oauth_provider.headers_for(source)
-            except MCPOAuthError as exc:
+            except OAuthClientError as exc:
                 return self._oauth_failure(key, source, exc)
         before_integrations = len(self.registry._openapi_integrations)
         try:
@@ -1192,7 +1192,7 @@ class SourceManager:
         self,
         key: SourceKey,
         source: ToolSource,
-        exc: MCPOAuthError,
+        exc: OAuthClientError,
     ) -> SourceEntry:
         """Record an upstream OAuth failure for one source.
 
@@ -1455,7 +1455,7 @@ class SourceManager:
             return False, _safe_error(exc), backup, ()
 
     def _prune_oauth_section(self, data: dict[str, Any]) -> None:
-        """Drop OAuth declarations whose source is no longer declared.
+        """Drop ``oauth.clients`` entries whose source is no longer declared.
 
         The section is server-owned and is preserved verbatim, so a literal
         client secret is never round-tripped through ``to_dict``.  Only
@@ -1468,14 +1468,18 @@ class SourceManager:
         Args:
             data: The configuration mapping about to be written.
         """
-        from .mcp_oauth.config import MCP_OAUTH_SECTION, selector_matches_source
+        from .oauth.config import OAUTH_SECTION
+        from .oauth.upstream.config import OAUTH_CLIENTS_KEY, selector_matches_source
 
-        section = data.get(MCP_OAUTH_SECTION)
-        if not isinstance(section, list):
+        section = data.get(OAUTH_SECTION)
+        if not isinstance(section, dict):
+            return
+        entries = section.get(OAUTH_CLIENTS_KEY)
+        if not isinstance(entries, list):
             return
         kept = [
             entry
-            for entry in section
+            for entry in entries
             if isinstance(entry, dict)
             and isinstance(entry.get("source"), str)
             and any(
@@ -1486,7 +1490,7 @@ class SourceManager:
         kept_ids = {id(entry) for entry in kept}
         pruned = [
             entry["source"]
-            for entry in section
+            for entry in entries
             if id(entry) not in kept_ids
             and isinstance(entry, dict)
             and isinstance(entry.get("source"), str)
@@ -1494,9 +1498,13 @@ class SourceManager:
         if pruned:
             self._clear_stored_tokens(pruned)
         if kept:
-            data[MCP_OAUTH_SECTION] = kept
+            section[OAUTH_CLIENTS_KEY] = kept
         else:
-            data.pop(MCP_OAUTH_SECTION, None)
+            section.pop(OAUTH_CLIENTS_KEY, None)
+        if not section:
+            # Only drop the whole section when nothing else was configured;
+            # ``issuer`` and the other resource-server keys belong to it too.
+            data.pop(OAUTH_SECTION, None)
 
     def _clear_stored_tokens(self, selectors: Sequence[str]) -> None:
         """Delete the stored token for each removed OAuth declaration.
