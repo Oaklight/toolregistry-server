@@ -568,7 +568,17 @@ class CLI:
         server_url = getattr(parsed, "server_url", None)
         socket_path = getattr(parsed, "socket_path", None)
         default_audience = None
-        if server_url or socket_path is None:
+        if getattr(parsed, "command", None) == "local-hub":
+            # A hub binds loopback on an ephemeral port or a Unix socket;
+            # neither address is one a client can carry in a token.
+            if server_url:
+                default_audience = resolve_public_url(
+                    server_url,
+                    parsed.host,
+                    parsed.port,
+                    getattr(parsed, "mcp_path", None) or "/mcp",
+                )
+        elif server_url or socket_path is None:
             default_audience = resolve_public_url(
                 server_url,
                 parsed.host,

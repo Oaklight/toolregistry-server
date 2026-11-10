@@ -50,8 +50,10 @@ class OAuthSettings:
     """Configuration for resource-server token verification.
 
     Attributes:
-        issuer: Exact ``iss`` value the token must carry.  Trailing slashes
-            are stripped.
+        issuer: Exact ``iss`` value the token must carry.  It is compared
+            verbatim, because some authorization servers publish an ``iss``
+            with a trailing slash.  A trailing slash is stripped only when
+            composing discovery and fallback URLs.
         audience: The advertised resource URL (or another identifier) the
             token's ``aud`` or RFC 8707 ``resource`` must contain.
         jwks_uri: JWKS endpoint override.  When ``None``, the verifier uses
@@ -88,7 +90,6 @@ class OAuthSettings:
             raise ValueError("OAuth issuer must not be empty")
         if not self.audience.strip():
             raise ValueError("OAuth audience must not be empty")
-        object.__setattr__(self, "issuer", self.issuer.rstrip("/"))
         object.__setattr__(
             self,
             "scope_map",
@@ -116,7 +117,37 @@ class OAuthSettings:
         issuer's RFC 8414 and OIDC metadata; this property only names the
         final fallback.
         """
-        return self.jwks_uri or f"{self.issuer}/.well-known/jwks.json"
+        return self.jwks_uri or (f"{self.issuer.rstrip('/')}/.well-known/jwks.json")
+
+
+def _metadata_url_candidates(issuer: str) -> tuple[str, ...]:
+    """Return the authorization-server metadata URLs to try, in order.
+
+    RFC 8414 inserts the well-known segment *before* the issuer path
+    (``scheme://host/.well-known/oauth-authorization-server<issuer-path>``).
+    Some deployments publish it after the issuer instead, which is the OIDC
+    suffix form, so both are tried.  OIDC discovery uses the suffix form.
+    Duplicates are removed while order is preserved.
+    """
+    from urllib.parse import urlsplit
+
+    stripped = issuer.rstrip("/")
+    parsed = urlsplit(stripped)
+    candidates: list[str] = []
+    if parsed.scheme and parsed.netloc and parsed.path:
+        candidates.append(
+            f"{parsed.scheme}://{parsed.netloc}"
+            f"/.well-known/oauth-authorization-server{parsed.path}"
+        )
+    candidates.append(f"{stripped}/.well-known/oauth-authorization-server")
+    candidates.append(f"{stripped}/.well-known/openid-configuration")
+    seen: set[str] = set()
+    unique: list[str] = []
+    for url in candidates:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+    return tuple(unique)
 
 
 def _load_json(url: str, timeout: float) -> Any:
@@ -249,12 +280,7 @@ class OAuthTokenVerifier:
         usable ``jwks_uri``.  Discovery failures are logged once and never
         reject a token by themselves; the caller falls back.
         """
-        issuer = self._settings.issuer.rstrip("/")
-        candidates = (
-            f"{issuer}/.well-known/oauth-authorization-server",
-            f"{issuer}/.well-known/openid-configuration",
-        )
-        for url in candidates:
+        for url in _metadata_url_candidates(self._settings.issuer):
             try:
                 document = _load_json(url, self._settings.timeout)
             except Exception as exc:

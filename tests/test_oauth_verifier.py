@@ -26,6 +26,7 @@ from toolregistry_server.oauth import (
     build_resolver,
     settings_from_args,
 )
+from toolregistry_server.oauth.verifier import _metadata_url_candidates
 
 ISSUER = "https://idp.example.com/realms/dev"
 AUDIENCE = "https://tools.example.com/mcp"
@@ -131,6 +132,14 @@ class TestSignatureAndClaims:
         token = _token(KEY1, "key-1", iss="https://idp.example.com/realms/other")
         assert _verifier().verify(token) is None
 
+    def test_a_trailing_slash_issuer_is_compared_verbatim(self, jwks):
+        issuer = ISSUER + "/"
+        settings = OAuthSettings(issuer=issuer, audience=AUDIENCE, jwks_uri=JWKS_URL)
+        verifier = OAuthTokenVerifier(settings)
+
+        assert verifier.verify(_token(KEY1, "key-1", iss=issuer)) is not None
+        assert verifier.verify(_token(KEY1, "key-1", iss=ISSUER)) is None
+
     def test_the_audience_must_match(self, jwks):
         token = _token(KEY1, "key-1", aud="https://other.example.com/mcp")
         assert _verifier().verify(token) is None
@@ -229,6 +238,28 @@ class TestJwksCache:
         assert jwks.calls == 2
 
 
+class TestMetadataCandidates:
+    def test_an_origin_issuer_uses_the_suffix_forms(self):
+        assert _metadata_url_candidates("https://idp.example.com") == (
+            "https://idp.example.com/.well-known/oauth-authorization-server",
+            "https://idp.example.com/.well-known/openid-configuration",
+        )
+
+    def test_a_path_issuer_tries_the_rfc8414_form_first(self):
+        candidates = _metadata_url_candidates("https://idp.example.com/realms/dev/")
+
+        assert candidates[0] == (
+            "https://idp.example.com/.well-known/oauth-authorization-server/realms/dev"
+        )
+        assert candidates[1] == (
+            "https://idp.example.com/realms/dev/.well-known/oauth-authorization-server"
+        )
+        assert candidates[2] == (
+            "https://idp.example.com/realms/dev/.well-known/openid-configuration"
+        )
+        assert len(set(candidates)) == len(candidates)
+
+
 class TestJwksDiscovery:
     def _server(self, jwks_doc: dict, *, rfc8414: dict | None, oidc: dict | None):
         routes: dict[str, object] = {
@@ -274,6 +305,22 @@ class TestJwksDiscovery:
 
         assert _verifier(jwks_uri=None).verify(_token(KEY1, "key-1")) is not None
         assert f"{ISSUER}/.well-known/jwks.json" in server.urls
+
+    def test_a_path_issuer_reads_the_rfc8414_form_first(self, monkeypatch):
+        issuer = "https://idp.example.com/realms/dev/"
+        rfc8414 = (
+            "https://idp.example.com/.well-known/oauth-authorization-server/realms/dev"
+        )
+        server = _RoutedServer(
+            {rfc8414: {"jwks_uri": JWKS_URL}, JWKS_URL: {"keys": [JWK1]}}
+        )
+        monkeypatch.setattr(urllib.request, "urlopen", server)
+
+        verifier = OAuthTokenVerifier(OAuthSettings(issuer=issuer, audience=AUDIENCE))
+
+        token = _token(KEY1, "key-1", iss=issuer)
+        assert verifier.verify(token) is not None
+        assert server.urls[0] == rfc8414
 
     def test_an_explicit_jwks_uri_skips_discovery(self, monkeypatch):
         server = _RoutedServer({JWKS_URL: {"keys": [JWK1]}})
@@ -414,6 +461,39 @@ class TestCliFlags:
 
         with pytest.raises(ValueError, match="--oauth-audience"):
             CLI._gateway_options(None, parsed)
+
+    def test_a_loopback_hub_also_requires_an_audience(self):
+        """An ephemeral loopback bind is never a public audience."""
+        parsed = self._parsed("local-hub", "run", "--oauth-issuer", ISSUER)
+
+        with pytest.raises(ValueError, match="--oauth-audience"):
+            CLI._gateway_options(None, parsed)
+
+    def test_a_hub_accepts_an_explicit_audience(self):
+        parsed = self._parsed(
+            "local-hub",
+            "run",
+            "--oauth-issuer",
+            ISSUER,
+            "--oauth-audience",
+            AUDIENCE,
+        )
+        options = CLI._gateway_options(None, parsed)
+
+        assert options["oauth"].audience == AUDIENCE
+
+    def test_a_hub_takes_the_audience_from_the_server_url(self):
+        parsed = self._parsed(
+            "local-hub",
+            "run",
+            "--oauth-issuer",
+            ISSUER,
+            "--server-url",
+            "https://tools.example.com/mcp",
+        )
+        options = CLI._gateway_options(None, parsed)
+
+        assert options["oauth"].audience == "https://tools.example.com/mcp"
 
     def test_a_malformed_scope_map_is_rejected(self):
         parsed = self._parsed(
