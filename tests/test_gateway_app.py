@@ -177,7 +177,7 @@ class TestSharedAuth:
     """One token set protects every frontend."""
 
     async def test_openapi_requires_a_token(self):
-        gateway = _gateway(tokens=["secret"])
+        gateway = _gateway(tokens=["secret"], host="127.0.0.1", port=9000)
         async with _client(gateway) as client:
             missing = await client.get("/openapi/tools")
             invalid = await client.get(
@@ -188,10 +188,35 @@ class TestSharedAuth:
                 "/openapi/tools",
                 headers={"Authorization": "Bearer secret"},
             )
+        expected = (
+            'Bearer resource_metadata="http://127.0.0.1:9000'
+            '/.well-known/oauth-protected-resource/mcp"'
+        )
         assert missing.status_code == 401
-        assert missing.headers["www-authenticate"] == "Bearer"
+        assert missing.headers["www-authenticate"] == expected
         assert invalid.status_code == 401
+        assert invalid.headers["www-authenticate"] == expected
         assert valid.status_code == 200
+
+    async def test_the_challenge_tracks_the_mcp_path(self):
+        gateway = _gateway(tokens=["secret"], host="127.0.0.1", port=9000)
+        gateway.update_frontend("mcp", path="/rpc")
+        async with _client(gateway) as client:
+            response = await client.get("/rpc")
+        assert response.status_code == 401
+        assert (
+            "http://127.0.0.1:9000/.well-known/oauth-protected-resource/rpc"
+            in response.headers["www-authenticate"]
+        )
+
+    async def test_the_challenge_omits_metadata_on_a_socket_without_a_url(self):
+        """A UDS hub publishes no PRM, so it advertises no URL either."""
+        gateway = _gateway(tokens=["secret"], host="127.0.0.1", port=9000)
+        gateway._socket_path = "/tmp/hub.sock"
+        async with _client(gateway) as client:
+            response = await client.get("/mcp")
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
 
     async def test_mcp_and_sse_require_the_same_token(self):
         gateway = _gateway(tokens=["secret"])

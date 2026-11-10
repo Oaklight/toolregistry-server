@@ -36,6 +36,7 @@ import threading
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
 
 from .._vendor.httpserver import DEFAULT_MAX_BODY_SIZE
 from .._vendor.structlog import get_logger
@@ -390,6 +391,9 @@ class _BearerAuthASGI:
         tokens: Accepted static bearer tokens.
         principal_resolver: API key resolver.  ``None`` keeps the static
             token check.
+        challenge: Callable returning the ``WWW-Authenticate`` value.  It is
+            evaluated per rejection because the advertised MCP path is
+            mutable.
     """
 
     def __init__(
@@ -397,10 +401,12 @@ class _BearerAuthASGI:
         app: Any,
         tokens: tuple[str, ...],
         principal_resolver: Any | None = None,
+        challenge: Any | None = None,
     ) -> None:
         self._app = app
         self._tokens = tokens
         self._principal_resolver = principal_resolver
+        self._challenge = challenge or (lambda: "Bearer")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -420,7 +426,7 @@ class _BearerAuthASGI:
                 send,
                 401,
                 {"detail": "Not authenticated"},
-                {"WWW-Authenticate": "Bearer"},
+                {"WWW-Authenticate": self._challenge()},
             )
             return
         if self._principal_resolver is not None:
@@ -438,7 +444,7 @@ class _BearerAuthASGI:
                 send,
                 401,
                 {"detail": "Invalid authentication token"},
-                {"WWW-Authenticate": "Bearer"},
+                {"WWW-Authenticate": self._challenge()},
             )
             return
         claimed = identity_header(scope.get("headers") or ())
@@ -937,7 +943,32 @@ class GatewayAdapter(Adapter):
         """Wrap *app* with the shared bearer-token check when configured."""
         if not self._tokens and self._principal_resolver is None:
             return app
-        return _BearerAuthASGI(app, self._tokens, self._principal_resolver)
+        return _BearerAuthASGI(
+            app, self._tokens, self._principal_resolver, self._auth_challenge
+        )
+
+    def _prm_url(self) -> str | None:
+        """Return the current protected-resource metadata URL, or ``None``.
+
+        Mirrors :meth:`_serve_metadata`: a Unix-socket hub without a public
+        URL publishes no metadata, so its challenge advertises no URL either.
+        """
+        if self._socket_path is not None and self._server_url is None:
+            return None
+        mcp = self._registry.get("mcp")
+        resource = self._server_url or f"http://{self._host}:{self._port}{mcp.path}"
+        parsed = urlparse(resource)
+        return (
+            f"{parsed.scheme}://{parsed.netloc}"
+            f"/.well-known/oauth-protected-resource{parsed.path}"
+        )
+
+    def _auth_challenge(self) -> str:
+        """Return the ``WWW-Authenticate`` value for a rejected request."""
+        prm = self._prm_url()
+        if prm is None:
+            return "Bearer"
+        return f'Bearer resource_metadata="{prm}"'
 
     @property
     def app(self) -> Any:
