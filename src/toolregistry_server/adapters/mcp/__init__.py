@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from mcp.server.lowlevel import Server
 
     from ...keystore import PrincipalResolver
+    from ...oauth import OAuthSettings
     from ...route_table import RouteTable
 
 
@@ -149,6 +150,7 @@ async def run_streamable_http(
     valid_tokens: set[str] | None = None,
     server_url: str | None = None,
     principal_resolver: "PrincipalResolver | None" = None,
+    authorization_servers: list[str] | None = None,
 ) -> None:
     """Run an MCP server over streamable HTTP transport.
 
@@ -162,6 +164,8 @@ async def run_streamable_http(
         principal_resolver: Optional API key resolver.  When set, the
             transport verifies keys through it instead of the static token
             set, and tool handlers enforce the resolved scope.
+        authorization_servers: Issuers to advertise in the
+            protected-resource metadata.
     """
     from .server import run_streamable_http as _run_streamable_http
 
@@ -173,6 +177,7 @@ async def run_streamable_http(
         valid_tokens=valid_tokens,
         server_url=server_url,
         principal_resolver=principal_resolver,
+        authorization_servers=authorization_servers,
     )
 
 
@@ -186,6 +191,7 @@ def _build_principal_resolver(
     tokens_path: str | None,
     *,
     transport: str,
+    oauth: "OAuthSettings | None" = None,
 ) -> "PrincipalResolver | None":
     """Open the key store named by ``--keys-db`` and build its resolver.
 
@@ -198,24 +204,30 @@ def _build_principal_resolver(
             credential, so a key store cannot authenticate anything there;
             the option is reported and ignored instead of silently emptying
             the tool list.
+        oauth: OAuth settings, or ``None`` when OAuth is not configured.
 
     Returns:
-        The resolver, or ``None`` when key authentication is off.
+        The resolver, or ``None`` when authentication is off.
     """
-    if not keys_db:
-        return None
     if transport == "stdio":
-        logger.warning(
-            "--keys-db is ignored on the stdio transport: there is no "
-            "request credential to scope"
-        )
+        if keys_db:
+            logger.warning(
+                "--keys-db is ignored on the stdio transport: there is no "
+                "request credential to scope"
+            )
+        if oauth is not None:
+            logger.warning(
+                "--oauth-issuer is ignored on the stdio transport: there is "
+                "no request credential to verify"
+            )
+        return None
+    if not keys_db and oauth is None:
         return None
 
     from ...auth import load_tokens
-    from ...keystore import ApiKeyStore, PrincipalResolver
+    from ...oauth import build_resolver
 
-    store = ApiKeyStore(keys_db)
-    return PrincipalResolver(store, operator_tokens=load_tokens(tokens_path))
+    return build_resolver(keys_db, load_tokens(tokens_path), oauth)
 
 
 def _positive_count(text: str) -> int:
@@ -258,6 +270,9 @@ class MCPAdapter(Adapter):
         principal_resolver: Optional resolver for inbound API keys.  When
             set, ``tools/list`` is filtered and ``tools/call`` is scoped;
             ``None`` keeps static-token behaviour unchanged.
+        oauth_issuer: Authorization-server issuer to advertise in the
+            protected-resource metadata.  ``None`` advertises this server's
+            origin, as before.
         allow_operator_token: Accept static ``--tokens`` credentials when a
             key store is configured.  Without it a key-scoped MCP endpoint
             refuses them, because every client would share one principal.
@@ -279,12 +294,14 @@ class MCPAdapter(Adapter):
         version: str | None = None,
         instructions: str | None = None,
         principal_resolver: "PrincipalResolver | None" = None,
+        oauth_issuer: str | None = None,
         allow_operator_token: bool = False,
         client_limiter: ClientLimiter | None = None,
         execution_log: bool | None = None,
     ) -> None:
         super().__init__(route_table)
         self._principal_resolver = principal_resolver
+        self._oauth_issuer = oauth_issuer
         self._client_limiter = client_limiter
         has_keys = bool(
             principal_resolver is not None
@@ -380,6 +397,9 @@ class MCPAdapter(Adapter):
                 valid_tokens=valid_tokens,
                 server_url=server_url,
                 principal_resolver=self._principal_resolver,
+                authorization_servers=(
+                    [self._oauth_issuer] if self._oauth_issuer else None
+                ),
             )
         else:
             raise ValueError(f"Unknown transport type: {transport}")
@@ -528,11 +548,13 @@ class MCPAdapter(Adapter):
         identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         name = kwargs.pop("name", identity.name)
         keys_db = kwargs.pop("keys_db", None)
+        oauth = kwargs.pop("oauth", None)
         transport = kwargs.get("transport", "stdio")
         principal_resolver = _build_principal_resolver(
             keys_db,
             kwargs.get("tokens_path"),
             transport=transport,
+            oauth=oauth,
         )
         # Build the limiter even for stdio so an invalid knob fails at
         # startup; a single stdio client has no per-client identity to
@@ -549,6 +571,9 @@ class MCPAdapter(Adapter):
             version=identity.version,
             instructions=kwargs.pop("instructions", None),
             principal_resolver=principal_resolver,
+            oauth_issuer=(
+                oauth.issuer if oauth is not None and transport != "stdio" else None
+            ),
             allow_operator_token=kwargs.pop("allow_operator_token", False),
             client_limiter=None if transport == "stdio" else limiter,
             execution_log=kwargs.pop("execution_log", None),

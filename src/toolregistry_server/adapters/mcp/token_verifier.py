@@ -70,7 +70,7 @@ class ScopedTokenVerifier(TokenVerifier):
             return None
         return AccessToken(
             token=token,
-            client_id=principal.key_id or "operator",
+            client_id=principal.key_id or principal.label or "operator",
             scopes=principal.token_scopes(),
         )
 

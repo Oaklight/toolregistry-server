@@ -689,6 +689,7 @@ class GatewayAdapter(Adapter):
         tokens: list[str] | tuple[str, ...] | None = None,
         keys_db: str | None = None,
         principal_resolver: Any | None = None,
+        oauth: Any | None = None,
         client_concurrency: int = DEFAULT_CLIENT_CONCURRENCY,
         concurrency_timeout: float = DEFAULT_CONCURRENCY_TIMEOUT,
         allow_operator_token: bool = False,
@@ -726,13 +727,16 @@ class GatewayAdapter(Adapter):
         self._tokens = tuple(tokens or ())
         self._principal_resolver = principal_resolver
         self._key_store: Any = None
-        if self._principal_resolver is None and keys_db:
-            from ..keystore import ApiKeyStore, PrincipalResolver
+        if self._principal_resolver is None and (keys_db or oauth is not None):
+            from ..keystore import ApiKeyStore
+            from ..oauth import build_resolver
 
-            self._key_store = ApiKeyStore(keys_db)
-            self._principal_resolver = PrincipalResolver(
-                self._key_store, operator_tokens=self._tokens
+            if keys_db:
+                self._key_store = ApiKeyStore(keys_db)
+            self._principal_resolver = build_resolver(
+                keys_db, self._tokens, oauth, store=self._key_store
             )
+        self._oauth_issuer = oauth.issuer if oauth is not None else None
         # Validating here keeps a bad knob out of the listener: uvicorn binds
         # only after the adapter is fully constructed.
         self._client_limiter = ClientLimiter(client_concurrency, concurrency_timeout)
@@ -1170,7 +1174,7 @@ class GatewayAdapter(Adapter):
         resource = resolve_public_url(
             self._server_url, self._host, self._port, mcp.path
         )
-        issuer = resource.rsplit(mcp.path, 1)[0] or resource
+        issuer = self._oauth_issuer or (resource.rsplit(mcp.path, 1)[0] or resource)
         await _send_json(
             scope,
             receive,
@@ -1634,6 +1638,7 @@ class GatewayAdapter(Adapter):
             tokens=tokens or None,
             keys_db=kwargs.get("keys_db"),
             principal_resolver=kwargs.get("principal_resolver"),
+            oauth=kwargs.get("oauth"),
             client_concurrency=kwargs.get(
                 "client_concurrency", DEFAULT_CLIENT_CONCURRENCY
             ),

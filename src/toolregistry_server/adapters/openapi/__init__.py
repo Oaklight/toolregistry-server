@@ -42,24 +42,27 @@ if TYPE_CHECKING:
 
 
 def _build_key_resolver(
-    keys_db: str | None, operator_tokens: Sequence[str]
+    keys_db: str | None,
+    operator_tokens: Sequence[str],
+    oauth: Any | None = None,
 ) -> Any | None:
-    """Open the key store named by ``--keys-db`` and build its resolver.
+    """Build the resolver named by ``--keys-db`` and the OAuth options.
 
     Args:
         keys_db: SQLite database path, or ``None`` when key authentication is
             not configured.
         operator_tokens: Static tokens that keep full, unscoped access.
+        oauth: OAuth settings, or ``None`` when OAuth is not configured.
 
     Returns:
-        The resolver, or ``None`` when key authentication is off.
+        The resolver, or ``None`` when authentication is off.
     """
-    if not keys_db:
+    if not keys_db and oauth is None:
         return None
 
-    from ...keystore import ApiKeyStore, PrincipalResolver
+    from ...oauth import build_resolver
 
-    return PrincipalResolver(ApiKeyStore(keys_db), operator_tokens=operator_tokens)
+    return build_resolver(keys_db, operator_tokens, oauth)
 
 
 def _positive_int(text: str) -> int:
@@ -294,7 +297,9 @@ class OpenAPIAdapter(Adapter):
 
         identity: ServerIdentity = kwargs.pop("identity", ServerIdentity())
         tokens = load_tokens(kwargs.pop("tokens_path", None))
-        principal_resolver = _build_key_resolver(kwargs.pop("keys_db", None), tokens)
+        principal_resolver = _build_key_resolver(
+            kwargs.pop("keys_db", None), tokens, kwargs.pop("oauth", None)
+        )
         adapter = cls(
             route_table,
             tokens=tokens or None,

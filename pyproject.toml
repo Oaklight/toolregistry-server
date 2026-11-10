@@ -47,7 +47,14 @@ openapi = []
 # FastAPI and uvicorn are needed only by the gateway's ASGI backend.  The
 # httpserver gateway backend and the whole standalone OpenAPI server work
 # without them.
-gateway = ["fastapi>=0.119.0", "uvicorn[standard]>=0.24.0"]
+gateway = [
+    "fastapi>=0.119.0",
+    "uvicorn[standard]>=0.24.0",
+    # OAuth resource-server verification (RS256/ES256) needs PyJWT and a
+    # crypto backend.  mcp already brings PyJWT transitively; naming it here
+    # keeps a gateway-only install able to verify tokens.
+    "pyjwt[crypto]>=2.8.0",
+]
 # Floor raised from 1.17.0: mcp < 1.22 imports a pydantic internal that
 # pydantic 2.12+ removed, so those versions fail at import with a current
 # pydantic (see #95).

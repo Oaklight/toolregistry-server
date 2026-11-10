@@ -116,6 +116,24 @@ def print_banner(
     print("\n".join(lines), file=stream)
 
 
+def _oauth_settings(parsed: argparse.Namespace, *, default_audience: str | None) -> Any:
+    """Build OAuth settings from parsed arguments, or ``None``.
+
+    Raises:
+        ValueError: If an OAuth option is set without an issuer or audience,
+            or ``--oauth-scope`` is malformed.
+    """
+    from .oauth import settings_from_args
+
+    issuer = getattr(parsed, "oauth_issuer", None)
+    audience = getattr(parsed, "oauth_audience", None)
+    if issuer is not None and audience is None and not default_audience:
+        raise ValueError(
+            "--oauth-audience is required when the server has no public URL"
+        )
+    return settings_from_args(parsed, default_audience=default_audience or "")
+
+
 # ---------------------------------------------------------------------------
 # CLI class
 # ---------------------------------------------------------------------------
@@ -291,6 +309,14 @@ class CLI:
             help="Never start a hub; report it as unavailable instead",
         )
 
+        for oauth_parser in (
+            openapi_parser,
+            mcp_parser,
+            gateway_parser,
+            local_hub_parser,
+        ):
+            self._add_oauth_arguments(oauth_parser)
+
         self.configure_subparsers(
             {
                 "openapi": openapi_parser,
@@ -322,6 +348,45 @@ class CLI:
             default=True,
             help=(
                 "Keep runtime source changes in memory; never rewrite the config file"
+            ),
+        )
+
+    @staticmethod
+    def _add_oauth_arguments(parser: argparse.ArgumentParser) -> None:
+        """Add the OAuth resource-server flags to a serving command."""
+        group = parser.add_argument_group("OAuth resource server")
+        group.add_argument(
+            "--oauth-issuer",
+            default=None,
+            metavar="URL",
+            help=(
+                "Authorization-server issuer (iss) to accept.  Enables OAuth "
+                "bearer verification for this command"
+            ),
+        )
+        group.add_argument(
+            "--oauth-audience",
+            default=None,
+            metavar="URL",
+            help=(
+                "Expected aud or RFC 8707 resource value (default: the "
+                "advertised resource URL)"
+            ),
+        )
+        group.add_argument(
+            "--oauth-jwks",
+            default=None,
+            metavar="URL",
+            help="JWKS endpoint (default: <issuer>/.well-known/jwks.json)",
+        )
+        group.add_argument(
+            "--oauth-scope",
+            action="append",
+            default=[],
+            metavar="SCOPE=NAMESPACE[,NAMESPACE]",
+            help=(
+                "Map one token scope to namespace patterns; repeatable.  "
+                "Unmapped scopes grant nothing"
             ),
         )
 
@@ -387,6 +452,9 @@ class CLI:
         if parsed.command == "openapi":
             options: dict[str, Any] = {
                 "config_path": config_path,
+                "oauth": _oauth_settings(
+                    parsed, default_audience=f"http://{parsed.host}:{parsed.port}"
+                ),
                 "profile": getattr(parsed, "profile", None),
                 "host": parsed.host,
                 "port": parsed.port,
@@ -407,8 +475,19 @@ class CLI:
                 options["keys_db"] = keys_db
             self.app.serve_openapi(**options)
         elif parsed.command == "mcp":
+            from .adapters.mcp.server import resolve_public_url
+
             options = {
                 "config_path": config_path,
+                "oauth": _oauth_settings(
+                    parsed,
+                    default_audience=resolve_public_url(
+                        getattr(parsed, "server_url", None),
+                        parsed.host,
+                        parsed.port,
+                        "/mcp",
+                    ),
+                ),
                 "profile": getattr(parsed, "profile", None),
                 "host": parsed.host,
                 "port": parsed.port,
@@ -441,12 +520,25 @@ class CLI:
         config_path: str | None, parsed: argparse.Namespace
     ) -> dict[str, Any]:
         """Build the gateway construction options from parsed arguments."""
+        from .adapters.mcp.server import resolve_public_url
+
+        server_url = getattr(parsed, "server_url", None)
+        socket_path = getattr(parsed, "socket_path", None)
+        default_audience = None
+        if server_url or socket_path is None:
+            default_audience = resolve_public_url(
+                server_url,
+                parsed.host,
+                parsed.port,
+                getattr(parsed, "mcp_path", None) or "/mcp",
+            )
         options: dict[str, Any] = {
             "config_path": config_path,
+            "oauth": _oauth_settings(parsed, default_audience=default_audience),
             "profile": getattr(parsed, "profile", None),
             "host": parsed.host,
             "port": parsed.port,
-            "socket_path": getattr(parsed, "socket_path", None),
+            "socket_path": socket_path,
             "tokens_path": getattr(parsed, "tokens", None),
             "server_url": getattr(parsed, "server_url", None),
             "backend": getattr(parsed, "backend", "fastapi"),
