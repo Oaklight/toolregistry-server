@@ -467,7 +467,10 @@ def _validate_declarations(
             stdio match, or a source that already sets an ``Authorization``
             header.
     """
-    seen: set[MCPSource] = set()
+    # Identity, not equality: two separate declarations that resolve to the
+    # same entry of *sources* are the duplicate.  ``MCPSource`` carries a
+    # ``headers`` mapping, so the instance is not hashable.
+    seen: set[int] = set()
     for declaration in declarations:
         matched = [
             source
@@ -498,13 +501,13 @@ def _validate_declarations(
         # ``namespace:example`` and ``url:https://mcp.example.com/mcp`` can
         # name the same source, and two declarations for it fail the source
         # at connect time.
-        if matched_source in seen:
+        if id(matched_source) in seen:
             raise ConfigError(
                 f"{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}: duplicate declaration for "
                 f"{declaration.source!r}; more than one declaration selects "
                 "the same MCP source"
             )
-        seen.add(matched_source)
+        seen.add(id(matched_source))
         headers = matched_source.headers or {}
         if any(name.lower() == "authorization" for name in headers):
             raise ConfigError(

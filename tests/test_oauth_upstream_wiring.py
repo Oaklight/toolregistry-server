@@ -387,7 +387,8 @@ def test_reload_drops_a_declaration_and_its_token(monkeypatch, tmp_path):
     _patch_registration(monkeypatch)
     path = _write(tmp_path, MCP_SOURCE_DISABLED, OAUTH_SECTION)
     manager = SourceManager(ToolRegistry(), _config(path), config_path=path)
-    manager.apply_initial()
+    # The first reload creates the provider, because the section is present.
+    assert manager.reload_from_path() is True
     provider = FakeProvider()
     provider.declarations = manager.oauth_provider.declarations
     manager.oauth_provider = provider
@@ -405,7 +406,8 @@ def test_reload_clears_a_token_minted_for_the_previous_issuer(monkeypatch, tmp_p
     section = OAUTH_SECTION + f"      token_store: {store_path}\n"
     path = _write(tmp_path, MCP_SOURCE_DISABLED, section)
     manager = SourceManager(ToolRegistry(), _config(path), config_path=path)
-    manager.apply_initial()
+    # The first reload creates the provider, because the section is present.
+    assert manager.reload_from_path() is True
     provider = manager.oauth_provider
     store = provider._store_for(provider.declarations[0])
     store.put(
