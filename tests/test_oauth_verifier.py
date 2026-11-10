@@ -1331,19 +1331,10 @@ class TestOAuthSectionSurface:
         assert "hunter2" not in message
 
     @pytest.mark.parametrize(
-        ("lexeme", "resolved"),
-        [
-            ("9182736450", "9182736450"),
-            ("0123", "83"),
-            ("0755", "493"),
-            ("007", "7"),
-            ("0x1f", "31"),
-            ("1_000", "1000"),
-        ],
+        "lexeme",
+        ["9182736450", "0123", "0755", "007", "0x1f", "1_000"],
     )
-    def test_a_numeric_secret_is_rejected_and_says_to_quote_it(
-        self, tmp_path, lexeme, resolved
-    ):
+    def test_a_numeric_secret_is_rejected_and_says_to_quote_it(self, tmp_path, lexeme):
         """The YAML parser rewrites 0123/0x1f/1_000, so never stringify it."""
         from toolregistry_server.cli import _oauth_settings
 
@@ -1361,13 +1352,11 @@ class TestOAuthSectionSurface:
                 argparse.Namespace(), default_audience=AUDIENCE, config_path=str(path)
             )
 
-        message = str(excinfo.value)
-        assert "oauth.introspection_client_secret must be a string" in message
-        assert "quote a numeric secret" in message
-        # The resolved value never reaches the log; the one number in the
-        # message is the fixed example, never the operator's text.
-        if resolved != "9182736450":
-            assert resolved not in message
+        # The message is fixed: no lexeme and no resolved value reaches it.
+        assert str(excinfo.value) == (
+            "oauth.introspection_client_secret must be a string; quote a "
+            'numeric secret, e.g. oauth.introspection_client_secret: "9182736450"'
+        )
 
     def test_a_numeric_secret_still_works_when_quoted(self, tmp_path):
         from toolregistry_server.cli import _oauth_settings
