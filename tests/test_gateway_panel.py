@@ -147,12 +147,12 @@ def _json(body: Any) -> dict[str, Any]:
     return json.loads(body)
 
 
-def _add(a: int, b: int) -> int:
+def add(a: int, b: int) -> int:
     """Add two integers."""
     return a + b
 
 
-def _subtract(a: int, b: int) -> int:
+def subtract(a: int, b: int) -> int:
     """Subtract two integers."""
     return a - b
 
@@ -166,10 +166,10 @@ def remove_all(path: str) -> str:
 def registry() -> ToolRegistry:
     """A registry with a normal, a tagged and a disabled tool."""
     reg = ToolRegistry()
-    reg.register(_add, namespace="calc")
+    reg.register(add, namespace="calc")
     reg.register(remove_all, namespace="files")
     reg.update_tool_metadata("files-remove_all", tags={ToolTag.DESTRUCTIVE})
-    reg.register(_subtract, namespace="calc")
+    reg.register(subtract, namespace="calc")
     reg.disable("calc-subtract", "maintenance")
     return reg
 
@@ -681,10 +681,10 @@ class TestCallTester:
     def test_a_failing_tool_reports_the_error_and_logs_it(
         self, registry, panel
     ) -> None:
-        def _boom() -> str:
+        def boom() -> str:
             raise RuntimeError("tool exploded")
 
-        registry.register(_boom, namespace="danger")
+        registry.register(boom, namespace="danger")
         route_table = RouteTable(registry)
         extension = GatewayAdminExtension(route_table=route_table)
         admin = AdminServer(registry, port=0, extensions=[extension])
