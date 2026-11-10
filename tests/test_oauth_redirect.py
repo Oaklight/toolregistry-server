@@ -9,6 +9,9 @@ standalone httpserver and under the gateway's ``/openapi`` mount.
 from __future__ import annotations
 
 import asyncio
+import json
+import shutil
+import subprocess
 import threading
 import time
 import urllib.error
@@ -24,6 +27,7 @@ from toolregistry_server.adapters.openapi.server_app import create_httpserver_ap
 from toolregistry_server.gateway import GatewayAdapter
 from toolregistry_server.gateway.openapi_asgi import create_openapi_app
 from toolregistry_server.oauth.redirect import (
+    OAUTH2_REDIRECT_HTML,
     OAUTH2_REDIRECT_PATH,
     OAUTH2_REDIRECT_URL,
     oauth2_redirect_html,
@@ -168,3 +172,105 @@ class TestDirectAsgiApp:
         assert response.status_code == 200
         assert response.text == oauth2_redirect_html()
         assert "swaggerUIRedirectOauth2" in response.text
+
+
+# ---------------------------------------------------------------------------
+# The page script itself
+# ---------------------------------------------------------------------------
+
+_NODE = shutil.which("node")
+_requires_node = pytest.mark.skipif(
+    _NODE is None, reason="node is needed to run the served page script"
+)
+
+
+def _run_page_script(
+    tmp_path, *, search: str, fragment: str, flow: str = "authorizationCode"
+) -> dict:
+    """Run the served page script with a stubbed opener and return the capture."""
+    page = OAUTH2_REDIRECT_HTML
+    script = page.split("<script>", 1)[1].split("</script>", 1)[0]
+    harness = f"""
+var captured = {{}};
+var window = {{
+  location: {{ search: {json.dumps(search)}, hash: {json.dumps(fragment)} }},
+  opener: {{
+    swaggerUIRedirectOauth2: {{
+      state: "state-1",
+      redirectUrl: "https://tools.example.com/callback",
+      auth: {{
+        name: "oauth",
+        schema: {{
+          get: function () {{ return {json.dumps(flow)}; }}
+        }}
+      }},
+      callback: function (payload) {{
+        captured.code = payload.auth.code;
+        captured.token = payload.token;
+        captured.redirectUrl = payload.redirectUrl;
+      }},
+      errCb: function (payload) {{ captured.error = payload; }}
+    }}
+  }},
+  close: function () {{ captured.closed = true; }}
+}};
+var document = {{
+  readyState: "complete",
+  addEventListener: function () {{}}
+}};
+{script}
+console.log(JSON.stringify(captured));
+"""
+    path = tmp_path / "page.js"
+    path.write_text(harness, encoding="utf-8")
+    result = subprocess.run(  # noqa: S603 - fixed interpreter, local file
+        [_NODE, str(path)], capture_output=True, text=True, timeout=30, check=True
+    )
+    return json.loads(result.stdout)
+
+
+@_requires_node
+class TestPageScript:
+    def test_a_percent_encoded_code_reaches_the_callback_decoded(self, tmp_path):
+        # A code can carry "+", "/", "=" and "%" after percent-encoding.
+        captured = _run_page_script(
+            tmp_path,
+            search="?code=a%2Bb%2Fc%3Dd%25e&state=state-1",
+            fragment="",
+        )
+
+        assert captured["code"] == "a+b/c=d%e"
+        assert captured["token"] is None
+        assert captured["closed"] is True
+        assert "error" not in captured
+
+    def test_a_hash_callback_is_normalized_and_decoded(self, tmp_path):
+        captured = _run_page_script(
+            tmp_path,
+            search="",
+            fragment="#?code=a%2Bb&state=state-1",
+        )
+
+        assert captured["code"] == "a+b"
+        assert captured["closed"] is True
+
+    def test_the_hash_form_is_parsed_like_the_search_form(self, tmp_path):
+        captured = _run_page_script(
+            tmp_path,
+            search="",
+            fragment="#code=abc%3D&state=state-1",
+        )
+
+        assert captured["code"] == "abc="
+        assert captured["closed"] is True
+
+    def test_the_flow_name_authorization_code_is_accepted(self, tmp_path):
+        captured = _run_page_script(
+            tmp_path,
+            search="?code=abc&state=state-1",
+            fragment="",
+            flow="authorization_code",
+        )
+
+        assert captured["code"] == "abc"
+        assert "error" not in captured

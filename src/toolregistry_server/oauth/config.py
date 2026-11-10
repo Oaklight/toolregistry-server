@@ -28,6 +28,21 @@ from typing import Any
 #: Top-level configuration section that holds OAuth settings.
 OAUTH_SECTION = "oauth"
 
+#: Keys :func:`settings_from_args` reads from the section.  Anything else is
+#: rejected: a typo such as ``introspection_ur1`` would otherwise leave a
+#: security control switched off without a diagnostic.
+OAUTH_SECTION_KEYS = frozenset(
+    {
+        "introspection_url",
+        "introspection_client_id",
+        "introspection_client_secret",
+        "introspection_cache_ttl",
+        "introspection_optional",
+        "concurrency_claim",
+        "client_concurrency",
+    }
+)
+
 _JSON_SUFFIXES = frozenset({".json", ".jsonc"})
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
 
@@ -48,7 +63,8 @@ def load_oauth_section(config_path: str | None) -> dict[str, Any]:
         The section mapping, copied so callers cannot mutate the source.
 
     Raises:
-        ValueError: If the ``oauth`` value is present but is not a mapping.
+        ValueError: If the ``oauth`` value is present but is not a mapping,
+            or if it names a key this server does not read.
     """
     if not config_path:
         return {}
@@ -72,6 +88,14 @@ def load_oauth_section(config_path: str | None) -> dict[str, Any]:
         return {}
     if not isinstance(section, dict):
         raise ValueError(f"'{OAUTH_SECTION}' must be a mapping")
+    unknown = sorted(set(section) - OAUTH_SECTION_KEYS)
+    if unknown:
+        names = ", ".join(repr(key) for key in unknown)
+        known = ", ".join(sorted(OAUTH_SECTION_KEYS))
+        raise ValueError(
+            f"unknown key(s) in the '{OAUTH_SECTION}' section: {names}; "
+            f"expected one of {known}"
+        )
     return dict(section)
 
 
@@ -88,4 +112,4 @@ def _parse(text: str, suffix: str) -> Any:
     return yaml_load(text)
 
 
-__all__ = ["OAUTH_SECTION", "load_oauth_section"]
+__all__ = ["OAUTH_SECTION", "OAUTH_SECTION_KEYS", "load_oauth_section"]

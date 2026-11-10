@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from typing import Any
 
 import jwt
@@ -30,6 +31,7 @@ from toolregistry_server.gateway.openapi_asgi import create_openapi_app
 from toolregistry_server.isolation import (
     ClientBusyTimeout,
     ClientLimiter,
+    limiter_key,
     principal_key,
 )
 from toolregistry_server.oauth import OAuthResolver, OAuthSettings, OAuthTokenVerifier
@@ -416,7 +418,7 @@ class TestNoCrossClientLeakage:
         assert beta.allows("beta", "beta-echo") is True
         assert beta.allows("alpha", "alpha-add") is False
 
-    def test_the_limiter_keeps_one_budget_per_client(self):
+    def test_the_limiter_keys_on_the_client_not_the_subject(self):
         resolver = _resolver()
         alpha = resolver.resolve(
             _token(
@@ -449,7 +451,124 @@ class TestNoCrossClientLeakage:
         asyncio.run(run())
 
         snapshot = {record["client_key"]: record for record in limiter.snapshot()}
-        assert snapshot[principal_key(alpha)]["limit"] == 1
-        assert snapshot[principal_key(beta)]["limit"] == 2
-        assert snapshot[principal_key(alpha)]["client_id"] == "alpha-bot"
-        assert snapshot[principal_key(beta)]["client_id"] == "beta-bot"
+        assert snapshot[limiter_key(alpha)]["limit"] == 1
+        assert snapshot[limiter_key(beta)]["limit"] == 2
+        assert snapshot[limiter_key(alpha)]["client_id"] == "alpha-bot"
+        assert snapshot[limiter_key(beta)]["client_id"] == "beta-bot"
+        # The sub stays in the accounting key, so the log can still tell the
+        # two users apart.
+        assert principal_key(alpha) == "oauth:alpha-bot:user-1"
+
+    def test_two_subjects_of_one_client_share_one_budget(self):
+        resolver = _resolver()
+        first = resolver.resolve(
+            _token(
+                client_id="reports-bot",
+                scope="tools:alpha",
+                sub="user-1",
+                max_concurrency=2,
+            )
+        )
+        second = resolver.resolve(
+            _token(
+                client_id="reports-bot",
+                scope="tools:alpha",
+                sub="user-2",
+                max_concurrency=2,
+            )
+        )
+        assert first is not None and second is not None
+        assert principal_key(first) != principal_key(second)
+        assert limiter_key(first) == limiter_key(second) == "oauth:reports-bot"
+
+        limiter = ClientLimiter(default_limit=8, timeout=0.01)
+
+        async def run():
+            async with limiter.slot(first), limiter.slot(second):
+                with pytest.raises(ClientBusyTimeout):
+                    # The client's budget is two in flight, not two per user.
+                    async with limiter.slot(first):
+                        pass
+
+        asyncio.run(run())
+
+        [record] = limiter.snapshot()
+        assert record["client_key"] == "oauth:reports-bot"
+        assert record["limit"] == 2
+        assert record["calls"] == 2
+        assert record["errors"] == 1
+
+    def test_two_clients_do_not_share_one_budget(self):
+        resolver = _resolver()
+        alpha = resolver.resolve(
+            _token(
+                client_id="alpha-bot",
+                scope="tools:alpha",
+                sub="user-1",
+                max_concurrency=1,
+            )
+        )
+        beta = resolver.resolve(
+            _token(
+                client_id="beta-bot",
+                scope="tools:beta",
+                sub="user-1",
+                max_concurrency=1,
+            )
+        )
+        assert alpha is not None and beta is not None
+
+        limiter = ClientLimiter(default_limit=8, timeout=0.01)
+
+        async def run():
+            # Each client's single slot is free while the other is held.
+            async with limiter.slot(alpha), limiter.slot(beta):
+                pass
+
+        asyncio.run(run())
+
+        keys = [record["client_key"] for record in limiter.snapshot()]
+        assert keys == ["oauth:alpha-bot", "oauth:beta-bot"]
+
+    def test_a_wider_claim_cannot_raise_a_shared_client_budget(self):
+        resolver = _resolver()
+        narrow = resolver.resolve(
+            _token(
+                client_id="reports-bot",
+                scope="tools:alpha",
+                sub="user-1",
+                max_concurrency=2,
+            )
+        )
+        wide = resolver.resolve(
+            _token(
+                client_id="reports-bot",
+                scope="tools:alpha",
+                sub="user-2",
+                max_concurrency=6,
+            )
+        )
+        assert narrow is not None and wide is not None
+
+        limiter = ClientLimiter(default_limit=8, timeout=0.01)
+
+        async def run():
+            async with limiter.slot(narrow), limiter.slot(wide):
+                with pytest.raises(ClientBusyTimeout):
+                    # The client's budget stays at two; the wider claim on
+                    # the second token does not enlarge it.
+                    async with limiter.slot(wide):
+                        pass
+
+        asyncio.run(run())
+
+        [record] = limiter.snapshot()
+        assert record["limit"] == 2
+
+    def test_a_stored_key_keeps_its_key_id_as_the_budget_key(self):
+        resolver = _resolver()
+        principal = resolver.resolve(_token(client_id="alpha-bot", scope="tools:alpha"))
+        assert principal is not None
+        keyed = replace(principal, key_id="key_1")
+
+        assert limiter_key(keyed) == principal_key(keyed) == "key_1"

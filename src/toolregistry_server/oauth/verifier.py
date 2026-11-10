@@ -209,7 +209,9 @@ class OAuthSettings:
             "client_max_concurrency",
             MappingProxyType(
                 {
-                    str(client): _positive_int(limit, "--oauth-client-concurrency")
+                    str(client): _positive_int(
+                        limit, f"oauth.client_concurrency[{client!r}]"
+                    )
                     for client, limit in dict(self.client_max_concurrency).items()
                 }
             ),
@@ -328,13 +330,21 @@ def _post_form(
         return json.loads(response.read().decode("utf-8"))
 
 
+#: Cached answer for a token the endpoint could not confirm.  A failure is
+#: cached for the TTL like any other answer, so an outage costs one probe per
+#: TTL instead of one blocked request per call.
+INTROSPECTION_FAILED = object()
+
+
 class _IntrospectionCache:
     """A small, bounded RFC 7662 result cache.
 
     Only a SHA-256 digest of the token is kept, never the token itself.  A
-    positive and a negative answer are cached for the same short TTL, which
-    bounds both the request rate to the endpoint and how long a revocation
-    stays invisible.
+    positive, a negative and a failed probe are cached for the same short
+    TTL, which bounds both the request rate to the endpoint and how long a
+    revocation stays invisible.  Caching the failure matters as much as the
+    answers: without it an unreachable endpoint blocks every request for the
+    full timeout, and a burst exhausts the worker threads.
 
     Args:
         ttl: Lifetime of one result, in seconds.  ``0`` disables caching.
@@ -344,28 +354,32 @@ class _IntrospectionCache:
     def __init__(self, ttl: float, max_entries: int = 1024) -> None:
         self._ttl = ttl
         self._max_entries = max_entries
-        self._entries: OrderedDict[str, tuple[bool, float]] = OrderedDict()
+        self._entries: OrderedDict[str, tuple[Any, float]] = OrderedDict()
         self._lock = threading.Lock()
 
-    def get(self, digest: str) -> bool | None:
-        """Return a cached answer, or ``None`` when it is absent or expired."""
+    def get(self, digest: str) -> Any:
+        """Return a cached answer, or ``None`` when it is absent or expired.
+
+        Returns:
+            ``True``, ``False``, :data:`INTROSPECTION_FAILED`, or ``None``.
+        """
         with self._lock:
             entry = self._entries.get(digest)
             if entry is None:
                 return None
-            active, expires = entry
+            answer, expires = entry
             if time.monotonic() >= expires:
                 self._entries.pop(digest, None)
                 return None
             self._entries.move_to_end(digest)
-            return active
+            return answer
 
-    def set(self, digest: str, active: bool) -> None:
+    def set(self, digest: str, answer: Any) -> None:
         """Cache one answer for the configured TTL."""
         if self._ttl <= 0:
             return
         with self._lock:
-            self._entries[digest] = (active, time.monotonic() + self._ttl)
+            self._entries[digest] = (answer, time.monotonic() + self._ttl)
             self._entries.move_to_end(digest)
             while len(self._entries) > self._max_entries:
                 self._entries.popitem(last=False)
@@ -599,17 +613,22 @@ class OAuthTokenVerifier:
         """
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         cached = self._introspection.get(digest)
+        if cached is INTROSPECTION_FAILED:
+            return bool(self._settings.introspection_optional)
         if cached is not None:
-            return cached
+            return bool(cached)
         try:
             active = self._call_introspection(token)
         except Exception as exc:
             # Never log the token or the form body.  The endpoint and the
             # exception type are enough to diagnose a connectivity problem.
+            # The failure is cached for the TTL, so an outage costs one probe
+            # per TTL rather than one blocked request per call.
             logger.warning(
                 f"OAuth introspection at {self._settings.introspection_url} "
                 f"failed: {type(exc).__name__}"
             )
+            self._introspection.set(digest, INTROSPECTION_FAILED)
             return bool(self._settings.introspection_optional)
         self._introspection.set(digest, active)
         return active
@@ -1051,8 +1070,12 @@ def _parse_client_limits(
     """
     if not raw_limits:
         if isinstance(config_limits, Mapping):
+            # The label names the source, so a bad value in the file does
+            # not send the operator to a flag they never passed.
             return {
-                str(client): _positive_int(limit, "--oauth-client-concurrency")
+                str(client): _positive_int(
+                    limit, f"oauth.client_concurrency[{client!r}]"
+                )
                 for client, limit in config_limits.items()
             }
         return {}

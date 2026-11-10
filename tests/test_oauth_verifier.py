@@ -670,6 +670,46 @@ class TestIntrospection:
             is None
         )
 
+    def test_a_failure_is_cached_for_the_ttl(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint()
+        endpoint.failure = OSError("connection refused")
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        verifier = OAuthTokenVerifier(
+            _introspection_settings(
+                introspection_optional=True, introspection_cache_ttl=60
+            )
+        )
+        token = _token(KEY1, "key-1")
+
+        assert verifier.verify(token) is not None
+        endpoint.failure = None
+        # The failed probe is reused, so an outage costs one timeout per TTL
+        # instead of one per request.
+        assert verifier.verify(token) is not None
+        assert len(endpoint.calls) == 1
+
+    def test_a_cached_failure_expires_like_any_other_answer(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint()
+        endpoint.failure = OSError("connection refused")
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        verifier = OAuthTokenVerifier(
+            _introspection_settings(
+                introspection_optional=True, introspection_cache_ttl=60
+            )
+        )
+        token = _token(KEY1, "key-1")
+
+        assert verifier.verify(token) is not None
+        endpoint.failure = None
+        endpoint.active = False
+        for digest in verifier._introspection._entries:
+            verifier._introspection._entries[digest] = (
+                verifier._introspection._entries[digest][0],
+                0.0,
+            )
+        assert verifier.verify(token) is None
+        assert len(endpoint.calls) == 2
+
     def test_optional_mode_falls_back_to_local_verification(self, monkeypatch):
         endpoint = _IntrospectionEndpoint()
         endpoint.failure = OSError("connection refused")
@@ -913,3 +953,30 @@ class TestSettingsFromConfig:
 
         assert load_oauth_section(str(tmp_path / "missing.yaml")) == {}
         assert load_oauth_section(None) == {}
+
+    def test_an_unknown_key_in_the_section_is_rejected(self, tmp_path):
+        from toolregistry_server.oauth.config import load_oauth_section
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            "oauth:\n"
+            f"  introspection_url: {INTROSPECTION_URL}\n"
+            "  introspection_ur1: typo\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="introspection_ur1"):
+            load_oauth_section(str(path))
+
+    def test_a_bad_config_limit_names_the_config_source(self, tmp_path):
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            "oauth:\n  client_concurrency:\n    reports-bot: 0\n",
+            encoding="utf-8",
+        )
+        parsed = argparse.Namespace(oauth_issuer=ISSUER)
+
+        with pytest.raises(ValueError, match=r"oauth\.client_concurrency"):
+            _oauth_settings(parsed, default_audience=AUDIENCE, config_path=str(path))

@@ -209,6 +209,8 @@ def _proxy_refusal(
 
     The detail names the target, exactly as a direct out-of-scope call to
     that tool does, so the two paths are indistinguishable to a client.
+    The refusal is recorded against the target too: ``call_deferred``
+    itself is permitted, and blaming it would log a false statement.
     """
     principal = getattr(request.state, "principal", None)
     target = refusing_target(
