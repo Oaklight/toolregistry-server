@@ -397,6 +397,11 @@ OAuth access token or a bearer key.
 Without keys or tokens only OAuth2 is listed. Without `--oauth-issuer` the
 document is exactly what it was before.
 
+For the full flag table and per-command defaults see the
+[OAuth reference](../reference/oauth.md); for a deployment walkthrough see
+[Deploying with an external authorization server](oauth-deployment.md) and
+[Connecting OAuth clients](oauth-clients.md).
+
 ### Limitations
 
 Token introspection (RFC 7662) is not implemented: the deployment must issue

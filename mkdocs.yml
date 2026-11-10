@@ -120,6 +120,8 @@ nav:
   - Guides:
       - Configuration: guides/configuration.md
       - Authentication: guides/authentication.md
+      - OAuth Deployment: guides/oauth-deployment.md
+      - OAuth Clients: guides/oauth-clients.md
       - OpenAPI Adapter: guides/openapi.md
       - MCP Adapter: guides/mcp.md
       - Extending: guides/extending.md
@@ -129,6 +131,7 @@ nav:
       - examples/index.md
   - Reference:
       - CLI: reference/cli/index.md
+      - OAuth: reference/oauth.md
       - Protocol Adapters: reference/adapters.md
       - API Reference:
           - reference/api/index.md
