@@ -27,7 +27,11 @@ from toolregistry_server.adapters.mcp._compat import create_test_client
 from toolregistry_server.adapters.openapi.server_app import create_httpserver_app
 from toolregistry_server.auth import create_scoped_bearer_dependency
 from toolregistry_server.gateway.openapi_asgi import create_openapi_app
-from toolregistry_server.isolation import ClientLimiter, principal_key
+from toolregistry_server.isolation import (
+    ClientBusyTimeout,
+    ClientLimiter,
+    principal_key,
+)
 from toolregistry_server.oauth import OAuthResolver, OAuthSettings, OAuthTokenVerifier
 
 ISSUER = "https://idp.example.com/realms/dev"
@@ -202,9 +206,7 @@ class TestMcp:
             "toolregistry_server.adapters.mcp.adapter._request_authorization",
             lambda: token,
         )
-        adapter = MCPAdapter(
-            table, principal_resolver=resolver, execution_log=True
-        )
+        adapter = MCPAdapter(table, principal_resolver=resolver, execution_log=True)
 
         async with create_test_client(adapter.server) as client:
             try:
@@ -234,9 +236,7 @@ class TestMcp:
             "toolregistry_server.adapters.mcp.adapter._request_authorization",
             lambda: token,
         )
-        adapter = MCPAdapter(
-            table, principal_resolver=resolver, execution_log=True
-        )
+        adapter = MCPAdapter(table, principal_resolver=resolver, execution_log=True)
 
         async with create_test_client(adapter.server) as client:
             result = await client.call_tool("alpha-add", {"a": 1, "b": 2})
@@ -253,6 +253,7 @@ class TestMcp:
         from contextlib import asynccontextmanager
 
         from toolregistry_server.adapters.mcp import route_table_to_mcp_server
+        from toolregistry_server.adapters.mcp._compat import McpErrorClass
         from toolregistry_server.isolation import ClientBusyTimeout
 
         table = _table()
@@ -275,10 +276,14 @@ class TestMcp:
         )
 
         async with create_test_client(server) as client:
-            with pytest.raises(Exception) as excinfo:
-                await client.call_tool("alpha-add", {"a": 1, "b": 2})
+            try:
+                result = await client.call_tool("alpha-add", {"a": 1, "b": 2})
+            except McpErrorClass as exc:
+                message = str(exc)
+            else:
+                message = result.content[0].text
 
-        assert "too many concurrent calls" in str(excinfo.value)
+        assert "too many concurrent calls" in message
         [entry] = table.registry.get_execution_log().get_entries()
         assert entry.tool_name == "alpha-add"
         assert entry.metadata == {
@@ -357,9 +362,7 @@ class TestHttpserver:
         url = _serve(app)
         token = _token(client_id="alpha-bot", scope="tools:alpha")
         try:
-            request = urllib.request.Request(
-                url + "/tools", headers=_bearer(token)
-            )
+            request = urllib.request.Request(url + "/tools", headers=_bearer(token))
             with urllib.request.urlopen(request) as response:
                 payload = json.loads(response.read())
         finally:
@@ -436,7 +439,7 @@ class TestNoCrossClientLeakage:
 
         async def run():
             async with limiter.slot(alpha):
-                with pytest.raises(Exception):
+                with pytest.raises(ClientBusyTimeout):
                     # The same client's second slot exceeds its limit of one.
                     async with limiter.slot(alpha):
                         pass
