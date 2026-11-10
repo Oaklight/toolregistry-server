@@ -208,7 +208,7 @@ oauth:
 | `refresh_url` | `--oauth-refresh-url` | 字符串 |
 | `scope` | `--oauth-scope` | 从作用域到其条目的映射；每个值是一个条目列表或一个逗号分隔的字符串。也接受选项的 `[SCOPE=ENTRY[,ENTRY], ...]` 列表形式 |
 | `scopes` | `--oauth-scopes` | 字符串列表，或一个空格分隔的字符串 |
-| `clients` | — | 映射列表，每个条目对应本服务器要向其提交凭据的来源；见下文 |
+| `clients` | 无对应选项 | 映射列表，每个条目对应本服务器要向其提交凭据的来源；仅限配置文件，没有命令行等价形式 |
 
 `scope` 的条目语法与选项相同：命名空间模式、`+tool-name`（允许单个工具）或
 `-tool-name`（拒绝单个工具）。未映射的作用域仍然不授予任何权限，因此在由文件驱动的
@@ -221,7 +221,7 @@ MCP 来源，并带有 `issuer` 或 `discovery_url`、`client_id`、`client_secr
 `authorization_code`）、可选的 `token_endpoint`、`client_auth`（`client_secret_post`
 或 `client_secret_basic`）以及绝对路径的 `token_store`。两个条目不能选中同一来源；
 未知键、相对路径的 `token_store`，或来源已设置 `Authorization` 头，都会使加载失败。
-令牌保存在配置文件之外的 SQLite 中；客户端密钥从不写入其中。参见
+令牌保存在配置文件之外的 SQLite 中。客户端密钥本身从不写入其中，但会保存一个加盐、多次迭代的指纹，以便在轮换密钥时丢弃过期的重新授权判定，同时不保存密钥。第 1 阶段的 start/complete 流程仅供嵌入方调用，面板路由尚未使用。参见
 [部署指南](../guides/oauth-deployment.md#受保护-mcp-来源的上游凭据)。
 
 已存令牌在被 MCP 服务器拒绝之前会一直复用。连接时来源返回 HTTP 401/403，会丢弃
@@ -231,6 +231,21 @@ MCP 来源，并带有 `issuer` 或 `discovery_url`、`client_id`、`client_secr
 `authorization_code` 来源，并使 `client_credentials` 来源丢弃该行、改用当前密钥
 重试。计数仅在连接端到端成功后才清零，因此在令牌端点获取的令牌在来源接受之前不被
 信任。
+
+存储行记录签发时的来源 URL、授权方式、请求的作用域、令牌端点以及客户端凭据的
+指纹。令牌只会提交给其签发的 URL；把选择器改指向另一个主机时会重新签发，而不是
+重放旧令牌。确定性授权拒绝会一直锁定，直到运维重新授权或修正文件中的客户端凭据：
+issuer、client id、令牌端点、授权方式、作用域、密钥或客户端认证方式。issuer、
+client id、授权方式或目标 URL 变化时，该行会被直接丢弃。
+
+发现文档仅在其 `issuer` 等于配置的 issuer（RFC 8414 第 3.3 节）时使用；对于只给出
+`discovery_url` 的情况，文档必须声明 issuer。其中的端点必须是绝对的 `http` 或
+`https` URL，缺少可用 `token_endpoint` 的文档不会被缓存，以便下一个候选仍可作答。
+
+会使 `oauth.clients` 选择器选不中来源或选中多个来源的面板修改，会在写入前被拒绝；
+写入失败时令牌行保持不变。错误文本会被脱敏：URL 中的用户信息、凭据形式的参数、
+客户端密钥以及 HTTP Basic 的 base64 凭据。长度不足六个字符的密钥不会在自由文本中
+替换，否则会改写普通单词。
 
 响应中没有 `expires_in` 的令牌按一小时计算寿命，起算于存储行的 `updated_at`。
 省略该字段的身份提供方因此会使每个来源每小时发起一次令牌请求，而不是得到一个永不
