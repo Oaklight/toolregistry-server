@@ -33,6 +33,8 @@
 
 - **`oauth` 配置段承载全部 Track A 设置**（#240）：该段此前只读取内省相关键与静态客户端上限，因此 issuer、audience、JWKS 端点、OpenAPI 流程端点与作用域映射只能通过选项设置。现在每个键都是对应选项去掉 `oauth_` 前缀（`issuer`、`audience`、`jwks`、`authorization_url`、`token_url`、`refresh_url`、`scope`、`scopes`，以及原有的 `introspection_*` 与 `concurrency_claim`）。`scope` 接受从作用域到其条目的映射，也接受选项的 `SCOPE=ENTRY[,ENTRY]` 列表；`scopes` 接受字符串列表或空格分隔的字符串。选项仍然优先，文件只在对应选项缺席时生效；可重复的 `--oauth-scope` 选项空默认值会回退到文件，因此文件中的 `scope` 无法在命令行上覆盖为空。类型错误的值会以 `oauth.<key>` 指明键名；仅凭文件中的 `issuer` 即可像 `--oauth-issuer` 一样开启 OAuth。issuer/audience 的检查现在针对合并后的值：仅由文件配置的 `local-hub` 部署仍需要显式 audience，而 `openapi` 在通配符绑定上使用文件提供的 issuer 时仍会给出反向代理警告。CLI 参考补齐了 `local-hub` 缺失的 `--oauth-*` 行，OAuth 参考记录了完整的配置段并删除了对应的缺口条目。
 
+- **`oauth` 段会校验其值的类型**（#240）：`issuer`、`audience`、`jwks`、`authorization_url`、`token_url`、`refresh_url`、`scope`、`scopes` 与凭据相关键现在都可从配置文件提供，且每个值都在启动时校验。带引号的数字（`introspection_cache_ttl: "5"`）会被拒绝——此前会用 `float()` 转换；非有限数字（`introspection_cache_ttl: .nan`）直接拒绝；需要字符串却给出数字时（`introspection_client_secret: 9182736450`）会以「quote a numeric secret」拒绝——若把它转成字符串会发出错误的凭据，因为 YAML 解析器会改写 `0123`、`0x1f` 与 `1_000`。作用域映射按键与条目分别解析，因此含 `=` 的作用域名（RFC 6749 允许）会按原文授予。错误信息以 `oauth.<key>` 指明键名，且从不回显凭据的值。
+
 ### 修复
 
 - **末尾带斜杠的 issuer 不再产生双斜杠的 JWKS 回退地址**（#246）：最后的回退改用与 `OAuthSettings.jwks_url` 相同的拼接方式，会去掉末尾斜杠，因此以 `https://auth.example.com/` 公布且元数据不可达的 issuer 会请求 `https://auth.example.com/.well-known/jwks.json`，而不是 `https://auth.example.com//.well-known/jwks.json`。`iss` 仍逐字节比较。
