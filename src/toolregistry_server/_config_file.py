@@ -7,7 +7,7 @@ extra (FastAPI, uvicorn) is not installed; importing
 gateway package in.
 
 The writer keeps every top-level section it does not own, so a source edit
-preserves ``gateway``, ``oauth`` and ``mcp_oauth`` settings.
+preserves ``gateway`` and ``oauth`` settings.
 """
 
 from __future__ import annotations

@@ -5,9 +5,9 @@ The provider owns three flows:
 * **client credentials** — fetch a token for a machine-to-machine source,
   cache it, and refresh it before expiry;
 * **authorization code + PKCE** — the start/complete pair the panel will
-  drive in stage 2.  :meth:`MCPOAuthProvider.start_authorization` returns the
+  drive in stage 2.  :meth:`OAuthClientProvider.start_authorization` returns the
   authorization URL, the opaque ``state`` and an expiry; the PKCE verifier
-  stays on disk.  :meth:`MCPOAuthProvider.complete_authorization` exchanges
+  stays on disk.  :meth:`OAuthClientProvider.complete_authorization` exchanges
   the code and stores the token;
 * **refresh** — both grants reuse the same exchange path, with a skew so a
   token that is about to expire is replaced before it is handed out.
@@ -54,11 +54,11 @@ from urllib.parse import urlencode, urlsplit
 
 from toolregistry.config import ToolSource
 
-from ..oauth.verifier import _metadata_url_candidates
+from ..verifier import _metadata_url_candidates
 from .config import (
     DEFAULT_EXPIRY_SKEW,
     DEFAULT_HTTP_TIMEOUT,
-    MCPOAuthConfig,
+    OAuthClientConfig,
     default_token_store_path,
     selector_matches_source,
 )
@@ -66,8 +66,8 @@ from .store import PendingAuthorization, TokenRecord, TokenStore, utcnow
 
 __all__ = [
     "AuthorizationRequest",
-    "MCPOAuthError",
-    "MCPOAuthProvider",
+    "OAuthClientError",
+    "OAuthClientProvider",
     "OAuthHTTPError",
     "OAuthStateError",
     "OAuthTransport",
@@ -89,7 +89,7 @@ _TOKEN_PARAM = re.compile(
 )
 
 
-class MCPOAuthError(Exception):
+class OAuthClientError(Exception):
     """Base error for an upstream OAuth failure.
 
     ``reauth_required`` tells the source manager whether the operator must
@@ -99,13 +99,13 @@ class MCPOAuthError(Exception):
     reauth_required = False
 
 
-class ReauthorizationRequired(MCPOAuthError):
+class ReauthorizationRequired(OAuthClientError):
     """The stored grant was rejected; the source must be authorized again."""
 
     reauth_required = True
 
 
-class TransientOAuthError(MCPOAuthError):
+class TransientOAuthError(OAuthClientError):
     """A transport, timeout or server-side failure worth retrying."""
 
 
@@ -253,7 +253,7 @@ def redact(text: str, *secrets: str | None) -> str:
 
 @dataclass(frozen=True)
 class AuthorizationRequest:
-    """Result of :meth:`MCPOAuthProvider.start_authorization`.
+    """Result of :meth:`OAuthClientProvider.start_authorization`.
 
     Attributes:
         authorization_url: URL the operator's browser must open.
@@ -275,7 +275,7 @@ class AuthorizationRequest:
         }
 
 
-class MCPOAuthProvider:
+class OAuthClientProvider:
     """Resolve, refresh and store OAuth tokens for MCP sources.
 
     Args:
@@ -293,7 +293,7 @@ class MCPOAuthProvider:
 
     def __init__(
         self,
-        declarations: tuple[MCPOAuthConfig, ...] = (),
+        declarations: tuple[OAuthClientConfig, ...] = (),
         *,
         store: TokenStore | None = None,
         default_token_store: str | None = None,
@@ -317,21 +317,21 @@ class MCPOAuthProvider:
     # -- declaration lookup ------------------------------------------------
 
     @property
-    def declarations(self) -> tuple[MCPOAuthConfig, ...]:
+    def declarations(self) -> tuple[OAuthClientConfig, ...]:
         """Return the current declarations."""
         with self._lock:
             return self._declarations
 
-    def replace_declarations(self, declarations: tuple[MCPOAuthConfig, ...]) -> None:
+    def replace_declarations(self, declarations: tuple[OAuthClientConfig, ...]) -> None:
         """Replace the declarations after a config reload."""
         with self._lock:
             self._declarations = tuple(declarations)
 
-    def declaration_for(self, source: ToolSource) -> MCPOAuthConfig | None:
+    def declaration_for(self, source: ToolSource) -> OAuthClientConfig | None:
         """Return the declaration that selects *source*, if any.
 
         Raises:
-            MCPOAuthError: If more than one declaration selects the source.
+            OAuthClientError: If more than one declaration selects the source.
                 A config load rejects that state; a runtime edit can create
                 it, and failing the source is safer than picking one.
         """
@@ -343,12 +343,12 @@ class MCPOAuthProvider:
         if not matches:
             return None
         if len(matches) > 1:
-            raise MCPOAuthError(
+            raise OAuthClientError(
                 f"{len(matches)} OAuth declarations select the same MCP source"
             )
         return matches[0]
 
-    def declaration_by_selector(self, selector: str) -> MCPOAuthConfig | None:
+    def declaration_by_selector(self, selector: str) -> OAuthClientConfig | None:
         """Return the declaration written under *selector*."""
         for declaration in self.declarations:
             if declaration.source == selector:
@@ -388,7 +388,7 @@ class MCPOAuthProvider:
         whatever headers it already declares.
 
         Raises:
-            MCPOAuthError: If the token cannot be obtained.  The subclass
+            OAuthClientError: If the token cannot be obtained.  The subclass
                 says whether re-authorization is required.
         """
         declaration = self.declaration_for(source)
@@ -402,7 +402,7 @@ class MCPOAuthProvider:
         token_type = record.token_type or "Bearer"
         return {"Authorization": f"{token_type} {record.access_token}"}
 
-    def access_token(self, declaration: MCPOAuthConfig) -> TokenRecord:
+    def access_token(self, declaration: OAuthClientConfig) -> TokenRecord:
         """Return a usable token, refreshing or fetching one as needed.
 
         An expired token is never returned.  A stored ``needs_reauth`` flag
@@ -441,7 +441,9 @@ class MCPOAuthProvider:
             f"{declaration.source} has no usable token; authorize it"
         )
 
-    def _record_matches(self, declaration: MCPOAuthConfig, record: TokenRecord) -> bool:
+    def _record_matches(
+        self, declaration: OAuthClientConfig, record: TokenRecord
+    ) -> bool:
         """Whether *record* was minted for the declaration's current client.
 
         The store is keyed by the selector, which survives an ``issuer`` or
@@ -454,7 +456,7 @@ class MCPOAuthProvider:
         return not record.client_id or record.client_id == declaration.client_id
 
     def _client_credentials(
-        self, declaration: MCPOAuthConfig, store: TokenStore
+        self, declaration: OAuthClientConfig, store: TokenStore
     ) -> TokenRecord:
         """Fetch a client-credentials token and persist it."""
         fields = {"grant_type": "client_credentials"}
@@ -464,7 +466,7 @@ class MCPOAuthProvider:
 
     def _refresh(
         self,
-        declaration: MCPOAuthConfig,
+        declaration: OAuthClientConfig,
         store: TokenStore,
         record: TokenRecord,
     ) -> TokenRecord:
@@ -482,7 +484,7 @@ class MCPOAuthProvider:
 
     def _exchange(
         self,
-        declaration: MCPOAuthConfig,
+        declaration: OAuthClientConfig,
         store: TokenStore,
         fields: dict[str, str],
         *,
@@ -499,7 +501,7 @@ class MCPOAuthProvider:
         return store.put(record)
 
     def _request_token(
-        self, declaration: MCPOAuthConfig, fields: dict[str, str]
+        self, declaration: OAuthClientConfig, fields: dict[str, str]
     ) -> dict[str, Any]:
         """Perform the token-endpoint request."""
         endpoint = self._token_endpoint(declaration)
@@ -516,15 +518,15 @@ class MCPOAuthProvider:
             body["client_secret"] = secret
         payload = self._transport.post_form(endpoint, body, headers, self._timeout)
         if not isinstance(payload, dict):
-            raise MCPOAuthError("OAuth token endpoint returned a non-object body")
+            raise OAuthClientError("OAuth token endpoint returned a non-object body")
         token = payload.get("access_token")
         if not isinstance(token, str) or not token:
-            raise MCPOAuthError("OAuth token endpoint returned no access_token")
+            raise OAuthClientError("OAuth token endpoint returned no access_token")
         return payload
 
     def _record_from_payload(
         self,
-        declaration: MCPOAuthConfig,
+        declaration: OAuthClientConfig,
         payload: Mapping[str, Any],
         *,
         fallback_refresh: str | None,
@@ -560,7 +562,7 @@ class MCPOAuthProvider:
 
     def _record_failure(
         self,
-        declaration: MCPOAuthConfig,
+        declaration: OAuthClientConfig,
         store: TokenStore,
         exc: OAuthHTTPError,
         *,
@@ -598,7 +600,7 @@ class MCPOAuthProvider:
 
     def _error_message(
         self,
-        declaration: MCPOAuthConfig,
+        declaration: OAuthClientConfig,
         exc: OAuthHTTPError,
         *,
         fields: Mapping[str, str] | None = None,
@@ -635,14 +637,14 @@ class MCPOAuthProvider:
             verifier is stored with the state and never returned.
 
         Raises:
-            MCPOAuthError: If the declaration uses client credentials, or
+            OAuthClientError: If the declaration uses client credentials, or
                 no declaration selects *source*.
             TransientOAuthError: If the authorization endpoint cannot be
                 discovered.
         """
         declaration = self._resolve_declaration(source)
         if declaration.grant != "authorization_code":
-            raise MCPOAuthError(
+            raise OAuthClientError(
                 f"{declaration.source} uses the client-credentials grant; "
                 "no interactive authorization is available"
             )
@@ -730,40 +732,40 @@ class MCPOAuthProvider:
         record = self._exchange(declaration, self._store_for(declaration), fields)
         return record.to_public_dict()
 
-    def _resolve_declaration(self, source: str | ToolSource) -> MCPOAuthConfig:
+    def _resolve_declaration(self, source: str | ToolSource) -> OAuthClientConfig:
         """Return the declaration for a selector or a parsed source."""
         if isinstance(source, str):
             declaration = self.declaration_by_selector(source)
         else:
             declaration = self.declaration_for(source)
         if declaration is None:
-            raise MCPOAuthError("no OAuth declaration selects this source")
+            raise OAuthClientError("no OAuth declaration selects this source")
         return declaration
 
     # -- discovery ---------------------------------------------------------
 
-    def _token_endpoint(self, declaration: MCPOAuthConfig) -> str:
+    def _token_endpoint(self, declaration: OAuthClientConfig) -> str:
         """Return the token endpoint, discovering it when necessary."""
         if declaration.token_endpoint:
             return declaration.token_endpoint
         endpoint = self._metadata_for(declaration).get("token_endpoint")
         if not isinstance(endpoint, str) or not endpoint:
-            raise MCPOAuthError(
+            raise OAuthClientError(
                 "OAuth metadata has no token_endpoint; set token_endpoint explicitly"
             )
         return endpoint
 
-    def _authorization_endpoint(self, declaration: MCPOAuthConfig) -> str:
+    def _authorization_endpoint(self, declaration: OAuthClientConfig) -> str:
         """Return the authorization endpoint from discovery."""
         endpoint = self._metadata_for(declaration).get("authorization_endpoint")
         if not isinstance(endpoint, str) or not endpoint:
-            raise MCPOAuthError(
+            raise OAuthClientError(
                 "OAuth metadata has no authorization_endpoint; the "
                 "authorization-code flow cannot start"
             )
         return endpoint
 
-    def _metadata_for(self, declaration: MCPOAuthConfig) -> dict[str, Any]:
+    def _metadata_for(self, declaration: OAuthClientConfig) -> dict[str, Any]:
         """Return and cache the authorization-server metadata.
 
         The cache has no TTL: one document is kept per discovery URL or
@@ -782,7 +784,7 @@ class MCPOAuthProvider:
         elif declaration.issuer:
             urls = _metadata_url_candidates(declaration.issuer)
         else:  # pragma: no cover - config validation requires one
-            raise MCPOAuthError("no issuer or discovery_url to discover")
+            raise OAuthClientError("no issuer or discovery_url to discover")
         for url in urls:
             try:
                 document = self._transport.get_json(url, self._timeout)
@@ -796,7 +798,7 @@ class MCPOAuthProvider:
             f"could not discover OAuth metadata for {redact(key)}"
         )
 
-    def _issuer_for(self, declaration: MCPOAuthConfig) -> str:
+    def _issuer_for(self, declaration: OAuthClientConfig) -> str:
         """Return the issuer to record, without forcing discovery."""
         if declaration.issuer:
             return declaration.issuer
@@ -809,7 +811,7 @@ class MCPOAuthProvider:
 
     # -- stores ------------------------------------------------------------
 
-    def _store_for(self, declaration: MCPOAuthConfig) -> TokenStore:
+    def _store_for(self, declaration: OAuthClientConfig) -> TokenStore:
         """Return the store for *declaration*."""
         if self._store is not None:
             return self._store

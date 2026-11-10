@@ -21,10 +21,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from toolregistry.config import MCPSource
 
-from toolregistry_server.mcp_oauth.config import MCPOAuthConfig
-from toolregistry_server.mcp_oauth.provider import (
-    MCPOAuthError,
-    MCPOAuthProvider,
+from toolregistry_server.oauth.upstream.config import OAuthClientConfig
+from toolregistry_server.oauth.upstream.provider import (
+    OAuthClientError,
+    OAuthClientProvider,
     OAuthHTTPError,
     OAuthStateError,
     ReauthorizationRequired,
@@ -32,7 +32,7 @@ from toolregistry_server.mcp_oauth.provider import (
     UrllibTransport,
     redact,
 )
-from toolregistry_server.mcp_oauth.store import TokenRecord, TokenStore
+from toolregistry_server.oauth.upstream.store import TokenRecord, TokenStore
 
 NOW = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
 SOURCE = "namespace:example"
@@ -61,7 +61,7 @@ class FakeTransport:
         return response
 
 
-def _declaration(**overrides) -> MCPOAuthConfig:
+def _declaration(**overrides) -> OAuthClientConfig:
     values: dict[str, Any] = {
         "source": SOURCE,
         "client_id": "toolregistry",
@@ -72,7 +72,7 @@ def _declaration(**overrides) -> MCPOAuthConfig:
         "token_store": ":memory:",
     }
     values.update(overrides)
-    return MCPOAuthConfig(**values)
+    return OAuthClientConfig(**values)
 
 
 def _source(**overrides) -> MCPSource:
@@ -110,7 +110,7 @@ def store(clock):
 
 
 def _provider(declaration, transport, store, clock):
-    return MCPOAuthProvider(
+    return OAuthClientProvider(
         (declaration,), store=store, transport=transport, clock=clock
     )
 
@@ -308,12 +308,12 @@ def test_redact_removes_credential_parameters():
 def test_malformed_token_response_raises(store, clock):
     transport = FakeTransport(responses=[{"expires_in": 3600}])
     provider = _provider(_declaration(), transport, store, clock)
-    with pytest.raises(MCPOAuthError, match="no access_token"):
+    with pytest.raises(OAuthClientError, match="no access_token"):
         provider.headers_for(_source())
 
 
 def test_headers_for_returns_none_without_a_declaration(store, clock):
-    provider = MCPOAuthProvider(
+    provider = OAuthClientProvider(
         (),
         store=store,
         transport=FakeTransport(),
@@ -327,13 +327,13 @@ def test_ambiguous_declarations_raise(store, clock):
         _declaration(),
         _declaration(issuer="https://other.example.com"),
     )
-    provider = MCPOAuthProvider(
+    provider = OAuthClientProvider(
         declarations,
         store=store,
         transport=FakeTransport(),
         clock=clock,
     )
-    with pytest.raises(MCPOAuthError, match="select the same"):
+    with pytest.raises(OAuthClientError, match="select the same"):
         provider.headers_for(_source())
 
 
@@ -412,7 +412,7 @@ def test_complete_authorization_rejects_an_expired_state(store, clock):
 
 def test_start_authorization_requires_the_authorization_code_grant(store, clock):
     provider = _provider(_declaration(), FakeTransport(), store, clock)
-    with pytest.raises(MCPOAuthError, match="client-credentials grant"):
+    with pytest.raises(OAuthClientError, match="client-credentials grant"):
         provider.start_authorization(SOURCE, "https://gateway.example.com/callback")
 
 

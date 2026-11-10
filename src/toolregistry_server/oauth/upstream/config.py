@@ -1,19 +1,21 @@
-"""Server-owned OAuth declarations for protected MCP sources.
+"""Server-owned OAuth client declarations for outbound access points.
 
 The core configuration loader owns the ``tools`` list and rejects keys it does
 not understand.  Upstream OAuth is a server concern, so its declaration lives
-in its own top-level ``mcp_oauth`` section of the same file, following the
-pattern used by the ``oauth`` and ``gateway`` sections::
+in the server-owned top-level ``oauth`` section, under ``clients``, beside the
+resource-server settings::
 
-    mcp_oauth:
-      - source: "namespace:reports"
-        issuer: https://idp.example.com
-        client_id: toolregistry-reports
-        client_secret_env: MCP_REPORTS_CLIENT_SECRET
-        scopes: [mcp:read]
-        grant: client_credentials
-        token_endpoint: https://idp.example.com/oauth/token
-        token_store: /var/lib/toolregistry/mcp-oauth.db
+    oauth:
+      introspection_url: https://idp.example.com/introspect
+      clients:
+        - source: "namespace:reports"
+          issuer: https://idp.example.com
+          client_id: toolregistry-reports
+          client_secret_env: MCP_REPORTS_CLIENT_SECRET
+          scopes: [mcp:read]
+          grant: client_credentials
+          token_endpoint: https://idp.example.com/oauth/token
+          token_store: /var/lib/toolregistry/oauth-clients.db
 
 ``source`` selects exactly one HTTP(S) MCP source.  Two selector forms are
 accepted:
@@ -22,12 +24,16 @@ accepted:
 * ``url:<url>`` matches the source whose ``url`` is ``<url>`` (a trailing
   slash is ignored).
 
+The selector resolves MCP sources today.  Its form is deliberately generic so
+the other access points can gain upstream credentials under the same section
+without a second selector vocabulary.
+
 A declaration that matches no source, more than one source, or a stdio
 source is rejected at load time.  So is an unknown key: a mistyped
 ``client_secret_env`` would otherwise leave the source unauthenticated with
 no diagnostic.
 
-Secrets are write-only.  :meth:`MCPOAuthConfig.to_dict` never returns the
+Secrets are write-only.  :meth:`OAuthClientConfig.to_dict` never returns the
 resolved client secret; the environment variable *name* is returned instead,
 and the diagnostics surface has no other copy.  The config file itself is the
 operator's, so it may carry a literal secret; this module does not echo it.
@@ -43,24 +49,24 @@ from urllib.parse import urlsplit
 
 from toolregistry.config import ConfigError, MCPSource, ToolConfig, ToolSource
 
-from ..oauth.config import _parse
+from ..config import OAUTH_SECTION, _parse
 
 __all__ = [
     "DEFAULT_EXPIRY_SKEW",
     "DEFAULT_HTTP_TIMEOUT",
-    "MCP_OAUTH_SECTION",
-    "MCP_OAUTH_SECTION_KEYS",
-    "MCPOAuthConfig",
+    "OAUTH_CLIENTS_KEY",
+    "OAUTH_CLIENT_KEYS",
+    "OAuthClientConfig",
     "default_token_store_path",
-    "load_mcp_oauth",
+    "load_oauth_clients",
     "selector_matches_source",
 ]
 
-#: Top-level configuration section that holds per-source OAuth declarations.
-MCP_OAUTH_SECTION = "mcp_oauth"
+#: Key inside :data:`OAUTH_SECTION` that holds the outbound client entries.
+OAUTH_CLIENTS_KEY = "clients"
 
 #: Keys accepted inside one declaration.  Anything else is rejected.
-MCP_OAUTH_SECTION_KEYS: frozenset[str] = frozenset(
+OAUTH_CLIENT_KEYS: frozenset[str] = frozenset(
     {
         "source",
         "issuer",
@@ -89,7 +95,7 @@ _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
 
 
 @dataclass(frozen=True)
-class MCPOAuthConfig:
+class OAuthClientConfig:
     """OAuth settings for one protected MCP source.
 
     Attributes:
@@ -170,22 +176,22 @@ def default_token_store_path() -> str:
     Uses ``$XDG_STATE_HOME`` when set and ``~/.local/state`` otherwise, so
     the database lands in a per-user state directory rather than beside the
     configuration file.  The directory is created owner-only by
-    :class:`~toolregistry_server.mcp_oauth.store.TokenStore`.
+    :class:`~toolregistry_server.oauth.upstream.store.TokenStore`.
     """
     state_home = os.environ.get("XDG_STATE_HOME")
     base = Path(state_home) if state_home else Path.home() / ".local" / "state"
-    return str(base / "toolregistry" / "mcp-oauth.db")
+    return str(base / "toolregistry" / "oauth-clients.db")
 
 
-def load_mcp_oauth(
+def load_oauth_clients(
     config_path: str | None,
     config: ToolConfig,
-) -> tuple[MCPOAuthConfig, ...]:
-    """Read and validate the ``mcp_oauth`` section.
+) -> tuple[OAuthClientConfig, ...]:
+    """Read and validate ``oauth.clients``.
 
     The section is parsed independently of the core loader, exactly like the
-    ``oauth`` and ``gateway`` sections, so a mistake here cannot change how
-    tools are registered.
+    rest of the server-owned ``oauth`` section, so a mistake here cannot
+    change how tools are registered.
 
     Args:
         config_path: Path to the JSONC or YAML configuration file, or
@@ -193,14 +199,14 @@ def load_mcp_oauth(
         config: The parsed tool configuration the declarations must match.
 
     Returns:
-        One declaration per entry, in file order.  An absent section yields
-        an empty tuple.
+        One declaration per entry, in file order.  An absent section or an
+        absent ``clients`` key yields an empty tuple.
 
     Raises:
-        ConfigError: If the section is malformed, a key is unknown, a
-            selector matches no source or several sources, the matched
-            source is not an HTTP(S) MCP source, or the source already
-            sets an ``Authorization`` header.
+        ConfigError: If the section is malformed, ``clients`` is not a list
+            of mappings, a key is unknown, a selector matches no source or
+            several sources, the matched source is not an HTTP(S) MCP source,
+            or the source already sets an ``Authorization`` header.
     """
     if not config_path:
         return ()
@@ -218,19 +224,24 @@ def load_mcp_oauth(
         return ()
     if not isinstance(data, dict):
         return ()
-    section = data.get(MCP_OAUTH_SECTION)
+    section = data.get(OAUTH_SECTION)
     if section is None:
         return ()
-    if not isinstance(section, list):
-        raise ConfigError(f"'{MCP_OAUTH_SECTION}' must be a list")
+    if not isinstance(section, dict):
+        raise ConfigError(f"'{OAUTH_SECTION}' must be a mapping")
+    entries = section.get(OAUTH_CLIENTS_KEY)
+    if entries is None:
+        return ()
+    if not isinstance(entries, list):
+        raise ConfigError(f"'{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}' must be a list")
     declarations = tuple(
-        _build_declaration(entry, index) for index, entry in enumerate(section)
+        _build_declaration(entry, index) for index, entry in enumerate(entries)
     )
     _validate_declarations(declarations, config.tools)
     return declarations
 
 
-def _build_declaration(entry: Any, index: int) -> MCPOAuthConfig:
+def _build_declaration(entry: Any, index: int) -> OAuthClientConfig:
     """Parse and validate one declaration entry.
 
     Args:
@@ -243,13 +254,13 @@ def _build_declaration(entry: Any, index: int) -> MCPOAuthConfig:
     Raises:
         ConfigError: If the entry is malformed.
     """
-    where = f"{MCP_OAUTH_SECTION}[{index}]"
+    where = f"{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}[{index}]"
     if not isinstance(entry, dict):
         raise ConfigError(f"{where} must be a mapping")
-    unknown = sorted(set(entry) - MCP_OAUTH_SECTION_KEYS)
+    unknown = sorted(set(entry) - OAUTH_CLIENT_KEYS)
     if unknown:
         names = ", ".join(repr(key) for key in unknown)
-        known = ", ".join(sorted(MCP_OAUTH_SECTION_KEYS))
+        known = ", ".join(sorted(OAUTH_CLIENT_KEYS))
         raise ConfigError(f"{where}: unrecognised key(s): {names}; valid keys: {known}")
 
     source = _required_string(entry, "source", where)
@@ -277,7 +288,7 @@ def _build_declaration(entry: Any, index: int) -> MCPOAuthConfig:
             f"got {client_auth!r}"
         )
 
-    return MCPOAuthConfig(
+    return OAuthClientConfig(
         source=source,
         client_id=client_id,
         issuer=issuer,
@@ -441,7 +452,7 @@ def _matches_ignoring_transport(selector: str, source: ToolSource) -> bool:
 
 
 def _validate_declarations(
-    declarations: tuple[MCPOAuthConfig, ...],
+    declarations: tuple[OAuthClientConfig, ...],
     sources: tuple[ToolSource, ...],
 ) -> None:
     """Require every declaration to select exactly one usable source.
@@ -469,16 +480,16 @@ def _validate_declarations(
                 for source in sources
             ):
                 raise ConfigError(
-                    f"{MCP_OAUTH_SECTION}: {declaration.source!r} names a stdio "
+                    f"{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}: {declaration.source!r} names a stdio "
                     "MCP source; OAuth requires an 'sse' or 'streamable-http' "
                     "transport"
                 )
             raise ConfigError(
-                f"{MCP_OAUTH_SECTION}: no MCP source matches {declaration.source!r}"
+                f"{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}: no MCP source matches {declaration.source!r}"
             )
         if len(matched) > 1:
             raise ConfigError(
-                f"{MCP_OAUTH_SECTION}: {declaration.source!r} matches "
+                f"{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}: {declaration.source!r} matches "
                 f"{len(matched)} MCP sources; use a selector that names one"
             )
         matched_source = matched[0]
@@ -489,7 +500,7 @@ def _validate_declarations(
         # at connect time.
         if matched_source in seen:
             raise ConfigError(
-                f"{MCP_OAUTH_SECTION}: duplicate declaration for "
+                f"{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}: duplicate declaration for "
                 f"{declaration.source!r}; more than one declaration selects "
                 "the same MCP source"
             )
@@ -497,7 +508,7 @@ def _validate_declarations(
         headers = matched_source.headers or {}
         if any(name.lower() == "authorization" for name in headers):
             raise ConfigError(
-                f"{MCP_OAUTH_SECTION}: {declaration.source!r} already sets an "
+                f"{OAUTH_SECTION}.{OAUTH_CLIENTS_KEY}: {declaration.source!r} already sets an "
                 "'Authorization' header; remove it so OAuth can supply the "
                 "credential"
             )
