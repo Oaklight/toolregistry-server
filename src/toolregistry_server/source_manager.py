@@ -46,9 +46,8 @@ import dataclasses
 import hashlib
 import os
 import re
-import shutil
 import threading
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
@@ -61,7 +60,6 @@ from toolregistry.config import (
     PythonSource,
     ToolConfig,
     load_config,
-    save_config,
 )
 
 from ._vendor.structlog import get_logger
@@ -85,6 +83,7 @@ if TYPE_CHECKING:
     from toolregistry.config import ToolSource
     from toolregistry.events import RefreshResult
 
+    from .mcp_oauth.provider import MCPOAuthError
     from .route_table import RouteTable
 
 logger = get_logger()
@@ -99,6 +98,19 @@ CONFIG_DISABLE_REASON = "Disabled by config (runtime source change)"
 #: are not part of the parsed model in either supported format (JSONC or
 #: YAML), so a rewrite drops them.
 COMMENTS_WARNING = "the config file was rewritten; comments are not preserved"
+
+#: Top-level keys the core ``ToolConfig`` owns.  A rewrite replaces these and
+#: leaves every other section (``gateway``, ``oauth``, ``mcp_oauth``) as it
+#: was, so a source edit cannot erase a server-owned setting.
+_CORE_CONFIG_KEYS = (
+    "mode",
+    "disabled",
+    "enabled",
+    "tools",
+    "profiles",
+    "tool_metadata",
+    "tool_parameters",
+)
 
 #: A source is identified by its declaration, not by its position, so
 #: reordering the ``tools`` list is not treated as a change.  Fields that live
@@ -256,6 +268,9 @@ class SourceEntry:
         names: Tool names the declaration produced.
         status: Result of the last apply attempt.
         error: Redacted error text when *status* is ``FAILED``.
+        reauth_required: ``True`` when the failure is a definitive upstream
+            OAuth rejection.  A retry will not help until the operator
+            authorizes the source again.
     """
 
     key: SourceKey
@@ -263,6 +278,7 @@ class SourceEntry:
     names: frozenset[str]
     status: SourceStatus
     error: str | None = None
+    reauth_required: bool = False
 
     def to_dict(self, enabled_names: Iterable[str] | None = None) -> dict[str, Any]:
         """Return a JSON-ready view for an admin/status API.
@@ -283,6 +299,7 @@ class SourceEntry:
             "enabled": bool(getattr(self.source, "enabled", True)),
             "status": self.status.value,
             "last_error": self.error,
+            "reauth_required": self.reauth_required,
             "names": sorted(self.names),
             "tool_count": {
                 "enabled": len(enabled & self.names),
@@ -392,6 +409,7 @@ def _register_source(
     config: ToolConfig,
     *,
     strict: bool,
+    oauth_headers: Mapping[str, str] | None = None,
 ) -> frozenset[str]:
     """Register one source and return the names it added.
 
@@ -399,6 +417,15 @@ def _register_source(
     :func:`~toolregistry_server.registry_builder.apply_config` uses are called
     directly, so filtering and namespace tags match startup.  A registration
     error propagates; a partial registration is rolled back first.
+
+    Args:
+        registry: The live registry.
+        source: The declaration to register.
+        config: The configuration the registration is filtered by.
+        strict: Fail the whole OpenAPI source on an invalid regex.
+        oauth_headers: Credential the OAuth provider resolved for an MCP
+            source.  It is passed to the connection, never stored on the
+            declaration.
 
     Raises:
         Exception: Whatever the source registration raised.
@@ -411,7 +438,7 @@ def _register_source(
         if isinstance(source, PythonSource):
             register_python_source(registry, source)
         elif isinstance(source, MCPSource):
-            register_mcp_source(registry, source)
+            register_mcp_source(registry, source, oauth_headers=oauth_headers)
         elif isinstance(source, OpenAPISource):
             register_openapi_source(registry, source, strict=strict)
         else:  # pragma: no cover - the loader only builds the three above
@@ -449,6 +476,11 @@ class SourceManager:
             names a registration pass added: startup, a diff or a retry.
             It runs after registration and before the profile filter.
             Downstream packages use it for metadata defaults.
+        oauth_provider: Resolves upstream OAuth credentials for protected
+            MCP sources.  ``None`` leaves every source on its declared
+            headers.  The provider is also consulted after a config reload,
+            so a declaration added to the file takes effect without a
+            restart.
     """
 
     def __init__(
@@ -461,6 +493,7 @@ class SourceManager:
         strict_spec_regex: bool = False,
         write_config: bool = True,
         on_registered: Callable[[ToolRegistry, set[str]], None] | None = None,
+        oauth_provider: Any | None = None,
     ) -> None:
         self.registry = registry
         self.config = config
@@ -473,6 +506,7 @@ class SourceManager:
         self.strict_spec_regex = strict_spec_regex
         self.write_config = write_config
         self.on_registered = on_registered
+        self.oauth_provider = oauth_provider
         self.route_table: RouteTable | None = None
 
         self._lock = threading.RLock()
@@ -1003,6 +1037,7 @@ class SourceManager:
             return False
         try:
             config = load_config(target)
+            self._reload_oauth_declarations(target, config)
         except Exception as exc:  # noqa: BLE001 - a bad edit must not kill the watcher
             with self._lock:
                 self.last_reload_error = _safe_error(exc)
@@ -1015,6 +1050,31 @@ class SourceManager:
             self._apply_diff(config)
             self.last_reload_error = None
         return True
+
+    def _reload_oauth_declarations(self, path: str, config: ToolConfig) -> None:
+        """Reload the ``mcp_oauth`` section and hand it to the provider.
+
+        A malformed section raises, which skips the whole reload: the live
+        registry keeps the previous declarations instead of half-applying a
+        broken file.  A provider is created on the first reload that finds a
+        declaration, so enabling OAuth does not require a restart.
+
+        Args:
+            path: The configuration file that was read.
+            config: The parsed core configuration.
+
+        Raises:
+            toolregistry.config.ConfigError: If the section is invalid.
+        """
+        from .mcp_oauth.config import load_mcp_oauth
+        from .mcp_oauth.provider import MCPOAuthProvider
+
+        declarations = load_mcp_oauth(path, config)
+        if self.oauth_provider is None:
+            if declarations:
+                self.oauth_provider = MCPOAuthProvider(declarations)
+            return
+        self.oauth_provider.replace_declarations(declarations)
 
     def is_own_write(self) -> bool:
         """Whether the config file still holds the content this manager wrote.
@@ -1036,6 +1096,14 @@ class SourceManager:
         """Register one source and return its entry, recording failures."""
         if not _in_scope(source, config):
             return SourceEntry(key, source, frozenset(), SourceStatus.EXCLUDED)
+        oauth_headers: Mapping[str, str] | None = None
+        if isinstance(source, MCPSource) and self.oauth_provider is not None:
+            from .mcp_oauth.provider import MCPOAuthError
+
+            try:
+                oauth_headers = self.oauth_provider.headers_for(source)
+            except MCPOAuthError as exc:
+                return self._oauth_failure(key, source, exc)
         before_integrations = len(self.registry._openapi_integrations)
         try:
             names = _register_source(
@@ -1043,6 +1111,7 @@ class SourceManager:
                 source,
                 config,
                 strict=self.strict_spec_regex,
+                oauth_headers=oauth_headers,
             )
         except Exception as exc:  # noqa: BLE001 - one bad source must not abort
             # Only the strict regex switch is fatal; every other failure is
@@ -1059,6 +1128,41 @@ class SourceManager:
             )
         self._remember_integration(key, source, before_integrations)
         return SourceEntry(key, source, names, SourceStatus.APPLIED)
+
+    def _oauth_failure(
+        self,
+        key: SourceKey,
+        source: ToolSource,
+        exc: MCPOAuthError,
+    ) -> SourceEntry:
+        """Record an upstream OAuth failure for one source.
+
+        A definitive rejection sets ``reauth_required`` so the panel can
+        offer Re-authorize; a transient failure leaves the stored token
+        alone and is retried on the next diff.
+
+        Args:
+            key: The source's stable identity.
+            source: The declaration that failed.
+            exc: The provider error.
+
+        Returns:
+            A ``FAILED`` entry carrying the redacted reason.
+        """
+        reauth = bool(getattr(exc, "reauth_required", False))
+        message = _safe_error(exc)
+        logger.warning(
+            f"OAuth failed for {_describe_source(source)}"
+            f"{' (re-authorization required)' if reauth else ''}: {message}"
+        )
+        return SourceEntry(
+            key,
+            source,
+            frozenset(),
+            SourceStatus.FAILED,
+            message,
+            reauth_required=reauth,
+        )
 
     def _remember_integration(
         self, key: SourceKey, source: ToolSource, before: int
@@ -1264,14 +1368,52 @@ class SourceManager:
         path = Path(self.config_path)
         backup: str | None = None
         try:
+            from ._config_file import read_config_mapping, write_config_mapping
+
+            data = read_config_mapping(path) if path.exists() else {}
+            serialized = self.config.to_dict()
+            for key in _CORE_CONFIG_KEYS:
+                data.pop(key, None)
+            data.update(serialized)
+            self._prune_oauth_section(data)
             if path.exists():
                 backup = f"{path}.bak"
-                shutil.copyfile(path, backup)
-            save_config(self.config, path)
+            write_config_mapping(data, path)
             self._last_written_hash = _file_hash(path)
             return True, None, backup, (COMMENTS_WARNING,)
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             return False, _safe_error(exc), backup, ()
+
+    def _prune_oauth_section(self, data: dict[str, Any]) -> None:
+        """Drop OAuth declarations whose source is no longer declared.
+
+        The section is server-owned and is preserved verbatim, so a literal
+        client secret is never round-tripped through ``to_dict``.  Only
+        entries that no longer select a source are removed: deleting a
+        source must not make the next reload reject the file.
+
+        Args:
+            data: The configuration mapping about to be written.
+        """
+        from .mcp_oauth.config import MCP_OAUTH_SECTION, selector_matches_source
+
+        section = data.get(MCP_OAUTH_SECTION)
+        if not isinstance(section, list):
+            return
+        kept = [
+            entry
+            for entry in section
+            if isinstance(entry, dict)
+            and isinstance(entry.get("source"), str)
+            and any(
+                selector_matches_source(entry["source"], source)
+                for source in self.config.tools
+            )
+        ]
+        if kept:
+            data[MCP_OAUTH_SECTION] = kept
+        else:
+            data.pop(MCP_OAUTH_SECTION, None)
 
     def _position_of(self, key: SourceKey) -> int:
         """Return the index of *key* in the declared source list."""

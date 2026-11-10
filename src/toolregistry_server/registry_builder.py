@@ -29,7 +29,7 @@ One-shot usage (standalone server)::
 
 import importlib
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -182,6 +182,8 @@ def _source_filter_kwargs(source: object) -> dict[str, Any]:
 def register_mcp_source(
     registry: "ToolRegistry",
     source: "MCPSource",
+    *,
+    oauth_headers: Mapping[str, str] | None = None,
 ) -> None:
     """Register tools from an MCP server source.
 
@@ -190,9 +192,16 @@ def register_mcp_source(
     a host by default before any connection is opened; the flag only lifts
     that check for this source.
 
+    ``oauth_headers`` carries the credential resolved for a protected source.
+    It is merged over the declaration's static headers and is not stored on
+    the source, so a token never becomes part of the declaration, its digest
+    or a status payload.
+
     Args:
         registry: The registry to register tools into.
         source: The MCP source configuration.
+        oauth_headers: Header(s) supplied by the OAuth provider for this
+            connection attempt.
     """
     ns: bool | str = source.namespace if source.namespace else False
 
@@ -207,11 +216,15 @@ def register_mcp_source(
         assert source.url is not None
         transport = source.url
 
+    headers = dict(source.headers or {})
+    if oauth_headers:
+        headers.update(oauth_headers)
+
     registry.register_from_mcp(
         transport,
         namespace=ns,
         persistent=source.persistent,
-        headers=source.headers,
+        headers=headers or None,
         allow_private_hosts=source.allow_private_hosts,
         **_source_filter_kwargs(source),
     )
