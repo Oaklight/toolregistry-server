@@ -7,9 +7,17 @@ built-in ``/docs`` page is Swagger UI loaded from a CDN and the CDN copy does
 not know this deployment's location.
 
 The page is deliberately self-contained: it loads no external asset, and it
-runs the same logic as the official ``swagger-ui-dist`` file.  It reads the
+mirrors the parsing and callback logic of the official
+``swagger-ui-dist@5.34.1/oauth2-redirect.js`` file.  It reads the
 authorization response from the URL, hands it back to the opener window
 through ``swaggerUIRedirectOauth2``, and closes the popup.
+
+The callback parameters are percent-encoded by the authorization server, so
+each value is passed through ``decodeURIComponent`` while the response is
+parsed.  Without that step a ``code`` containing ``+``, ``/``, ``=`` or
+``%`` reaches Swagger UI still encoded and the token exchange fails with
+``invalid_grant``.  The hash form also drops a leading ``?`` the way upstream
+does, so a callback shaped ``#?code=...`` parses.
 
 The route is unauthenticated: the authorization server redirects the browser
 without a bearer token, so a token check would turn the callback into a
@@ -49,20 +57,27 @@ OAUTH2_REDIRECT_HTML = """<!DOCTYPE html>
     }
 
     if (/code|token|error/.test(window.location.hash)) {
-      qp = window.location.hash.substring(1);
+      // A hash may carry a leading "?", as in "#?code=...".
+      qp = window.location.hash.substring(1).replace("?", "&");
     } else {
       qp = window.location.search.substring(1);
     }
 
-    arr = qp.split("&");
+    // An empty segment (a leading or trailing "&") would break the JSON.
+    arr = qp.split("&").filter(function (v) { return v !== ""; });
     arr.forEach(function (v, i, _arr) {
       _arr[i] = '"' + v.replace("=", '":"') + '"';
     });
-    qp = qp ? JSON.parse("{" + arr.join() + "}") : {};
+    qp = qp
+      ? JSON.parse("{" + arr.join() + "}", function (key, value) {
+          return key === "" ? value : decodeURIComponent(value);
+        })
+      : {};
     isValid = qp.state === sentState;
 
     if ((oauth2.auth.schema.get("flow") === "accessCode" ||
-         oauth2.auth.schema.get("flow") === "authorizationCode") &&
+         oauth2.auth.schema.get("flow") === "authorizationCode" ||
+         oauth2.auth.schema.get("flow") === "authorization_code") &&
         !oauth2.auth.code) {
       if (!isValid) {
         oauth2.errCb({

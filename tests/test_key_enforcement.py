@@ -961,6 +961,34 @@ def test_httpserver_call_deferred_refuses_a_target_outside_the_scope(
     assert json.loads(proxied_body)["detail"] == json.loads(direct_body)["detail"]
 
 
+def test_httpserver_call_deferred_logs_the_refused_target(
+    scoped_httpserver, scoped_discovery_table, store
+):
+    """The refusal blames the target, not ``call_deferred`` itself."""
+    url, _ = scoped_httpserver
+    table = scoped_discovery_table
+    table.registry.enable_logging()
+    created = store.create("alpha-bot", {"namespaces": ["alpha"]})
+    headers = _bearer(created.secret)
+    _, deferred_path = _proxy_paths(table)
+
+    status, _, _ = _request(
+        url,
+        deferred_path,
+        {"_target_tool": "beta-echo", "text": "hello"},
+        headers,
+    )
+
+    assert status == 403
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.tool_name == "beta-echo"
+    assert entry.metadata["outcome"] == "denied"
+    assert "beta-echo" in entry.error
+    usage = store.usage(created.record.id)
+    assert usage.calls == 1
+    assert usage.denied == 1
+
+
 def test_httpserver_call_deferred_loads_a_tool_in_scope(
     scoped_httpserver, scoped_discovery_table, store
 ):

@@ -6,14 +6,15 @@ A hub serves several clients at once, so three things must stay per client:
   an identity, working directory or environment through a header is refused:
   a shared hub must not let a client name itself, and the shim cannot vouch
   for headers it forwards.
-* **Quota** is one in-flight call budget per principal, so one client cannot
-  consume every worker.  A client key may carry a lower ``max_concurrency``;
-  the process default stays the ceiling.
+* **Quota** is one in-flight call budget per client, so one client cannot
+  consume every worker.  A client may carry a lower ``max_concurrency``; the
+  process default stays the ceiling.  An OAuth client's budget is shared by
+  every user the client acts for: the limit is configured per client.
 * **Policy** is the process permission policy.  A key scope can narrow it
   (an allow requires both) but never widen it: the policy is evaluated on
   every call, and ``ASK`` without a handler is a refusal, not an allow.
 
-Counters are kept per principal for the gateway admin extension.  They are
+Counters are kept per budget key for the gateway admin extension.  They are
 plain integers updated on the event loop, so no lock is needed.
 
 Nothing here reads local files: the shim connects without the hub's lock, so
@@ -151,15 +152,19 @@ def principal_key(principal: Any) -> str:
 
     A stored key is identified by its id.  An OAuth principal is identified
     by its client and label together, so two clients acting for the same
-    user never share a concurrency budget or a counter.  A static token (or
+    user never share a counter or an execution-log row.  A static token (or
     any principal without a key row or client) falls back to its label, so
     operators and anonymous callers each get their own budget.
+
+    This key accounts for log rows and counters.  It is deliberately finer
+    than :func:`limiter_key`: a concurrency budget belongs to the client,
+    not to one of its users.
 
     Args:
         principal: The authenticated caller.
 
     Returns:
-        A stable key for the limiter and the counters.
+        A stable key for the counters.
     """
     key_id = getattr(principal, "key_id", None)
     if key_id:
@@ -169,6 +174,30 @@ def principal_key(principal: Any) -> str:
     if client_id:
         return f"oauth:{client_id}:{label or '-'}"
     return f"label:{label}" if label else "anonymous"
+
+
+def limiter_key(principal: Any) -> str:
+    """Return the concurrency-budget key for *principal*.
+
+    An OAuth client has one in-flight budget, shared by every user that
+    client acts for: ``--oauth-client-concurrency CLIENT=LIMIT`` and the
+    static ``oauth.client_concurrency`` table name a *client*.  Keying the
+    budget on ``(client, sub)`` would give every user a private copy of the
+    limit and multiply the configured concurrency by the user count.
+
+    Every other principal keeps the accounting key, because a stored key and
+    its label are already one client.
+
+    Args:
+        principal: The authenticated caller.
+
+    Returns:
+        A stable key for the limiter's semaphore table.
+    """
+    client_id = getattr(principal, "client_id", None)
+    if client_id and not getattr(principal, "key_id", None):
+        return f"oauth:{client_id}"
+    return principal_key(principal)
 
 
 def principal_client_id(principal: Any) -> str | None:
@@ -247,11 +276,15 @@ class _ClientState:
 
 
 class ClientLimiter:
-    """One in-flight call budget per principal.
+    """One in-flight call budget per client.
+
+    The budget key comes from :func:`limiter_key`: an OAuth client shares
+    one budget across every ``sub`` it serves, and every other principal
+    uses its accounting key.
 
     Args:
-        default_limit: Calls a principal may run at once when its key sets
-            no ``max_concurrency``.
+        default_limit: Calls a client may run at once when its key sets no
+            ``max_concurrency``.
         timeout: Seconds a call waits for a slot before it fails.
 
     Raises:
@@ -294,7 +327,7 @@ class ClientLimiter:
         return self._default
 
     def _state_for(self, principal: Any) -> tuple[str, _ClientState]:
-        key = principal_key(principal)
+        key = limiter_key(principal)
         limit = self.limit_for(principal)
         state = self._clients.get(key)
         if state is None:
@@ -304,6 +337,14 @@ class ClientLimiter:
                 limit=limit,
             )
             self._clients[key] = state
+            state.semaphore = asyncio.Semaphore(limit)
+            return key, state
+        if key != principal_key(principal) and limit > state.limit:
+            # Several subjects share this client's budget.  The budget is
+            # monotonically non-increasing per client: a token whose claim is
+            # wider than the budget already in force never raises it, while a
+            # narrower claim lowers it.
+            limit = state.limit
         if state.limit != limit or state.semaphore is None:
             # A changed override takes effect for calls that start now.
             state.limit = limit
@@ -728,6 +769,7 @@ __all__ = [
     "ClientLimiter",
     "configure_execution_log",
     "identity_header",
+    "limiter_key",
     "operator_refusal",
     "policy_refusal",
     "policy_refusal_sync",
