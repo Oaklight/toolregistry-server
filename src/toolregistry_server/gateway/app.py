@@ -362,9 +362,18 @@ async def _send_html(scope: Scope, send: Send, body: str) -> None:
         send: ASGI send callable.
         body: The HTML document.
     """
-    from starlette.responses import HTMLResponse
-
-    await HTMLResponse(body)(scope, None, send)
+    payload = body.encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", b"text/html; charset=utf-8"),
+                (b"content-length", str(len(payload)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload})
 
 
 async def _redirect(scope: Scope, send: Send, location: str) -> None:
@@ -632,10 +641,7 @@ class _GatewayASGI:
             await _redirect(scope, send, frontend.path + "/")
             return
 
-        if (
-            frontend.name == "openapi"
-            and path == frontend.path + OAUTH2_REDIRECT_PATH
-        ):
+        if frontend.name == "openapi" and path == frontend.path + OAUTH2_REDIRECT_PATH:
             # The authorization server redirects the browser here without a
             # bearer token, so the page is answered before the frontend's
             # auth wrapper and its app-level dependency (#245).
@@ -796,7 +802,7 @@ class GatewayAdapter(Adapter):
         configure_execution_log(
             route_table.registry,
             enabled=execution_log,
-            has_keys=self._has_key_store,
+            has_keys=self._has_key_store or oauth is not None,
         )
         self._server_url = server_url
         self._host = host

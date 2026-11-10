@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+import urllib.parse
 import urllib.request
 
 import jwt
@@ -338,9 +339,7 @@ class TestJwksDiscovery:
         server = _RoutedServer({fallback: {"keys": [JWK1]}})
         monkeypatch.setattr(urllib.request, "urlopen", server)
 
-        verifier = OAuthTokenVerifier(
-            OAuthSettings(issuer=issuer, audience=AUDIENCE)
-        )
+        verifier = OAuthTokenVerifier(OAuthSettings(issuer=issuer, audience=AUDIENCE))
 
         assert verifier.verify(_token(KEY1, "key-1", iss=issuer)) is not None
         assert fallback in server.urls
@@ -557,3 +556,360 @@ class TestPrmScopes:
 
     def test_no_issuer_keeps_the_generic_scope(self):
         assert _prm_scopes(None, None) == ["mcp"]
+
+
+# ---------------------------------------------------------------------------
+# RFC 7662 introspection (#253)
+# ---------------------------------------------------------------------------
+
+INTROSPECTION_URL = "https://idp.example.com/introspect"
+
+
+class _IntrospectionEndpoint:
+    """A fake JWKS + introspection endpoint sharing one ``urlopen`` patch."""
+
+    def __init__(self, active: bool = True) -> None:
+        self.active = active
+        self.calls: list[urllib.request.Request] = []
+        self.failure: Exception | None = None
+
+    def __call__(self, request, timeout: float | None = None):
+        url = getattr(request, "full_url", request)
+        if url == INTROSPECTION_URL:
+            self.calls.append(request)
+            if self.failure is not None:
+                raise self.failure
+            return _Response({"active": self.active})
+        return _Response({"keys": [JWK1]})
+
+
+def _introspection_settings(**overrides) -> OAuthSettings:
+    values = {
+        "issuer": ISSUER,
+        "audience": AUDIENCE,
+        "jwks_uri": JWKS_URL,
+        "introspection_url": INTROSPECTION_URL,
+        "introspection_client_id": "toolregistry",
+        "introspection_client_secret": "s3cret",
+    }
+    values.update(overrides)
+    return OAuthSettings(**values)
+
+
+class TestIntrospection:
+    def test_a_locally_valid_token_is_confirmed_with_the_endpoint(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint(active=True)
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        verifier = OAuthTokenVerifier(_introspection_settings())
+        token = _token(KEY1, "key-1")
+
+        assert verifier.verify(token) is not None
+        assert len(endpoint.calls) == 1
+        request = endpoint.calls[0]
+        form = dict(urllib.parse.parse_qsl(request.data.decode("utf-8")))
+        assert form["token"] == token
+        assert form["token_type_hint"] == "access_token"
+        assert request.get_header("Authorization").startswith("Basic ")
+
+    def test_an_inactive_token_is_rejected(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint(active=False)
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+
+        assert (
+            OAuthTokenVerifier(_introspection_settings()).verify(_token(KEY1, "key-1"))
+            is None
+        )
+
+    def test_the_answer_is_cached_for_the_ttl(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint(active=True)
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        verifier = OAuthTokenVerifier(
+            _introspection_settings(introspection_cache_ttl=60)
+        )
+        token = _token(KEY1, "key-1")
+
+        assert verifier.verify(token) is not None
+        assert verifier.verify(token) is not None
+        assert len(endpoint.calls) == 1
+
+    def test_a_zero_ttl_disables_the_cache(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint(active=True)
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        verifier = OAuthTokenVerifier(
+            _introspection_settings(introspection_cache_ttl=0)
+        )
+        token = _token(KEY1, "key-1")
+
+        assert verifier.verify(token) is not None
+        assert verifier.verify(token) is not None
+        assert len(endpoint.calls) == 2
+
+    def test_an_expired_cache_entry_is_refetched(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint(active=False)
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        verifier = OAuthTokenVerifier(
+            _introspection_settings(introspection_cache_ttl=60)
+        )
+        token = _token(KEY1, "key-1")
+
+        assert verifier.verify(token) is None
+        endpoint.active = True
+        # Simulate the TTL elapsing without sleeping.
+        for digest in verifier._introspection._entries:
+            verifier._introspection._entries[digest] = (False, 0.0)
+        assert verifier.verify(token) is not None
+        assert len(endpoint.calls) == 2
+
+    def test_an_endpoint_failure_fails_closed_by_default(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint()
+        endpoint.failure = OSError("connection refused")
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+
+        assert (
+            OAuthTokenVerifier(_introspection_settings()).verify(_token(KEY1, "key-1"))
+            is None
+        )
+
+    def test_optional_mode_falls_back_to_local_verification(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint()
+        endpoint.failure = OSError("connection refused")
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+
+        verifier = OAuthTokenVerifier(
+            _introspection_settings(introspection_optional=True)
+        )
+
+        assert verifier.verify(_token(KEY1, "key-1")) is not None
+
+    def test_a_failure_log_never_contains_the_token(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint()
+        endpoint.failure = OSError("connection refused")
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        logged: list[str] = []
+
+        class _Recorder:
+            def warning(self, *args, **kwargs) -> None:
+                logged.append(" ".join(str(arg) for arg in args) + repr(kwargs))
+
+        monkeypatch.setattr("toolregistry_server.oauth.verifier.logger", _Recorder())
+        token = _token(KEY1, "key-1")
+
+        OAuthTokenVerifier(_introspection_settings()).verify(token)
+
+        assert logged
+        assert token not in "\n".join(logged)
+
+    def test_no_endpoint_means_no_introspection(self, monkeypatch):
+        endpoint = _IntrospectionEndpoint()
+        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+
+        assert _verifier().verify(_token(KEY1, "key-1")) is not None
+        assert endpoint.calls == []
+
+    def test_the_client_credential_is_required(self):
+        with pytest.raises(ValueError, match="client id and client secret"):
+            OAuthSettings(
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                introspection_url=INTROSPECTION_URL,
+            )
+
+    def test_a_negative_ttl_is_rejected(self):
+        with pytest.raises(ValueError, match="must not be negative"):
+            _introspection_settings(introspection_cache_ttl=-1)
+
+
+# ---------------------------------------------------------------------------
+# Claims to Principal parity (#239)
+# ---------------------------------------------------------------------------
+
+
+class TestPrincipalParity:
+    def test_a_scope_can_override_one_tool(self, jwks):
+        verifier = _verifier(
+            scope_map={"tools:read": ("calculator",)},
+            scope_tools={
+                "tools:read": {
+                    "calculator-danger": False,
+                    "web-search": True,
+                }
+            },
+        )
+        principal = OAuthResolver(verifier).resolve(
+            _token(KEY1, "key-1", scope="tools:read")
+        )
+
+        assert principal is not None
+        assert principal.allows("calculator", "calculator-add") is True
+        assert principal.allows("calculator", "calculator-danger") is False
+        assert principal.allows("web", "web-search") is True
+
+    def test_a_deny_wins_between_scopes(self, jwks):
+        verifier = _verifier(
+            scope_map={"tools:read": ("calculator",), "tools:admin": ("web",)},
+            scope_tools={
+                "tools:read": {"calculator-add": True},
+                "tools:admin": {"calculator-add": False},
+            },
+        )
+        principal = OAuthResolver(verifier).resolve(
+            _token(KEY1, "key-1", scope="tools:read tools:admin")
+        )
+
+        assert principal is not None
+        assert principal.allows("calculator", "calculator-add") is False
+
+    def test_the_client_id_is_kept_apart_from_the_subject(self, jwks):
+        principal = OAuthResolver(_verifier()).resolve(
+            _token(KEY1, "key-1", sub="user-1", client_id="reports-bot")
+        )
+
+        assert principal is not None
+        assert principal.label == "user-1"
+        assert principal.client_id == "reports-bot"
+        assert principal.to_dict()["client_id"] == "reports-bot"
+
+    def test_azp_names_the_client_when_client_id_is_absent(self, jwks):
+        principal = OAuthResolver(_verifier()).resolve(
+            _token(KEY1, "key-1", azp="service-a")
+        )
+
+        assert principal is not None
+        assert principal.client_id == "service-a"
+
+    def test_a_concurrency_claim_sets_the_limit(self, jwks):
+        principal = OAuthResolver(_verifier()).resolve(
+            _token(KEY1, "key-1", max_concurrency=3)
+        )
+
+        assert principal is not None
+        assert principal.max_concurrency == 3
+
+    def test_an_invalid_concurrency_claim_is_ignored(self, jwks):
+        for value in (0, -1, "many", True):
+            principal = OAuthResolver(_verifier()).resolve(
+                _token(KEY1, "key-1", max_concurrency=value)
+            )
+            assert principal is not None
+            assert principal.max_concurrency is None
+
+    def test_a_configured_claim_name_is_used(self, jwks):
+        principal = OAuthResolver(
+            _verifier(concurrency_claim="https://tools.example.com/limit")
+        ).resolve(
+            _token(
+                KEY1,
+                "key-1",
+                **{"https://tools.example.com/limit": 2},
+            )
+        )
+
+        assert principal is not None
+        assert principal.max_concurrency == 2
+
+    def test_a_static_client_registration_sets_the_limit(self, jwks):
+        principal = OAuthResolver(
+            _verifier(client_max_concurrency={"reports-bot": 2})
+        ).resolve(_token(KEY1, "key-1", client_id="reports-bot"))
+
+        assert principal is not None
+        assert principal.max_concurrency == 2
+
+    def test_a_valid_claim_wins_over_the_registration(self, jwks):
+        principal = OAuthResolver(
+            _verifier(
+                client_max_concurrency={"reports-bot": 2},
+            )
+        ).resolve(_token(KEY1, "key-1", client_id="reports-bot", max_concurrency=5))
+
+        assert principal is not None
+        assert principal.max_concurrency == 5
+
+    def test_two_clients_for_one_user_are_separate_principals(self, jwks):
+        from toolregistry_server.isolation import principal_key
+
+        first = OAuthResolver(_verifier()).resolve(
+            _token(KEY1, "key-1", sub="user-1", client_id="reports-bot")
+        )
+        second = OAuthResolver(_verifier()).resolve(
+            _token(KEY1, "key-1", sub="user-1", client_id="admin-bot")
+        )
+
+        assert first is not None and second is not None
+        assert principal_key(first) == "oauth:reports-bot:user-1"
+        assert principal_key(second) == "oauth:admin-bot:user-1"
+        assert principal_key(first) != principal_key(second)
+
+    def test_the_scp_claim_is_read_as_scopes(self, jwks):
+        principal = OAuthResolver(
+            _verifier(scope_map={"tools:read": ("calculator",)})
+        ).resolve(_token(KEY1, "key-1", scp="tools:read"))
+
+        assert principal is not None
+        assert principal.allows("calculator", "calculator-add") is True
+
+    def test_an_unmapped_scope_still_grants_nothing(self, jwks):
+        principal = OAuthResolver(
+            _verifier(scope_map={"tools:read": ("calculator",)})
+        ).resolve(_token(KEY1, "key-1", scope="tools:admin"))
+
+        assert principal is not None
+        assert principal.allows("calculator", "calculator-add") is False
+
+
+class TestSettingsFromConfig:
+    def test_the_oauth_section_supplies_introspection(self, tmp_path):
+        from toolregistry_server.cli import _oauth_settings
+        from toolregistry_server.oauth.config import load_oauth_section
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            "mode: denylist\n"
+            "oauth:\n"
+            f"  introspection_url: {INTROSPECTION_URL}\n"
+            "  introspection_client_id: toolregistry\n"
+            "  introspection_client_secret: s3cret\n"
+            "  introspection_cache_ttl: 2\n",
+            encoding="utf-8",
+        )
+
+        section = load_oauth_section(str(path))
+        parsed = argparse.Namespace(oauth_issuer=ISSUER)
+        settings = _oauth_settings(
+            parsed, default_audience=AUDIENCE, config_path=str(path)
+        )
+
+        assert section["introspection_url"] == INTROSPECTION_URL
+        assert settings is not None
+        assert settings.introspection_url == INTROSPECTION_URL
+        assert settings.introspection_cache_ttl == 2.0
+
+    def test_a_cli_flag_wins_over_the_config_section(self, tmp_path):
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            "oauth:\n"
+            f"  introspection_url: {INTROSPECTION_URL}\n"
+            "  introspection_client_id: from-file\n"
+            "  introspection_client_secret: file-secret\n",
+            encoding="utf-8",
+        )
+        parsed = argparse.Namespace(
+            oauth_issuer=ISSUER,
+            oauth_introspection_client_id="from-flag",
+        )
+
+        settings = _oauth_settings(
+            parsed, default_audience=AUDIENCE, config_path=str(path)
+        )
+
+        assert settings is not None
+        assert settings.introspection_client_id == "from-flag"
+        assert settings.introspection_client_secret == "file-secret"
+
+    def test_a_missing_file_has_no_section(self, tmp_path):
+        from toolregistry_server.oauth.config import load_oauth_section
+
+        assert load_oauth_section(str(tmp_path / "missing.yaml")) == {}
+        assert load_oauth_section(None) == {}

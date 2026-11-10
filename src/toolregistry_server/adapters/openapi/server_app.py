@@ -248,21 +248,18 @@ async def _authorisation_refusal(
     route: Any,
 ) -> Response | None:
     """Return the response for a call the scope or the process policy refuses."""
+    principal = getattr(request.state, "principal", None)
     refusal = _proxy_refusal(
         request, tool_name, arguments, registry, principal_resolver
     )
     if refusal is not None:
+        # ``_proxy_refusal`` already recorded the refused target; recording
+        # again would blame ``call_deferred`` instead of the target.
         return refusal
     message = await policy_refusal(registry, route, arguments)
     if message is None:
         return None
-    _record_denial(
-        registry,
-        tool_name,
-        arguments,
-        getattr(request.state, "principal", None),
-        message,
-    )
+    _record_denial(registry, tool_name, arguments, principal, message)
     return _error(403, message)
 
 
@@ -526,9 +523,7 @@ def _add_oauth2_redirect_route(app: App) -> None:
 
     @app.get(OAUTH2_REDIRECT_PATH)
     async def _oauth2_redirect(request) -> Response:
-        return Response(
-            oauth2_redirect_html(), content_type="text/html; charset=utf-8"
-        )
+        return Response(oauth2_redirect_html(), content_type="text/html; charset=utf-8")
 
 
 def _add_redoc_route(app: App, title: str) -> None:

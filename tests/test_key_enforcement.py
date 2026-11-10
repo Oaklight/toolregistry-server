@@ -1293,7 +1293,7 @@ def _capture_mcp_adapter_log(monkeypatch):
 async def test_mcp_scope_refusal_is_logged_as_denied(
     table, store, resolver, monkeypatch
 ):
-    """A refused attempt is visible even though it never reaches the log."""
+    """A refused attempt is logged as denied, not as an executed call."""
     from toolregistry_server.adapters.mcp import MCPAdapter
 
     created = store.create("alpha-bot", {"namespaces": ["alpha"]})
@@ -1315,6 +1315,8 @@ async def test_mcp_scope_refusal_is_logged_as_denied(
     assert "not permitted for this credential" in output
     [entry] = table.registry.get_execution_log().get_entries()
     assert entry.tool_name == "beta-echo"
+    assert entry.status.value == "error"
+    assert entry.arguments == {}
     assert entry.metadata == {
         "key_id": created.record.id,
         "client_id": "alpha-bot",
@@ -1349,6 +1351,7 @@ async def test_mcp_policy_refusal_is_logged_as_denied(
     assert "read-only host" in output
     [entry] = table.registry.get_execution_log().get_entries()
     assert entry.tool_name == "beta-echo"
+    assert entry.arguments == {}
     assert entry.metadata["outcome"] == "denied"
     usage = store.usage(created.record.id)
     assert usage.calls == 1
@@ -1439,7 +1442,10 @@ def test_openapi_call_is_recorded_with_attribution(table, store, resolver):
     [entry] = table.registry.get_execution_log().get_entries()
     assert entry.status is ExecutionStatus.SUCCESS
     assert entry.result == "3"
-    assert entry.metadata == {"key_id": created.record.id, "client_id": "bot"}
+    assert entry.metadata == {
+        "key_id": created.record.id,
+        "client_id": "bot",
+    }
 
 
 def test_httpserver_call_is_recorded_with_attribution(httpserver, table, store):
@@ -1456,7 +1462,10 @@ def test_httpserver_call_is_recorded_with_attribution(httpserver, table, store):
     assert status == 200
     [entry] = table.registry.get_execution_log().get_entries()
     assert entry.status is ExecutionStatus.SUCCESS
-    assert entry.metadata == {"key_id": created.record.id, "client_id": "bot"}
+    assert entry.metadata == {
+        "key_id": created.record.id,
+        "client_id": "bot",
+    }
 
 
 def test_a_call_on_a_disabled_log_leaves_no_entry(table, resolver):

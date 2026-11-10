@@ -4,24 +4,40 @@ The server accepts bearer tokens minted by an external authorization server.
 It verifies the token locally against the issuer's JWKS: signature,
 algorithm allowlist, exact ``iss``, ``aud``/RFC 8707 ``resource``, and
 ``exp``/``nbf`` with a small leeway.  Nothing is introspected at request
-time and no token is ever logged.
+time unless :attr:`OAuthSettings.introspection_url` is configured; with it,
+an RFC 7662 ``active: false`` answer rejects a token so a revocation takes
+effect within the short cache TTL.  No token is ever logged.
 
 The default scope mapping is least privilege: a token whose scopes are not
 listed in :attr:`OAuthSettings.scope_map` maps to an empty
 :class:`~toolregistry_server.keystore.ScopeSpec`, which allows no tool.  A
-deployment must map each scope it wants to grant explicitly.
+deployment must map each scope it wants to grant explicitly; a scope may
+also allow or deny individual tools through
+:attr:`OAuthSettings.scope_tools`.  The scopes are read from the ``scope``
+claim, falling back to the ``scp`` claim some identity platforms use.
+
+The resolved :class:`~toolregistry_server.keystore.Principal` keeps the
+OAuth client (``client_id`` or ``azp``) apart from the subject (``sub``), so
+two clients acting for one user have separate scopes, concurrency budgets
+and execution-log rows.  A client's in-flight limit comes from the
+:attr:`OAuthSettings.concurrency_claim` claim or the static
+:attr:`OAuthSettings.client_max_concurrency` table.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlencode
 
 from .._vendor.structlog import get_logger
 from ..keystore import Principal, PrincipalResolver, ScopeSpec
@@ -43,6 +59,32 @@ DEFAULT_TIMEOUT: float = 5.0
 
 #: Minimum interval between forced JWKS refetches, in seconds.
 DEFAULT_REFRESH_COOLDOWN: float = 30.0
+
+#: Default lifetime of one RFC 7662 introspection result, in seconds.  Short
+#: on purpose: a revocation at the authorization server must take effect
+#: promptly, and the value bounds how long a revoked token is still accepted.
+DEFAULT_INTROSPECTION_TTL: float = 5.0
+
+#: Claim that may carry a client's in-flight call limit.
+DEFAULT_CONCURRENCY_CLAIM: str = "max_concurrency"
+
+
+def _positive_int(value: Any, label: str) -> int:
+    """Return *value* as an integer of at least one.
+
+    Args:
+        value: The configured value.
+        label: Name used in the error message.
+
+    Returns:
+        The validated integer.
+
+    Raises:
+        ValueError: If *value* is not an integer of at least one.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{label} must be a positive integer, got {value!r}")
+    return value
 
 
 @dataclass(frozen=True)
@@ -78,6 +120,27 @@ class OAuthSettings:
             an issuer is configured the field is omitted unless this is set
             explicitly, because an external authorization server may reject
             the generic ``mcp`` scope.
+        scope_tools: Per-scope tool overrides.  The outer key is a token
+            scope, the inner key a full tool name, and the value whether the
+            scope allows it.  A deny wins when two granted scopes disagree.
+        introspection_url: RFC 7662 introspection endpoint.  When ``None``
+            the verifier only checks the token locally.  When set, an
+            ``active: false`` answer rejects the token and an endpoint
+            failure rejects it too unless *introspection_optional* is set.
+        introspection_client_id: Client identifier for the introspection
+            endpoint's HTTP Basic credential.
+        introspection_client_secret: Client secret for the same credential.
+        introspection_cache_ttl: How long one introspection result is
+            reused, in seconds.  This bounds how long a token revoked at the
+            authorization server is still accepted.
+        introspection_optional: Treat an introspection endpoint failure as a
+            reason to fall back to local verification instead of rejecting
+            the token.  The default fails closed.
+        concurrency_claim: Claim that may carry a client's in-flight call
+            limit.  A non-positive or non-integer value is ignored.
+        client_max_concurrency: Static per-client limits keyed by the
+            ``client_id`` or ``azp`` claim.  A valid concurrency claim wins
+            over this table.
     """
 
     issuer: str
@@ -93,6 +156,14 @@ class OAuthSettings:
     authorization_url: str | None = None
     token_url: str | None = None
     refresh_url: str | None = None
+    scope_tools: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
+    introspection_url: str | None = None
+    introspection_client_id: str | None = None
+    introspection_client_secret: str | None = None
+    introspection_cache_ttl: float = DEFAULT_INTROSPECTION_TTL
+    introspection_optional: bool = False
+    concurrency_claim: str = DEFAULT_CONCURRENCY_CLAIM
+    client_max_concurrency: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.issuer.strip():
@@ -109,6 +180,21 @@ class OAuthSettings:
                 }
             ),
         )
+        object.__setattr__(
+            self,
+            "scope_tools",
+            MappingProxyType(
+                {
+                    str(scope): MappingProxyType(
+                        {
+                            str(tool): bool(allowed)
+                            for tool, allowed in dict(overrides).items()
+                        }
+                    )
+                    for scope, overrides in dict(self.scope_tools).items()
+                }
+            ),
+        )
         if not self.algorithms:
             raise ValueError("OAuth algorithm allowlist must not be empty")
         if self.scopes_supported is not None:
@@ -117,6 +203,36 @@ class OAuthSettings:
                 "scopes_supported",
                 tuple(str(scope) for scope in self.scopes_supported if str(scope)),
             )
+        self._validate_introspection()
+        object.__setattr__(
+            self,
+            "client_max_concurrency",
+            MappingProxyType(
+                {
+                    str(client): _positive_int(limit, "--oauth-client-concurrency")
+                    for client, limit in dict(self.client_max_concurrency).items()
+                }
+            ),
+        )
+        if not isinstance(self.concurrency_claim, str) or not (
+            self.concurrency_claim.strip()
+        ):
+            raise ValueError("OAuth concurrency claim must not be empty")
+
+    def _validate_introspection(self) -> None:
+        """Reject an incomplete or negative introspection configuration."""
+        if self.introspection_url is not None:
+            if not self.introspection_url.strip():
+                raise ValueError("OAuth introspection URL must not be empty")
+            if (
+                not (self.introspection_client_id or "").strip()
+                or not (self.introspection_client_secret or "").strip()
+            ):
+                raise ValueError(
+                    "OAuth introspection requires a client id and client secret"
+                )
+        if self.introspection_cache_ttl < 0:
+            raise ValueError("OAuth introspection cache TTL must not be negative")
 
     @property
     def jwks_url(self) -> str:
@@ -174,6 +290,85 @@ def _load_json(url: str, timeout: float) -> Any:
 
     with urlopen(url, timeout=timeout) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8"))
+
+
+def _post_form(
+    url: str,
+    fields: Mapping[str, str],
+    timeout: float,
+    headers: Mapping[str, str],
+) -> Any:
+    """POST an ``application/x-www-form-urlencoded`` body and decode JSON.
+
+    The caller owns every header, including the credential.  The request body
+    is never logged; a failure is reported by its exception type only, so a
+    token cannot reach the log through this path.
+
+    Args:
+        url: The endpoint.
+        fields: Form fields.
+        timeout: Request timeout, in seconds.
+        headers: Request headers.
+
+    Returns:
+        The decoded JSON document.
+
+    Raises:
+        Exception: Whatever the transport or decoder raises.
+    """
+    import urllib.request
+
+    request = urllib.request.Request(
+        url,
+        data=urlencode(dict(fields)).encode("utf-8"),
+        headers=dict(headers),
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        return json.loads(response.read().decode("utf-8"))
+
+
+class _IntrospectionCache:
+    """A small, bounded RFC 7662 result cache.
+
+    Only a SHA-256 digest of the token is kept, never the token itself.  A
+    positive and a negative answer are cached for the same short TTL, which
+    bounds both the request rate to the endpoint and how long a revocation
+    stays invisible.
+
+    Args:
+        ttl: Lifetime of one result, in seconds.  ``0`` disables caching.
+        max_entries: Largest number of results retained.
+    """
+
+    def __init__(self, ttl: float, max_entries: int = 1024) -> None:
+        self._ttl = ttl
+        self._max_entries = max_entries
+        self._entries: OrderedDict[str, tuple[bool, float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, digest: str) -> bool | None:
+        """Return a cached answer, or ``None`` when it is absent or expired."""
+        with self._lock:
+            entry = self._entries.get(digest)
+            if entry is None:
+                return None
+            active, expires = entry
+            if time.monotonic() >= expires:
+                self._entries.pop(digest, None)
+                return None
+            self._entries.move_to_end(digest)
+            return active
+
+    def set(self, digest: str, active: bool) -> None:
+        """Cache one answer for the configured TTL."""
+        if self._ttl <= 0:
+            return
+        with self._lock:
+            self._entries[digest] = (active, time.monotonic() + self._ttl)
+            self._entries.move_to_end(digest)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
 
 
 def iter_authorization_server_metadata(
@@ -304,6 +499,7 @@ class OAuthTokenVerifier:
         self._cache: _JwksCache | None = None
         self._resolved_jwks_uri: str | None = None
         self._resolve_lock = threading.Lock()
+        self._introspection = _IntrospectionCache(settings.introspection_cache_ttl)
 
     @property
     def settings(self) -> OAuthSettings:
@@ -382,7 +578,58 @@ class OAuthTokenVerifier:
             return None
         if not self._audience_matches(claims):
             return None
+        if self._settings.introspection_url is not None and not self._introspect(token):
+            return None
         return claims
+
+    def _introspect(self, token: str) -> bool:
+        """Return whether the authorization server still accepts *token*.
+
+        The local check ran first, so an introspection call only confirms
+        that the token was not revoked or disabled after it was minted.  The
+        answer is cached for :attr:`OAuthSettings.introspection_cache_ttl`;
+        an endpoint failure rejects the token unless the deployment opted
+        into the optional mode.
+
+        Args:
+            token: The presented access token.
+
+        Returns:
+            ``True`` when the token may be used.
+        """
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        cached = self._introspection.get(digest)
+        if cached is not None:
+            return cached
+        try:
+            active = self._call_introspection(token)
+        except Exception as exc:
+            # Never log the token or the form body.  The endpoint and the
+            # exception type are enough to diagnose a connectivity problem.
+            logger.warning(
+                f"OAuth introspection at {self._settings.introspection_url} "
+                f"failed: {type(exc).__name__}"
+            )
+            return bool(self._settings.introspection_optional)
+        self._introspection.set(digest, active)
+        return active
+
+    def _call_introspection(self, token: str) -> bool:
+        """POST *token* to the RFC 7662 endpoint and read ``active``."""
+        client_id = self._settings.introspection_client_id or ""
+        secret = self._settings.introspection_client_secret or ""
+        encoded = base64.b64encode(f"{client_id}:{secret}".encode())
+        document = _post_form(
+            self._settings.introspection_url or "",
+            {"token": token, "token_type_hint": "access_token"},
+            self._settings.timeout,
+            {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {encoded.decode('ascii')}",
+            },
+        )
+        return isinstance(document, Mapping) and document.get("active") is True
 
     def _audience_matches(self, claims: Mapping[str, Any]) -> bool:
         """Check ``aud`` and the RFC 8707 ``resource`` claim."""
@@ -399,9 +646,15 @@ class OAuthTokenVerifier:
 class OAuthResolver(PrincipalResolver):
     """Map a verified OAuth token to a :class:`Principal`.
 
-    The principal is always scoped: its namespaces come from the explicit
-    scope mapping, and an unmapped token maps to an empty
-    :class:`ScopeSpec`, which allows nothing.
+    The principal is always scoped: its namespaces and tool overrides come
+    from the explicit scope mapping, and an unmapped token maps to an empty
+    :class:`ScopeSpec`, which allows nothing.  The default is least
+    privilege on purpose; a deployment must map each scope it wants to grant
+    with ``--oauth-scope``.
+
+    The principal's ``client_id`` is the OAuth client that obtained the
+    token, so two clients acting for the same user remain separate
+    principals for accounting, concurrency and the execution log.
 
     Args:
         verifier: The token verifier.
@@ -423,24 +676,77 @@ class OAuthResolver(PrincipalResolver):
         claims = self._verifier.verify(token)
         if claims is None:
             return None
-        label = claims.get("sub") or claims.get("client_id") or "oauth"
-        return Principal(label=str(label), scopes=self._scopes(claims))
+        client_id = _string_claim(claims, "client_id") or _string_claim(claims, "azp")
+        label = _string_claim(claims, "sub") or client_id or "oauth"
+        return Principal(
+            label=label,
+            scopes=self._scopes(claims),
+            max_concurrency=self._max_concurrency(claims, client_id),
+            client_id=client_id,
+        )
 
     def _scopes(self, claims: Mapping[str, Any]) -> ScopeSpec:
-        """Map the token's scopes to namespaces through the explicit table."""
-        raw = claims.get("scope", "")
+        """Map the token's scopes to namespaces and tool overrides.
+
+        The explicit table is the whole policy: a scope that is not mapped
+        grants nothing.  When two granted scopes disagree about one tool,
+        the deny wins, so adding a scope cannot widen an existing deny.
+        """
+        namespaces: list[str] = []
+        tools: dict[str, bool] = {}
+        settings = self._verifier.settings
+        for scope in _token_scopes(claims):
+            for namespace in settings.scope_map.get(scope, ()):
+                if namespace not in namespaces:
+                    namespaces.append(namespace)
+            for tool, allowed in settings.scope_tools.get(scope, {}).items():
+                tools[tool] = tools.get(tool, True) and bool(allowed)
+        return ScopeSpec(namespaces=tuple(namespaces), tools=tools)
+
+    def _max_concurrency(
+        self, claims: Mapping[str, Any], client_id: str | None
+    ) -> int | None:
+        """Return the per-client call limit from a claim or the registration.
+
+        A valid claim wins over the static table.  An invalid claim is
+        ignored rather than rejecting the token: the process
+        ``--client-concurrency`` stays the ceiling, and ``ClientLimiter``
+        only ever narrows it.
+        """
+        raw = claims.get(self._verifier.settings.concurrency_claim)
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            return raw
+        if client_id:
+            return self._verifier.settings.client_max_concurrency.get(client_id)
+        return None
+
+
+def _string_claim(claims: Mapping[str, Any], name: str) -> str | None:
+    """Return a non-empty string claim, or ``None``."""
+    value = claims.get(name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _token_scopes(claims: Mapping[str, Any]) -> list[str]:
+    """Return the scopes a token carries, from ``scope`` or ``scp``.
+
+    ``scope`` is the RFC 6749/8693 spelling with space-separated values.
+    Azure AD and some Microsoft identity platforms use ``scp``, and both a
+    string and a JSON array are accepted.
+    """
+    for name in ("scope", "scp"):
+        raw = claims.get(name)
         if isinstance(raw, str):
             scopes = raw.split()
         elif isinstance(raw, Sequence):
             scopes = [str(scope) for scope in raw]
         else:
             scopes = []
-        namespaces: list[str] = []
-        for scope in scopes:
-            for namespace in self._verifier.settings.scope_map.get(scope, ()):
-                if namespace not in namespaces:
-                    namespaces.append(namespace)
-        return ScopeSpec(namespaces=tuple(namespaces))
+        if scopes:
+            return scopes
+    return []
 
 
 class CompositePrincipalResolver(PrincipalResolver):
@@ -537,21 +843,31 @@ def build_resolver(
     return api_keys or oauth_resolver
 
 
-def settings_from_args(parsed: Any, *, default_audience: str) -> OAuthSettings | None:
+def settings_from_args(
+    parsed: Any,
+    *,
+    default_audience: str,
+    config_section: Mapping[str, Any] | None = None,
+) -> OAuthSettings | None:
     """Build settings from parsed CLI arguments.
 
     Args:
         parsed: The argparse namespace.
         default_audience: Resource URL used when ``--oauth-audience`` is
             absent.
+        config_section: The ``oauth`` mapping from the configuration file.
+            Only the introspection keys are read here; a CLI flag wins over
+            the file.
 
     Returns:
         The settings, or ``None`` when no OAuth option was given.
 
     Raises:
         ValueError: If an OAuth option is given without ``--oauth-issuer``,
-            or ``--oauth-scope`` is malformed.
+            ``--oauth-scope`` is malformed, or an introspection option lacks
+            its client credential.
     """
+    section = dict(config_section or {})
     issuer = getattr(parsed, "oauth_issuer", None)
     audience = getattr(parsed, "oauth_audience", None)
     jwks_uri = getattr(parsed, "oauth_jwks", None)
@@ -560,6 +876,19 @@ def settings_from_args(parsed: Any, *, default_audience: str) -> OAuthSettings |
     authorization_url = getattr(parsed, "oauth_authorization_url", None)
     token_url = getattr(parsed, "oauth_token_url", None)
     refresh_url = getattr(parsed, "oauth_refresh_url", None)
+    introspection_url = _config_value(parsed, "oauth_introspection_url", section)
+    introspection_client_id = _config_value(
+        parsed, "oauth_introspection_client_id", section
+    )
+    introspection_client_secret = _config_value(
+        parsed, "oauth_introspection_client_secret", section
+    )
+    introspection_ttl = _config_value(parsed, "oauth_introspection_cache_ttl", section)
+    introspection_optional = _config_value(
+        parsed, "oauth_introspection_optional", section
+    )
+    concurrency_claim = _config_value(parsed, "oauth_concurrency_claim", section)
+    raw_client_limits = getattr(parsed, "oauth_client_concurrency", None) or []
     if issuer is None:
         if (
             audience
@@ -569,41 +898,184 @@ def settings_from_args(parsed: Any, *, default_audience: str) -> OAuthSettings |
             or authorization_url
             or token_url
             or refresh_url
+            or introspection_url
+            or introspection_client_id
+            or introspection_client_secret
+            or introspection_ttl is not None
+            or introspection_optional
+            or concurrency_claim
+            or raw_client_limits
+            or section.get("client_concurrency")
         ):
             raise ValueError(
                 "--oauth-issuer is required when other OAuth options are set"
             )
         return None
 
-    scope_map: dict[str, tuple[str, ...]] = {}
-    for entry in raw_scopes:
-        if "=" not in entry:
-            raise ValueError(
-                f"--oauth-scope expects SCOPE=NAMESPACE[,NAMESPACE], got {entry!r}"
-            )
-        scope, namespaces = entry.split("=", 1)
-        scope = scope.strip()
-        values = tuple(name.strip() for name in namespaces.split(",") if name.strip())
-        if not scope or not values:
-            raise ValueError(
-                f"--oauth-scope expects SCOPE=NAMESPACE[,NAMESPACE], got {entry!r}"
-            )
-        scope_map[scope] = values
+    scope_map, scope_tools = _parse_scope_entries(raw_scopes)
 
     scopes_supported = None
     if raw_supported is not None:
         scopes_supported = tuple(raw_supported.split())
+
+    client_max_concurrency = _parse_client_limits(
+        raw_client_limits, section.get("client_concurrency")
+    )
 
     return OAuthSettings(
         issuer=issuer,
         audience=audience or default_audience,
         jwks_uri=jwks_uri,
         scope_map=scope_map,
+        scope_tools=scope_tools,
         scopes_supported=scopes_supported,
         authorization_url=authorization_url,
         token_url=token_url,
         refresh_url=refresh_url,
+        introspection_url=introspection_url,
+        introspection_client_id=introspection_client_id,
+        introspection_client_secret=introspection_client_secret,
+        introspection_cache_ttl=(
+            DEFAULT_INTROSPECTION_TTL
+            if introspection_ttl is None
+            else float(introspection_ttl)
+        ),
+        introspection_optional=bool(introspection_optional),
+        concurrency_claim=concurrency_claim or DEFAULT_CONCURRENCY_CLAIM,
+        client_max_concurrency=client_max_concurrency,
     )
+
+
+def _config_value(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
+    """Return a CLI option, or the config-file value when the flag is absent.
+
+    The argparse default for every introspection flag is ``None``, so a
+    present flag is distinguishable from an absent one.
+
+    Args:
+        parsed: The argparse namespace.
+        argument: The destination name without the leading dashes.
+        section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        The flag value, the file value, or ``None``.
+    """
+    value = getattr(parsed, argument, None)
+    if value is not None:
+        return value
+    key = argument.removeprefix("oauth_")
+    return section.get(key)
+
+
+def _parse_scope_entries(
+    raw_scopes: Sequence[str],
+) -> tuple[dict[str, tuple[str, ...]], dict[str, dict[str, bool]]]:
+    """Parse ``--oauth-scope`` values into namespace and tool tables.
+
+    Each entry is ``SCOPE=ENTRY[,ENTRY]``.  An entry is a namespace pattern,
+    ``+tool-name`` to allow one tool, or ``-tool-name`` to deny it.  The
+    prefix form keeps the existing syntax for namespaces unchanged.
+
+    Args:
+        raw_scopes: The repeated flag values.
+
+    Returns:
+        ``(scope_map, scope_tools)``.
+
+    Raises:
+        ValueError: If an entry is malformed or grants nothing.
+    """
+    scope_map: dict[str, tuple[str, ...]] = {}
+    scope_tools: dict[str, dict[str, bool]] = {}
+    for entry in raw_scopes:
+        scope, namespaces, tools = _parse_scope_entry(entry)
+        scope_map[scope] = namespaces
+        if tools:
+            scope_tools[scope] = tools
+    return scope_map, scope_tools
+
+
+def _parse_scope_entry(
+    entry: str,
+) -> tuple[str, tuple[str, ...], dict[str, bool]]:
+    """Parse one ``SCOPE=ENTRY[,ENTRY]`` value.
+
+    Args:
+        entry: One ``--oauth-scope`` value.
+
+    Returns:
+        ``(scope, namespaces, tool_overrides)``.
+
+    Raises:
+        ValueError: If the value is malformed or grants nothing.
+    """
+    message = (
+        f"--oauth-scope expects SCOPE=ENTRY[,ENTRY], got {entry!r}; "
+        "an entry is a namespace, +tool or -tool"
+    )
+    if "=" not in entry:
+        raise ValueError(message)
+    scope, values = entry.split("=", 1)
+    scope = scope.strip()
+    namespaces: list[str] = []
+    tools: dict[str, bool] = {}
+    for value in (item.strip() for item in values.split(",")):
+        if not value:
+            continue
+        if value.startswith("+") and len(value) > 1:
+            tools[value[1:]] = True
+        elif value.startswith("-") and len(value) > 1:
+            tools[value[1:]] = False
+        else:
+            namespaces.append(value)
+    if not scope or (not namespaces and not tools):
+        raise ValueError(message)
+    return scope, tuple(namespaces), tools
+
+
+def _parse_client_limits(
+    raw_limits: Sequence[str], config_limits: Any
+) -> dict[str, int]:
+    """Parse ``--oauth-client-concurrency`` values or the config mapping.
+
+    Args:
+        raw_limits: Repeated ``CLIENT=LIMIT`` flag values.
+        config_limits: The ``oauth.client_concurrency`` mapping, used only
+            when no flag is present.
+
+    Returns:
+        Limits keyed by OAuth client id.
+
+    Raises:
+        ValueError: If an entry is malformed or the limit is not positive.
+    """
+    if not raw_limits:
+        if isinstance(config_limits, Mapping):
+            return {
+                str(client): _positive_int(limit, "--oauth-client-concurrency")
+                for client, limit in config_limits.items()
+            }
+        return {}
+    limits: dict[str, int] = {}
+    for entry in raw_limits:
+        if "=" not in entry:
+            raise ValueError(
+                f"--oauth-client-concurrency expects CLIENT=LIMIT, got {entry!r}"
+            )
+        client, limit = entry.split("=", 1)
+        client = client.strip()
+        try:
+            value = int(limit.strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"--oauth-client-concurrency expects CLIENT=LIMIT, got {entry!r}"
+            ) from exc
+        if not client:
+            raise ValueError(
+                f"--oauth-client-concurrency expects CLIENT=LIMIT, got {entry!r}"
+            )
+        limits[client] = _positive_int(value, "--oauth-client-concurrency")
+    return limits
 
 
 __all__ = [

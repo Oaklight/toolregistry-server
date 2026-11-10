@@ -314,7 +314,9 @@ class MCPAdapter(Adapter):
             and getattr(principal_resolver, "has_keys", False)
         )
         configure_execution_log(
-            route_table.registry, enabled=execution_log, has_keys=has_keys
+            route_table.registry,
+            enabled=execution_log,
+            has_keys=has_keys or oauth_issuer is not None,
         )
         self._server = route_table_to_mcp_server(
             route_table,

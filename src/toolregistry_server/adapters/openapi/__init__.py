@@ -156,7 +156,9 @@ class OpenAPIAdapter(Adapter):
             and getattr(principal_resolver, "has_keys", False)
         )
         configure_execution_log(
-            route_table.registry, enabled=execution_log, has_keys=has_keys
+            route_table.registry,
+            enabled=execution_log,
+            has_keys=has_keys or oauth is not None,
         )
         openapi_auth = None
         if oauth is not None:

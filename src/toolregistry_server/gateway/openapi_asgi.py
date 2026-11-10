@@ -33,10 +33,13 @@ from ..adapters.openapi.adapter import (
     _validate_arguments,
 )
 from ..adapters.openapi.serialisation import encode_tool_result
-from ..isolation import policy_refusal, policy_refusal_sync, record_tool_call
+from ..isolation import (
+    policy_refusal,
+    policy_refusal_sync,
+    record_tool_call,
+)
 from ..oauth.redirect import (
     OAUTH2_REDIRECT_PATH,
-    OAUTH2_REDIRECT_URL,
     oauth2_redirect_html,
 )
 from ..regex_guard import (
@@ -422,7 +425,9 @@ def _require_route_scope(
 
     The principal was resolved by the app-level bearer dependency and stored
     on ``request.state``. A resolver without a principal denies, so a
-    mis-wired app fails closed instead of open.
+    mis-wired app fails closed instead of open.  The refusal is recorded in
+    the execution log with ``outcome="denied"``, because it never reaches the
+    handler that would otherwise write a row.
 
     Args:
         request: The incoming request carrying ``state.principal``.
@@ -430,8 +435,8 @@ def _require_route_scope(
         tool_name: The route's tool name, used in the message.
         principal_resolver: The configured resolver, or ``None`` when key
             scoping is off.
-        registry: The live registry, used to record the refusal in the
-            execution log so the key's usage shows it.
+        registry: The live registry whose execution log receives the
+            refusal, so the key's usage shows it.
 
     Raises:
         fastapi.HTTPException: ``403`` when the principal may not call the
@@ -460,7 +465,12 @@ def _record_denial(
     error: BaseException,
     started: float | None = None,
 ) -> None:
-    """Record one refused OpenAPI call with the caller's key."""
+    """Record one refused OpenAPI call with the caller's key.
+
+    A refusal is written through :func:`record_tool_call` with
+    ``outcome="denied"``, so the execution log and the key's usage counters
+    agree with an executed call.
+    """
     record_tool_call(
         registry,
         tool_name,
@@ -734,6 +744,7 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
+                principal = getattr(request.state, "principal", None)
                 _require_route_scope(
                     request, current_route, tname, principal_resolver, rt.registry
                 )
@@ -746,7 +757,6 @@ def _add_route_from_entry(
                     data,
                     pattern_matcher=matcher,
                 )
-                principal = getattr(request.state, "principal", None)
                 _require_proxy_target(
                     tname, arguments, rt.registry, principal_resolver, principal
                 )
@@ -791,6 +801,7 @@ def _add_route_from_entry(
                         status_code=503,
                         detail=f"Tool '{tname}' is currently disabled",
                     )
+                principal = getattr(request.state, "principal", None)
                 _require_route_scope(
                     request, current_route, tname, principal_resolver, rt.registry
                 )
@@ -798,7 +809,6 @@ def _add_route_from_entry(
                 arguments = _validate_arguments(
                     current_route, data, pattern_matcher=matcher
                 )
-                principal = getattr(request.state, "principal", None)
                 _require_proxy_target(
                     tname, arguments, rt.registry, principal_resolver, principal
                 )
@@ -1199,17 +1209,47 @@ def setup_dynamic_openapi(
 def _add_oauth2_redirect_route(app: "FastAPI") -> None:
     """Register ``GET /oauth2-redirect.html`` for the Swagger UI OAuth flow.
 
-    Swagger UI resolves ``oauth2RedirectUrl`` against the ``/docs`` page URL,
-    so the relative value registered on the app keeps working when the
-    frontend is mounted under a gateway path.  The gateway dispatcher answers
-    this path before its bearer wrapper, because the authorization server
-    redirects the browser without a token (#245).
+    The gateway dispatcher answers this path before its bearer wrapper,
+    because the authorization server redirects the browser without a token
+    (#245).  The route is registered on the app as well so a directly
+    created app serves the page too.
     """
     from fastapi.responses import HTMLResponse
 
     @app.get(OAUTH2_REDIRECT_PATH, include_in_schema=False)
     async def _oauth2_redirect() -> "HTMLResponse":
         return HTMLResponse(oauth2_redirect_html())
+
+
+def _add_docs_route(app: "FastAPI") -> None:
+    """Serve Swagger UI with URLs that include the gateway mount path.
+
+    FastAPI's built-in page hard-codes ``/openapi.json`` and prefixes the
+    OAuth2 redirect with ``window.location.origin``.  Under a gateway mount
+    such as ``/openapi`` both point at the listener root, so the document
+    fetch and the authorization callback both miss.  This route derives the
+    prefix from ``root_path``, which the gateway sets to the current
+    frontend path on every request; a directly created app has an empty
+    ``root_path`` and keeps the historical URLs.
+    """
+    from fastapi import Request
+    from fastapi.openapi.docs import get_swagger_ui_html
+
+    docs_path = app.docs_url or "/docs"
+    app.router.routes = [
+        route
+        for route in app.router.routes
+        if getattr(route, "path", None) != docs_path
+    ]
+
+    @app.get(docs_path, include_in_schema=False)
+    async def _docs(request: Request):
+        root = request.scope.get("root_path", "").rstrip("/")
+        return get_swagger_ui_html(
+            openapi_url=f"{root}{app.openapi_url or '/openapi.json'}",
+            title=f"{app.title} - Swagger UI",
+            oauth2_redirect_url=f"{root}{OAUTH2_REDIRECT_PATH}",
+        )
 
 
 def create_openapi_app(
@@ -1288,16 +1328,15 @@ def create_openapi_app(
             version=version,
             description=description,
             dependencies=list(dependencies),
-            swagger_ui_oauth2_redirect_url=OAUTH2_REDIRECT_URL,
         )
     else:
         app = FastAPI(
             title=title,
             version=version,
             description=description,
-            swagger_ui_oauth2_redirect_url=OAUTH2_REDIRECT_URL,
         )
 
+    _add_docs_route(app)
     _add_oauth2_redirect_route(app)
 
     async def _server_error(request: Request, exc: Exception) -> JSONResponse:

@@ -443,7 +443,10 @@ class TestExecutionLogWiring:
         assert entry.status is ExecutionStatus.SUCCESS
         assert entry.arguments == {"a": 1, "b": 2}
         assert entry.result == "3"
-        assert entry.metadata == {"key_id": "key_1", "client_id": "build-bot"}
+        assert entry.metadata == {
+            "key_id": "key_1",
+            "client_id": "build-bot",
+        }
 
     def test_a_failed_call_records_the_error_and_a_null_identity(self, table):
         from toolregistry.admin import ExecutionStatus
@@ -462,7 +465,10 @@ class TestExecutionLogWiring:
         assert entry.error == "boom"
         assert entry.exception_type == "ValueError"
         assert entry.result is None
-        assert entry.metadata == {"key_id": None, "client_id": None}
+        assert entry.metadata == {
+            "key_id": None,
+            "client_id": None,
+        }
 
     def test_a_structured_result_is_stored_as_json(self, table):
         table.registry.enable_logging()

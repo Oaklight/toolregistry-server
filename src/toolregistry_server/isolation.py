@@ -149,9 +149,11 @@ def identity_header(headers: Any) -> str | None:
 def principal_key(principal: Any) -> str:
     """Return the accounting key for *principal*.
 
-    A stored key is identified by its id; a static token (or any principal
-    without a key row) falls back to its label, so operators and anonymous
-    callers each get their own budget.
+    A stored key is identified by its id.  An OAuth principal is identified
+    by its client and label together, so two clients acting for the same
+    user never share a concurrency budget or a counter.  A static token (or
+    any principal without a key row or client) falls back to its label, so
+    operators and anonymous callers each get their own budget.
 
     Args:
         principal: The authenticated caller.
@@ -162,12 +164,23 @@ def principal_key(principal: Any) -> str:
     key_id = getattr(principal, "key_id", None)
     if key_id:
         return str(key_id)
+    client_id = getattr(principal, "client_id", None)
     label = getattr(principal, "label", None)
+    if client_id:
+        return f"oauth:{client_id}:{label or '-'}"
     return f"label:{label}" if label else "anonymous"
 
 
 def principal_client_id(principal: Any) -> str | None:
-    """Return the human-readable client name for *principal*, if any."""
+    """Return the client identity for *principal*, if any.
+
+    An OAuth principal names the client that obtained the token; an API-key
+    principal names the key's label.  Keeping the OAuth client separate from
+    the human ``sub`` prevents cross-client accounting.
+    """
+    client_id = getattr(principal, "client_id", None)
+    if client_id:
+        return str(client_id)
     label = getattr(principal, "label", None)
     return str(label) if label else None
 
@@ -549,15 +562,16 @@ def configure_execution_log(
     so core never writes an entry on its own.  Attribution below therefore
     records nothing unless this switch turned the log on.
 
-    ``None`` means "on when a key store is configured": that is the
-    deployment where a call has a stable client identity worth retaining.  An
-    explicit ``True`` enables it without keys, and ``False`` leaves it off.
-    A log the operator already enabled keeps its own capacity and settings.
+    ``None`` means "on when a client identity is configured": a key store,
+    or OAuth access tokens.  That is the deployment where a call has a
+    stable client worth retaining.  An explicit ``True`` enables it without
+    either, and ``False`` leaves it off.  A log the operator already enabled
+    keeps its own capacity and settings.
 
     Args:
         registry: The live ``ToolRegistry`` the frontends serve.
-        enabled: The configured switch, or ``None`` for the key-store default.
-        has_keys: Whether a key store is attached.
+        enabled: The configured switch, or ``None`` for the client default.
+        has_keys: Whether a key store or an OAuth issuer is configured.
     """
     if enabled is None:
         enabled = has_keys
@@ -638,6 +652,44 @@ def record_tool_call(
     _record_usage(principal, resolved)
 
 
+def record_refused_call(
+    registry: Any,
+    tool_name: str,
+    *,
+    principal: Any = None,
+    outcome: str,
+    reason: str | None = None,
+    duration_ms: float = 0.0,
+) -> None:
+    """Append one refusal to the registry log, if it is enabled.
+
+    A denied or busy call never reaches the tool handler, so an executed
+    call would not record it.  The row is written through
+    :func:`record_tool_call` with *outcome* set, so the Keys page and the
+    usage counters treat a refusal like any other attributed outcome.  A
+    refusal keeps ``arguments`` empty on purpose: the payload of a call that
+    was not allowed is not needed to audit the decision.
+
+    Args:
+        registry: The live ``ToolRegistry`` the frontends serve.
+        tool_name: The tool the client named.
+        principal: The authenticated caller, or ``None`` when anonymous.
+        outcome: ``"denied"`` or ``"busy"``.
+        reason: The refusal message.
+        duration_ms: Wall-clock duration before the refusal.
+    """
+    message = f"{outcome}: {reason}" if reason else outcome
+    record_tool_call(
+        registry,
+        tool_name,
+        {},
+        principal=principal,
+        error=ValueError(message),
+        duration_ms=duration_ms,
+        outcome=outcome,
+    )
+
+
 def _record_usage(principal: Any, outcome: str) -> None:
     """Charge one call to the principal's key, if it has one.
 
@@ -681,6 +733,7 @@ __all__ = [
     "policy_refusal_sync",
     "principal_client_id",
     "principal_key",
+    "record_refused_call",
     "record_tool_call",
     "validate_concurrency",
     "validate_timeout",
