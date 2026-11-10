@@ -271,7 +271,9 @@ the source fails the load. Tokens are kept in SQLite outside the
 configuration file. The client secret itself is never written there; a
 salted, iterated fingerprint of it is, so rotating the secret discards a stale
 re-authorization verdict without storing the secret. The start/complete pair
-is embedder-only in stage 1: no panel route calls it yet. See
+is embedder-only in stage 1: no panel route calls it yet. The panel's
+connection test does not attach the upstream credential, and its result says
+so when a declaration selects the source. See
 [the deployment guide](../guides/oauth-deployment.md#upstream-credentials-for-a-protected-mcp-source).
 
 A stored token is reused until the MCP server refuses it. An HTTP 401 or 403
