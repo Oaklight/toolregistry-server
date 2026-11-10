@@ -60,6 +60,7 @@ from .source_manager import (
     SourceManager,
     SourceStatus,
 )
+from .usage import KeyUsage
 
 __all__ = [
     "ApiKeyRecord",
@@ -67,6 +68,7 @@ __all__ = [
     "App",
     "__version__",
     "CreatedKey",
+    "KeyUsage",
     "PROFILE_DISABLE_REASON",
     "PROFILE_DISABLE_TAGS",
     "GatewayAdapter",

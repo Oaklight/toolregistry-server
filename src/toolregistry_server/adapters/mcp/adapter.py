@@ -739,6 +739,15 @@ async def _authorise_call(
             raise make_mcp_error(INVALID_PARAMS, policy_message)
     except McpErrorClass as exc:
         _log_attributed_call(tool_name, principal, "denied", started, reason=str(exc))
+        record_tool_call(
+            registry,
+            tool_name,
+            arguments,
+            principal=principal,
+            error=exc,
+            duration_ms=(time.monotonic() - started) * 1000,
+            outcome="denied",
+        )
         raise
 
 
@@ -891,16 +900,50 @@ async def _mcp_call_tool(
         if token is not None:
             session_context_var.reset(token)
         _log_attributed_call(tool_name, principal, outcome, started, reason=reason)
-        if executed:
-            record_tool_call(
-                route_table.registry,
-                tool_name,
-                arguments,
-                principal=principal,
-                result=call_result,
-                error=call_error,
-                duration_ms=(time.monotonic() - call_started) * 1000,
-            )
+        _record_outcome(
+            route_table.registry,
+            tool_name,
+            arguments,
+            principal,
+            outcome,
+            executed=executed,
+            result=call_result,
+            error=call_error,
+            duration_ms=(time.monotonic() - call_started) * 1000,
+        )
+
+
+def _record_outcome(
+    registry: Any,
+    tool_name: str,
+    arguments: dict,
+    principal: Any,
+    outcome: str,
+    *,
+    executed: bool,
+    result: Any,
+    error: BaseException | None,
+    duration_ms: float,
+) -> None:
+    """Write one execution-log entry and usage increment for a call.
+
+    An executed call records its own outcome.  A busy call never reached the
+    handler but still counts, or the client's quota pressure would be
+    invisible on the Keys page.  A denied call is recorded where it is
+    refused, before this point.
+    """
+    if not executed and outcome != "busy":
+        return
+    record_tool_call(
+        registry,
+        tool_name,
+        arguments,
+        principal=principal,
+        result=result,
+        error=error,
+        duration_ms=duration_ms,
+        outcome=outcome,
+    )
 
 
 def _log_attributed_call(

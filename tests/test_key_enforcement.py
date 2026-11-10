@@ -660,6 +660,10 @@ def test_openapi_route_rejects_a_tool_outside_the_scope(table, store, resolver):
     assert allowed.json() == 3
     assert denied.status_code == 403
     assert "not permitted" in denied.json()["detail"]
+    usage = store.usage(created.record.id)
+    assert usage.calls == 2
+    assert usage.ok == 1
+    assert usage.denied == 1
 
 
 def test_openapi_rejects_a_revoked_key_on_the_next_request(table, store, resolver):
@@ -888,6 +892,10 @@ def test_httpserver_route_rejects_a_tool_outside_the_scope(httpserver, store):
     assert json.loads(allowed_body) == 3
     assert denied_status == 403
     assert "not permitted" in json.loads(denied_body)["detail"]
+    usage = store.usage(created.record.id)
+    assert usage.calls == 2
+    assert usage.ok == 1
+    assert usage.denied == 1
 
 
 def test_httpserver_rejects_a_revoked_key(httpserver, store):
@@ -1146,6 +1154,10 @@ async def test_mcp_reports_a_busy_client_with_the_server_error_code(
     output = stream.getvalue()
     assert "outcome=busy" in output
     assert "tool=alpha-add" in output
+    usage = store.usage(created.record.id)
+    assert usage.calls == 1
+    assert usage.busy == 1
+    assert usage.last_success_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1198,10 @@ def test_openapi_applies_the_process_permission_policy(table, store, resolver):
     assert denied.status_code == 403
     assert "denied by the process permission policy" in denied.json()["detail"]
     assert "read-only host" in denied.json()["detail"]
+    usage = store.usage(created.record.id)
+    assert usage.calls == 2
+    assert usage.ok == 1
+    assert usage.denied == 1
 
 
 def test_openapi_without_a_policy_still_allows_everything(table, store, resolver):
@@ -1210,6 +1226,9 @@ def test_httpserver_applies_the_process_permission_policy(httpserver, table, sto
 
     assert status == 403
     assert "denied by the process permission policy" in json.loads(body)["detail"]
+    usage = store.usage(created.record.id)
+    assert usage.calls == 1
+    assert usage.denied == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1241,6 +1260,10 @@ async def test_mcp_call_is_recorded_with_attribution(
     assert entry.arguments == {"a": 1, "b": 2}
     assert entry.result == "3"
     assert entry.metadata == {"key_id": created.record.id, "client_id": "alpha-bot"}
+    usage = store.usage(created.record.id)
+    assert usage.calls == 1
+    assert usage.ok == 1
+    assert usage.last_success_at is not None
 
 
 def _capture_mcp_adapter_log(monkeypatch):
@@ -1290,7 +1313,16 @@ async def test_mcp_scope_refusal_is_logged_as_denied(
     assert "tool=beta-echo" in output
     assert "client_id=alpha-bot" in output
     assert "not permitted for this credential" in output
-    assert table.registry.get_execution_log().get_entries() == []
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.tool_name == "beta-echo"
+    assert entry.metadata == {
+        "key_id": created.record.id,
+        "client_id": "alpha-bot",
+        "outcome": "denied",
+    }
+    usage = store.usage(created.record.id)
+    assert usage.calls == 1
+    assert usage.denied == 1
 
 
 @pytest.mark.asyncio
@@ -1315,7 +1347,12 @@ async def test_mcp_policy_refusal_is_logged_as_denied(
     assert "outcome=denied" in output
     assert "tool=beta-echo" in output
     assert "read-only host" in output
-    assert table.registry.get_execution_log().get_entries() == []
+    [entry] = table.registry.get_execution_log().get_entries()
+    assert entry.tool_name == "beta-echo"
+    assert entry.metadata["outcome"] == "denied"
+    usage = store.usage(created.record.id)
+    assert usage.calls == 1
+    assert usage.denied == 1
 
 
 def _teapot_table() -> RouteTable:

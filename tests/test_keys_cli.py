@@ -173,3 +173,241 @@ def test_set_concurrency_reports_an_unknown_key(tmp_path, capsys):
 
     assert dispatch_keys(parsed) == 1
     assert "Key not found" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Rotation and editing (#248)
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_prints_the_new_secret_once(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse(
+        "keys",
+        "--db",
+        database,
+        "create",
+        "--label",
+        "bot",
+        "--namespace",
+        "alpha",
+        "--json",
+    )
+    assert dispatch_keys(create) == 0
+    created = json.loads(capsys.readouterr().out)
+
+    rotate = _parse("keys", "--db", database, "rotate", created["id"])
+    assert dispatch_keys(rotate) == 0
+    output = capsys.readouterr().out
+    assert f"id:          {created['id']}" in output
+    secret = output.split("Secret (shown once): ", 1)[1].strip()
+    assert secret.startswith("trk_")
+    assert secret != created["secret"]
+
+    with ApiKeyStore(database) as store:
+        assert store.verify(created["secret"]) is None
+        principal = store.verify(secret)
+        assert principal is not None
+        assert principal.key_id == created["id"]
+
+
+def test_rotate_json_has_the_record_and_the_secret(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+
+    rotate = _parse("keys", "--db", database, "rotate", key_id, "--json")
+    assert dispatch_keys(rotate) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["id"] == key_id
+    assert payload["secret"].startswith("trk_")
+    assert "secret_hash" not in payload
+
+
+def test_rotate_reports_an_unknown_key(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    parsed = _parse("keys", "--db", database, "rotate", "key_missing")
+
+    assert dispatch_keys(parsed) == 1
+    assert "Key not found" in capsys.readouterr().err
+
+
+def test_update_changes_the_named_fields(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "old", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+
+    update = _parse(
+        "keys",
+        "--db",
+        database,
+        "update",
+        key_id,
+        "--label",
+        "new",
+        "--namespace",
+        "beta",
+        "--deny-tool",
+        "beta-echo",
+        "--concurrency",
+        "2",
+        "--json",
+    )
+    assert dispatch_keys(update) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["label"] == "new"
+    assert payload["scopes"]["namespaces"] == ["beta"]
+    assert payload["scopes"]["tools"] == {"beta-echo": False}
+    assert payload["max_concurrency"] == 2
+
+    with ApiKeyStore(database) as store:
+        record = store.get(key_id)
+    assert record is not None
+    assert record.label == "new"
+    assert record.max_concurrency == 2
+
+
+def test_update_can_clear_expiry_and_concurrency(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse(
+        "keys",
+        "--db",
+        database,
+        "create",
+        "--label",
+        "bot",
+        "--concurrency",
+        "3",
+        "--expires-at",
+        "2030-01-01T00:00:00Z",
+        "--json",
+    )
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+
+    update = _parse(
+        "keys",
+        "--db",
+        database,
+        "update",
+        key_id,
+        "--clear-expiry",
+        "--clear-concurrency",
+        "--json",
+    )
+    assert dispatch_keys(update) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["expires_at"] is None
+    assert payload["max_concurrency"] is None
+
+
+def test_update_refuses_a_revoked_key(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+    revoke = _parse("keys", "--db", database, "revoke", key_id)
+    assert dispatch_keys(revoke) == 0
+    capsys.readouterr()
+
+    update = _parse("keys", "--db", database, "update", key_id, "--label", "again")
+
+    assert dispatch_keys(update) == 2
+    assert "revoked" in capsys.readouterr().err
+
+
+def test_update_refuses_an_empty_change_set(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+
+    update = _parse("keys", "--db", database, "update", key_id)
+
+    assert dispatch_keys(update) == 2
+    assert "Nothing to update" in capsys.readouterr().err
+
+
+def test_update_reports_an_unknown_key(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    parsed = _parse("keys", "--db", database, "update", "key_missing", "--label", "x")
+
+    assert dispatch_keys(parsed) == 1
+    assert "Key not found" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Usage visibility (#249)
+# ---------------------------------------------------------------------------
+
+
+def test_list_with_usage_reports_counts(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+
+    with ApiKeyStore(database) as store:
+        store.record_usage(key_id, "ok")
+        store.record_usage(key_id, "error")
+        store.record_usage(key_id, "denied")
+
+    listing = _parse("keys", "--db", database, "list", "--usage", "--json")
+    assert dispatch_keys(listing) == 0
+    [record] = json.loads(capsys.readouterr().out)
+
+    assert record["usage"]["calls"] == 3
+    assert record["usage"]["ok"] == 1
+    assert record["usage"]["error"] == 1
+    assert record["usage"]["denied"] == 1
+    assert record["usage"]["last_success_at"]
+    assert "secret" not in json.dumps(record)
+
+
+def test_list_without_usage_does_not_add_it(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    capsys.readouterr()
+
+    listing = _parse("keys", "--db", database, "list", "--json")
+    assert dispatch_keys(listing) == 0
+    [record] = json.loads(capsys.readouterr().out)
+
+    assert "usage" not in record
+
+
+def test_get_always_reports_usage(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+    with ApiKeyStore(database) as store:
+        store.record_usage(key_id, "busy")
+
+    get = _parse("keys", "--db", database, "get", key_id, "--json")
+    assert dispatch_keys(get) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["usage"]["calls"] == 1
+    assert payload["usage"]["busy"] == 1
+
+
+def test_get_text_shows_the_usage_line(tmp_path, capsys):
+    database = str(tmp_path / "keys.db")
+    create = _parse("keys", "--db", database, "create", "--label", "bot", "--json")
+    assert dispatch_keys(create) == 0
+    key_id = json.loads(capsys.readouterr().out)["id"]
+    with ApiKeyStore(database) as store:
+        store.record_usage(key_id, "ok")
+
+    get = _parse("keys", "--db", database, "get", key_id)
+    assert dispatch_keys(get) == 0
+    output = capsys.readouterr().out
+    assert "calls:       1 (ok=1 error=0 busy=0 denied=0)" in output
+    assert "last ok:" in output

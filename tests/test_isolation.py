@@ -401,6 +401,30 @@ class TestExecutionLogWiring:
 
         assert table.registry.get_execution_log() is None
 
+    def test_a_disabled_log_still_charges_key_usage(self, table, tmp_path):
+        from toolregistry_server.keystore import ApiKeyStore
+
+        with ApiKeyStore(tmp_path / "keys.db") as store:
+            created = store.create("bot", {"namespaces": ["alpha"]})
+            principal = store.verify(created.secret)
+            assert principal is not None
+            assert table.registry.get_execution_log() is None
+
+            record_tool_call(
+                table.registry,
+                "alpha-add",
+                {"a": 1, "b": 2},
+                principal=principal,
+                result=3,
+                outcome="denied",
+                error=ValueError("refused"),
+            )
+
+            assert table.registry.get_execution_log() is None
+            usage = store.usage(created.record.id)
+            assert usage.calls == 1
+            assert usage.denied == 1
+
     def test_a_successful_call_keeps_the_identity_out_of_arguments(self, table):
         from toolregistry.admin import ExecutionStatus
 

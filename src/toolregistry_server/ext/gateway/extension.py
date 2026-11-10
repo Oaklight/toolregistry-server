@@ -66,12 +66,12 @@ _SECRET_FIELDS = frozenset({"secret", "secret_hash", "secret_digest", "digest", 
 
 
 class KeyStore(Protocol):
-    """The key lifecycle surface the Keys page needs (#186).
+    """The key lifecycle surface the Keys page needs (#186, #248, #249).
 
     This is the shape of ``toolregistry_server.keystore.ApiKeyStore``: records
     are objects that serialise through ``to_dict`` (or plain mappings), and
-    ``create`` is the only call that returns the secret, inside a
-    ``(record, secret)`` pair or a ``CreatedKey``-like object.
+    ``create`` and ``rotate`` are the only calls that return the secret,
+    inside a ``(record, secret)`` pair or a ``CreatedKey``-like object.
     """
 
     def create(
@@ -87,8 +87,23 @@ class KeyStore(Protocol):
     def list(self) -> Sequence[Any]:
         """Return every key record, secrets excluded."""
 
+    def get(self, key_id: str) -> Any:
+        """Return one key record, or ``None`` when it is unknown."""
+
     def revoke(self, key_id: str) -> Any:
         """Revoke a key and return its record; raise ``KeyError`` if unknown."""
+
+    def rotate(self, key_id: str) -> Any:
+        """Issue a new secret and return the record with it; raise ``KeyError``."""
+
+    def update(self, key_id: str, **changes: Any) -> Any:
+        """Change named fields and return the record; raise ``KeyError``."""
+
+    def usage(self, key_id: str) -> Any:
+        """Return one key's usage counters, with zeros when it has none."""
+
+    def usage_all(self) -> Mapping[str, Any]:
+        """Return every recorded usage record, keyed by key id."""
 
 
 class FrontendControl(Protocol):
@@ -280,6 +295,38 @@ def _public_key(record: Any) -> dict[str, Any]:
     return {key: value for key, value in data.items() if key not in _SECRET_FIELDS}
 
 
+def _usage_dict(usage: Any) -> dict[str, Any]:
+    """Return one usage record as a plain dictionary, or zeros when absent."""
+    data = _record_dict(usage)
+    if not isinstance(data, Mapping):
+        return {
+            "key_id": None,
+            "calls": 0,
+            "ok": 0,
+            "error": 0,
+            "busy": 0,
+            "denied": 0,
+            "last_success_at": None,
+        }
+    return {key: value for key, value in data.items() if key not in _SECRET_FIELDS}
+
+
+def _key_usage(store: Any, key_id: str) -> dict[str, Any]:
+    """Return one key's usage without letting a store bug take the page down."""
+    usage = getattr(store, "usage", None)
+    if not callable(usage):
+        return _usage_dict(None)
+    return _usage_dict(usage(key_id))
+
+
+def _keys_usage(store: Any) -> Mapping[str, Any]:
+    """Return every usage row once, keyed by key id."""
+    usage_all = getattr(store, "usage_all", None)
+    if not callable(usage_all):
+        return {}
+    return usage_all() or {}
+
+
 def _created_parts(created: Any) -> tuple[str, dict[str, Any]]:
     """Return ``(secret, public record)`` from a store's create result.
 
@@ -393,6 +440,9 @@ class GatewayAdminExtension:
         """
         ctx.get("/keys", self.list_keys)
         ctx.post("/keys", self.create_key)
+        ctx.get("/keys/<key_id>", self.get_key)
+        ctx.patch("/keys/<key_id>", self.update_key)
+        ctx.post("/keys/<key_id>/rotate", self.rotate_key)
         ctx.post("/keys/<key_id>/revoke", self.revoke_key)
         ctx.get("/clients", self.list_clients)
         ctx.get("/frontends", self.list_frontends)
@@ -418,9 +468,36 @@ class GatewayAdminExtension:
 
     @_guard
     def list_keys(self, request: Any) -> dict[str, Any]:
-        """Return every key record, never a secret."""
+        """Return every key record with its usage, never a secret.
+
+        Usage is read once for the whole page from the key store's persisted
+        counters, so the Keys page does not scan the execution log on every
+        poll.  A key with no recorded call gets zeros.
+        """
         store = self._require(self._key_store, "key store")
-        return {"keys": [_public_key(record) for record in store.list()]}
+        usage = _keys_usage(store)
+        keys: list[dict[str, Any]] = []
+        for record in store.list():
+            public = _public_key(record)
+            key_id = str(public.get("id", ""))
+            entry = usage.get(key_id)
+            public["usage"] = _usage_dict(entry)
+            if entry is None:
+                public["usage"]["key_id"] = key_id
+            keys.append(public)
+        return {"keys": keys}
+
+    @_guard
+    def get_key(self, request: Any, key_id: str) -> dict[str, Any]:
+        """Return one key record with its usage, or 404 when it is unknown."""
+        store = self._require(self._key_store, "key store")
+        record = store.get(key_id)
+        if record is None:
+            raise KeyError(f"key {key_id!r} not found")
+        usage = _key_usage(store, key_id)
+        if usage.get("key_id") is None:
+            usage["key_id"] = key_id
+        return {"key": {**_public_key(record), "usage": usage}}
 
     @_guard
     def create_key(self, request: Any) -> Any:
@@ -446,6 +523,48 @@ class GatewayAdminExtension:
         )
         # A secret in a response body must not be stored by a cache.
         return ({**record, "secret": secret}, 201, {"Cache-Control": "no-store"})
+
+    @_guard
+    def rotate_key(self, request: Any, key_id: str) -> Any:
+        """Issue a new secret for a key and return it exactly once."""
+        store = self._require(self._key_store, "key store")
+        secret, record = _created_parts(store.rotate(key_id))
+        return ({**record, "secret": secret}, 200, {"Cache-Control": "no-store"})
+
+    @_guard
+    def update_key(self, request: Any, key_id: str) -> dict[str, Any]:
+        """Change a key's label, scopes, expiry or concurrency.
+
+        Only the named fields change.  A revoked key is refused by the store,
+        which the guard reports as 400; an unknown key as 404.
+        """
+        store = self._require(self._key_store, "key store")
+        data = _json_body(request)
+        unknown = set(data) - {"label", "scopes", "expires_at", "max_concurrency"}
+        if unknown:
+            raise _BadRequest(f"unknown key fields: {sorted(map(str, unknown))}")
+        changes: dict[str, Any] = {}
+        if "label" in data:
+            label = data.get("label")
+            if not isinstance(label, str) or not label.strip():
+                raise _BadRequest("'label' must be a non-empty string")
+            changes["label"] = label.strip()
+        if "scopes" in data:
+            changes["scopes"] = _validated_scopes(data.get("scopes"))
+        if "expires_at" in data:
+            expires_at = data.get("expires_at")
+            if expires_at is not None and not isinstance(expires_at, str):
+                raise _BadRequest("'expires_at' must be an ISO 8601 string or null")
+            changes["expires_at"] = expires_at
+        if "max_concurrency" in data:
+            changes["max_concurrency"] = _validated_concurrency(
+                data.get("max_concurrency")
+            )
+        if not changes:
+            raise _BadRequest(
+                "'label', 'scopes', 'expires_at' or 'max_concurrency' is required"
+            )
+        return {"key": _public_key(store.update(key_id, **changes))}
 
     @_guard
     def revoke_key(self, request: Any, key_id: str) -> Any:

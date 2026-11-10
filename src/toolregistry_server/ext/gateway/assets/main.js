@@ -21,10 +21,11 @@ const STRINGS = {
         'gw.close': 'Close',
         'gw.copied': 'Copied',
         'gw.confirmRevoke': 'Revoke key "{label}"? Clients using it stop working on their next request.',
+        'gw.confirmRotate': 'Rotate key "{label}"? The current secret stops working on the next request, and the new secret is shown once.',
         'gw.confirmRemove': 'Remove source "{detail}"? Its tools are unregistered.',
 
         'gw.keys.title': 'Client keys',
-        'gw.keys.hint': 'Inbound keys for the tool frontends. A secret is shown once, at creation.',
+        'gw.keys.hint': 'Inbound keys for the tool frontends. A secret is shown once, at creation or rotation.',
         'gw.keys.label': 'Label',
         'gw.keys.scopes': 'Scopes',
         'gw.keys.scopesHint': 'Comma-separated namespaces; leave empty or omit to deny every tool.',
@@ -35,19 +36,37 @@ const STRINGS = {
         'gw.keys.concurrencyHint': 'Most calls this key may run at once. Empty uses the server default.',
         'gw.keys.concurrencyInvalid': 'Concurrency must be a positive whole number.',
         'gw.keys.expires': 'Expires',
-        'gw.keys.expiresHint': 'Optional, local time.',
+        'gw.keys.expiresHint': 'Optional, local time. Empty means no expiry.',
         'gw.keys.created': 'Created',
         'gw.keys.lastUsed': 'Last used',
         'gw.keys.status': 'Status',
         'gw.keys.actions': '',
         'gw.keys.create': 'Create key',
         'gw.keys.revoke': 'Revoke',
+        'gw.keys.rotate': 'Rotate',
+        'gw.keys.edit': 'Edit',
+        'gw.keys.details': 'Details',
+        'gw.keys.save': 'Save',
+        'gw.keys.cancel': 'Cancel',
+        'gw.keys.editNothing': 'Change at least one field.',
+        'gw.keys.edit.title': 'Edit key',
+        'gw.keys.detail.title': 'Key details',
+        'gw.keys.usage': 'Usage',
+        'gw.keys.usageHint': 'Calls recorded for this key in the key database.',
+        'gw.keys.calls': 'Calls',
+        'gw.keys.ok': 'OK',
+        'gw.keys.errors': 'Errors',
+        'gw.keys.busy': 'Busy',
+        'gw.keys.denied': 'Denied',
+        'gw.keys.lastSuccess': 'Last success',
         'gw.keys.active': 'Active',
         'gw.keys.expired': 'Expired',
         'gw.keys.revoked': 'Revoked',
         'gw.keys.never': 'Never',
         'gw.keys.created.title': 'Key created',
         'gw.keys.created.hint': 'Store this secret now. It is not shown again and cannot be recovered.',
+        'gw.keys.rotated.title': 'Key rotated',
+        'gw.keys.rotated.hint': 'The old secret no longer works. Store this new secret now; it is not shown again.',
         'gw.keys.created.secret': 'Secret',
         'gw.keys.created.stored': 'I have stored it',
 
@@ -107,10 +126,11 @@ const STRINGS = {
         'gw.close': '关闭',
         'gw.copied': '已复制',
         'gw.confirmRevoke': '撤销密钥“{label}”？使用它的客户端将在下一次请求时被拒绝。',
+        'gw.confirmRotate': '轮换密钥“{label}”？当前密钥将在下一次请求时失效，新密钥只显示一次。',
         'gw.confirmRemove': '移除来源“{detail}”？其工具将被注销。',
 
         'gw.keys.title': '客户端密钥',
-        'gw.keys.hint': '工具前端的入站密钥。密钥只在创建时显示一次。',
+        'gw.keys.hint': '工具前端的入站密钥。密钥只在创建或轮换时显示一次。',
         'gw.keys.label': '名称',
         'gw.keys.scopes': '权限范围',
         'gw.keys.scopesHint': '以逗号分隔的命名空间；留空或省略表示拒绝所有工具。',
@@ -121,19 +141,37 @@ const STRINGS = {
         'gw.keys.concurrencyHint': '此密钥同时允许的最大调用数；留空使用服务器默认值。',
         'gw.keys.concurrencyInvalid': '并发上限必须是正整数。',
         'gw.keys.expires': '过期时间',
-        'gw.keys.expiresHint': '可选，本地时间。',
+        'gw.keys.expiresHint': '可选，本地时间；留空表示不过期。',
         'gw.keys.created': '创建时间',
         'gw.keys.lastUsed': '最近使用',
         'gw.keys.status': '状态',
         'gw.keys.actions': '',
         'gw.keys.create': '创建密钥',
         'gw.keys.revoke': '撤销',
+        'gw.keys.rotate': '轮换',
+        'gw.keys.edit': '编辑',
+        'gw.keys.details': '详情',
+        'gw.keys.save': '保存',
+        'gw.keys.cancel': '取消',
+        'gw.keys.editNothing': '请至少修改一个字段。',
+        'gw.keys.edit.title': '编辑密钥',
+        'gw.keys.detail.title': '密钥详情',
+        'gw.keys.usage': '用量',
+        'gw.keys.usageHint': '密钥数据库中记录的调用次数。',
+        'gw.keys.calls': '调用',
+        'gw.keys.ok': '成功',
+        'gw.keys.errors': '错误',
+        'gw.keys.busy': '繁忙',
+        'gw.keys.denied': '拒绝',
+        'gw.keys.lastSuccess': '最近成功',
         'gw.keys.active': '有效',
         'gw.keys.expired': '已过期',
         'gw.keys.revoked': '已撤销',
         'gw.keys.never': '永不',
         'gw.keys.created.title': '密钥已创建',
         'gw.keys.created.hint': '请立即保存此密钥。它不会再次显示，也无法找回。',
+        'gw.keys.rotated.title': '密钥已轮换',
+        'gw.keys.rotated.hint': '旧密钥已失效。请立即保存新密钥，它不会再次显示。',
         'gw.keys.created.secret': '密钥',
         'gw.keys.created.stored': '我已保存',
 
@@ -190,6 +228,9 @@ const state = {
     frontends: [],
     sources: [],
     secret: null,
+    secretKind: 'created',
+    editing: null,
+    detail: null,
 };
 
 let root = null;
@@ -279,12 +320,19 @@ function persistNote(result, key) {
     return message(T(key + '.notPersisted', { reason }), 'warn');
 }
 
-// Keyboard: Escape closes the one-time secret panel.
+// Keyboard: Escape closes the one-time secret panel or an open dialog.
 function onKeyDown(event) {
-    if (event.key === 'Escape' && state.secret) {
+    if (event.key !== 'Escape') return;
+    if (state.secret) {
         state.secret = null;
-        renderKeys();
+    } else if (state.editing) {
+        state.editing = null;
+    } else if (state.detail) {
+        state.detail = null;
+    } else {
+        return;
     }
+    renderKeys();
 }
 
 // ---------------------------------------------------------------- keys
@@ -312,51 +360,234 @@ function scopeText(scopes) {
     return String(scopes);
 }
 
+function usageOf(record) {
+    const usage = record.usage || {};
+    return {
+        calls: usage.calls || 0,
+        ok: usage.ok || 0,
+        error: usage.error || 0,
+        busy: usage.busy || 0,
+        denied: usage.denied || 0,
+        last_success_at: usage.last_success_at || null,
+    };
+}
+
+function toLocalInput(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const pad = (number) => String(number).padStart(2, '0');
+    return (
+        date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) +
+        'T' + pad(date.getHours()) + ':' + pad(date.getMinutes())
+    );
+}
+
+function secretCard() {
+    const secret = el('code', { class: 'gw-secret', text: state.secret });
+    const copy = el('button', {
+        class: 'gw-btn',
+        type: 'button',
+        text: T('gw.copy'),
+        onclick: () => {
+            navigator.clipboard?.writeText(state.secret).then(() => {
+                copy.textContent = T('gw.copied');
+            });
+        },
+    });
+    const close = el('button', {
+        class: 'gw-btn gw-btn-primary',
+        type: 'button',
+        text: T('gw.keys.created.stored'),
+        onclick: () => {
+            state.secret = null;
+            renderKeys();
+        },
+    });
+    const rotated = state.secretKind === 'rotated';
+    return el('div', { class: 'gw-secret-card', role: 'dialog', 'aria-modal': 'true' }, [
+        el('h4', {
+            text: T(rotated ? 'gw.keys.rotated.title' : 'gw.keys.created.title'),
+        }),
+        el('p', {
+            class: 'gw-hint',
+            text: T(rotated ? 'gw.keys.rotated.hint' : 'gw.keys.created.hint'),
+        }),
+        el('div', { class: 'gw-secret-row' }, [secret, copy]),
+        el('div', { class: 'gw-actions' }, [close]),
+    ]);
+}
+
+function detailCard(record) {
+    const status = keyStatus(record);
+    const usage = usageOf(record);
+    const namespaces = Array.isArray(record.scopes)
+        ? record.scopes.join(', ')
+        : ((record.scopes || {}).namespaces || []).join(', ');
+    const tools = Array.isArray(record.scopes)
+        ? ''
+        : Object.entries((record.scopes || {}).tools || {})
+            .map(([name, allowed]) => name + '=' + (allowed ? 'allow' : 'deny'))
+            .join(', ');
+    const fields = [
+        [T('gw.keys.label'), record.label || record.id || ''],
+        ['ID', record.id || ''],
+        [T('gw.keys.scopes'), namespaces || '—'],
+        [T('gw.keys.tools'), tools || '—'],
+        [T('gw.keys.created'), formatTime(record.created_at)],
+        [T('gw.keys.expires'), record.expires_at ? formatTime(record.expires_at) : T('gw.keys.never')],
+        [T('gw.keys.lastUsed'), record.last_used_at ? formatTime(record.last_used_at) : '—'],
+        [T('gw.keys.concurrency'), record.max_concurrency || 'default'],
+        [T('gw.keys.status'), status.label],
+        [T('gw.keys.calls'), usage.calls],
+        [T('gw.keys.ok'), usage.ok],
+        [T('gw.keys.errors'), usage.error],
+        [T('gw.keys.busy'), usage.busy],
+        [T('gw.keys.denied'), usage.denied],
+        [T('gw.keys.lastSuccess'), usage.last_success_at ? formatTime(usage.last_success_at) : '—'],
+    ];
+    const grid = el('div', { class: 'gw-detail-grid' }, fields.map(([name, value]) => (
+        el('div', { class: 'gw-detail-row' }, [
+            el('span', { class: 'gw-detail-name', text: name }),
+            el('span', { text: String(value) }),
+        ])
+    )));
+    const close = el('button', {
+        class: 'gw-btn',
+        type: 'button',
+        text: T('gw.close'),
+        onclick: () => {
+            state.detail = null;
+            renderKeys();
+        },
+    });
+    return el('div', { class: 'gw-detail-card', role: 'dialog', 'aria-modal': 'true' }, [
+        el('h4', { text: T('gw.keys.detail.title') }),
+        grid,
+        el('div', { class: 'gw-actions' }, [close]),
+    ]);
+}
+
+function editCard(record) {
+    const scopes = record.scopes || {};
+    const namespaces = Array.isArray(scopes)
+        ? scopes.join(', ')
+        : (scopes.namespaces || []).join(', ');
+    const tools = Array.isArray(scopes)
+        ? ''
+        : Object.entries(scopes.tools || {})
+            .map(([name, allowed]) => name + '=' + (allowed ? 'allow' : 'deny'))
+            .join('\n');
+    const cancel = el('button', {
+        class: 'gw-btn',
+        type: 'button',
+        text: T('gw.keys.cancel'),
+        onclick: () => {
+            state.editing = null;
+            renderKeys();
+        },
+    });
+    return el('form', {
+        class: 'gw-form gw-edit-card',
+        onsubmit: (event) => {
+            event.preventDefault();
+            saveKey(record, event.currentTarget);
+        },
+    }, [
+        el('h4', { class: 'gw-edit-title', text: T('gw.keys.edit.title') }),
+        el('label', { class: 'gw-field' }, [
+            el('span', { text: T('gw.keys.label') }),
+            el('input', { name: 'label', required: 'required', autocomplete: 'off',
+                          value: record.label || '' }),
+        ]),
+        el('label', { class: 'gw-field' }, [
+            el('span', { text: T('gw.keys.scopes') }),
+            el('input', { name: 'scopes', autocomplete: 'off', value: namespaces,
+                          placeholder: 'default, files' }),
+            el('small', { class: 'gw-hint', text: T('gw.keys.scopesHint') }),
+        ]),
+        el('label', { class: 'gw-field' }, [
+            el('span', { text: T('gw.keys.tools') }),
+            el('textarea', { name: 'tools', rows: '3', autocomplete: 'off',
+                             text: tools, placeholder: 'web-dangerous=deny' }),
+            el('small', { class: 'gw-hint', text: T('gw.keys.toolsHint') }),
+        ]),
+        el('label', { class: 'gw-field' }, [
+            el('span', { text: T('gw.keys.concurrency') }),
+            el('input', { name: 'max_concurrency', type: 'number', min: '1',
+                          step: '1', autocomplete: 'off',
+                          value: record.max_concurrency || '' }),
+            el('small', { class: 'gw-hint', text: T('gw.keys.concurrencyHint') }),
+        ]),
+        el('label', { class: 'gw-field' }, [
+            el('span', { text: T('gw.keys.expires') }),
+            el('input', { name: 'expires_at', type: 'datetime-local',
+                          value: toLocalInput(record.expires_at) }),
+            el('small', { class: 'gw-hint', text: T('gw.keys.expiresHint') }),
+        ]),
+        el('div', { class: 'gw-actions' }, [
+            el('button', {
+                class: 'gw-btn gw-btn-primary',
+                type: 'submit',
+                text: T('gw.keys.save'),
+            }),
+            cancel,
+        ]),
+    ]);
+}
+
 function renderKeys() {
     const host = root.querySelector('#gw-keys');
     if (!host) return;
     host.replaceChildren();
 
     const body = [];
-    if (state.secret) {
-        const secret = el('code', { class: 'gw-secret', text: state.secret });
-        const copy = el('button', {
-            class: 'gw-btn',
-            type: 'button',
-            text: T('gw.copy'),
-            onclick: () => {
-                navigator.clipboard?.writeText(state.secret).then(() => {
-                    copy.textContent = T('gw.copied');
-                });
-            },
-        });
-        const close = el('button', {
-            class: 'gw-btn gw-btn-primary',
-            type: 'button',
-            text: T('gw.keys.created.stored'),
-            onclick: () => {
-                state.secret = null;
-                renderKeys();
-            },
-        });
-        body.push(
-            el('div', { class: 'gw-secret-card', role: 'dialog', 'aria-modal': 'true' }, [
-                el('h4', { text: T('gw.keys.created.title') }),
-                el('p', { class: 'gw-hint', text: T('gw.keys.created.hint') }),
-                el('div', { class: 'gw-secret-row' }, [secret, copy]),
-                el('div', { class: 'gw-actions' }, [close]),
-            ]),
-        );
+    if (state.secret) body.push(secretCard());
+    if (state.detail) body.push(detailCard(state.detail));
+    if (state.editing) {
+        const editing = state.keys.find((record) => record.id === state.editing);
+        if (editing) body.push(editCard(editing));
     }
 
     const rows = state.keys.map((record) => {
         const status = keyStatus(record);
-        const revoke = el('button', {
-            class: 'gw-btn gw-btn-danger',
-            type: 'button',
-            text: T('gw.keys.revoke'),
-            onclick: () => revokeKey(record),
-        });
+        const usage = usageOf(record);
+        const actions = [
+            el('button', {
+                class: 'gw-btn gw-btn-small',
+                type: 'button',
+                text: T('gw.keys.details'),
+                onclick: () => showKey(record),
+            }),
+        ];
+        if (status.kind !== 'revoked') {
+            actions.push(el('button', {
+                class: 'gw-btn gw-btn-small',
+                type: 'button',
+                text: T('gw.keys.edit'),
+                onclick: () => {
+                    state.editing = record.id;
+                    state.detail = null;
+                    renderKeys();
+                },
+            }));
+        }
+        if (status.kind === 'active') {
+            actions.push(el('button', {
+                class: 'gw-btn gw-btn-small',
+                type: 'button',
+                text: T('gw.keys.rotate'),
+                onclick: () => rotateKey(record),
+            }));
+        }
+        if (status.kind !== 'revoked') {
+            actions.push(el('button', {
+                class: 'gw-btn gw-btn-small gw-btn-danger',
+                type: 'button',
+                text: T('gw.keys.revoke'),
+                onclick: () => revokeKey(record),
+            }));
+        }
         return el('tr', {}, [
             el('td', { text: record.label || record.name || record.id || '' }),
             el('td', {}, [
@@ -365,11 +596,16 @@ function renderKeys() {
                     text: scopeText(record.scopes),
                 }),
             ]),
-            el('td', { text: formatTime(record.created_at) }),
-            el('td', { text: record.expires_at ? formatTime(record.expires_at) : T('gw.keys.never') }),
-            el('td', { text: record.last_used_at ? formatTime(record.last_used_at) : '—' }),
+            el('td', { class: 'gw-number', text: usage.calls }),
+            el('td', { class: 'gw-number', text: usage.ok }),
+            el('td', { class: 'gw-number', text: usage.error }),
+            el('td', { class: 'gw-number', text: usage.busy }),
+            el('td', { class: 'gw-number', text: usage.denied }),
+            el('td', {
+                text: usage.last_success_at ? formatTime(usage.last_success_at) : '—',
+            }),
             el('td', {}, [pill(status.label, status.kind)]),
-            el('td', {}, [status.kind === 'revoked' ? null : revoke]),
+            el('td', {}, actions),
         ]);
     });
 
@@ -378,9 +614,12 @@ function renderKeys() {
             [
                 'gw.keys.label',
                 'gw.keys.scopes',
-                'gw.keys.created',
-                'gw.keys.expires',
-                'gw.keys.lastUsed',
+                'gw.keys.calls',
+                'gw.keys.ok',
+                'gw.keys.errors',
+                'gw.keys.busy',
+                'gw.keys.denied',
+                'gw.keys.lastSuccess',
                 'gw.keys.status',
                 'gw.keys.actions',
             ],
@@ -450,6 +689,11 @@ async function loadKeys() {
     try {
         const data = await call('get', '/keys');
         state.keys = data.keys || [];
+        if (state.detail) {
+            state.detail = state.keys.find(
+                (record) => record.id === state.detail.id,
+            ) || null;
+        }
         renderKeys();
     } catch (error) {
         host.replaceChildren(message(error.message, 'error'));
@@ -515,6 +759,7 @@ async function createKey(form) {
     try {
         const created = await call('post', '/keys', payload);
         state.secret = created.secret || null;
+        state.secretKind = 'created';
         await loadKeys();
     } catch (error) {
         root.querySelector('#gw-keys')?.appendChild(message(error.message, 'error'));
@@ -529,6 +774,73 @@ async function revokeKey(record) {
         await loadKeys();
     } catch (error) {
         root.querySelector('#gw-keys')?.appendChild(message(error.message, 'error'));
+    }
+}
+
+async function rotateKey(record) {
+    const label = record.label || record.name || record.id;
+    if (!window.confirm(T('gw.confirmRotate', { label }))) return;
+    try {
+        const rotated = await call(
+            'post', '/keys/' + encodeURIComponent(record.id) + '/rotate',
+        );
+        state.secret = rotated.secret || null;
+        state.secretKind = 'rotated';
+        state.editing = null;
+        await loadKeys();
+    } catch (error) {
+        root.querySelector('#gw-keys')?.appendChild(message(error.message, 'error'));
+    }
+}
+
+async function showKey(record) {
+    try {
+        const data = await call('get', '/keys/' + encodeURIComponent(record.id));
+        state.detail = data.key || null;
+        state.editing = null;
+        renderKeys();
+    } catch (error) {
+        root.querySelector('#gw-keys')?.appendChild(message(error.message, 'error'));
+    }
+}
+
+async function saveKey(record, form) {
+    const host = root.querySelector('#gw-keys');
+    const data = new FormData(form);
+    const namespaces = String(data.get('scopes') || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    const overrides = parseOverrides(data.get('tools'));
+    if (overrides.invalid.length) {
+        host?.appendChild(message(
+            T('gw.keys.toolsInvalid', { lines: overrides.invalid.join(', ') }),
+            'error',
+        ));
+        return;
+    }
+    const concurrencyRaw = String(data.get('max_concurrency') || '').trim();
+    let maxConcurrency = null;
+    if (concurrencyRaw) {
+        maxConcurrency = Number(concurrencyRaw);
+        if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+            host?.appendChild(message(T('gw.keys.concurrencyInvalid'), 'error'));
+            return;
+        }
+    }
+    const expiresRaw = String(data.get('expires_at') || '');
+    const payload = {
+        label: String(data.get('label') || '').trim(),
+        scopes: { namespaces, tools: overrides.tools },
+        max_concurrency: maxConcurrency,
+        expires_at: expiresRaw ? new Date(expiresRaw).toISOString() : null,
+    };
+    try {
+        await call('patch', '/keys/' + encodeURIComponent(record.id), payload);
+        state.editing = null;
+        await loadKeys();
+    } catch (error) {
+        host?.appendChild(message(error.message, 'error'));
     }
 }
 
@@ -947,4 +1259,7 @@ export function unmount() {
     root = null;
     client = null;
     state.secret = null;
+    state.secretKind = 'created';
+    state.editing = null;
+    state.detail = null;
 }
