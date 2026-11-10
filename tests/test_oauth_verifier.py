@@ -1254,3 +1254,158 @@ class TestOAuthSectionSurface:
 
         assert options["oauth"].issuer == ISSUER
         assert options["oauth"].audience == AUDIENCE
+
+    def test_a_non_string_scope_list_item_is_a_value_error(self):
+        """A YAML ``scope: [42]`` must not surface as a TypeError traceback."""
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        for value in (
+            {"issuer": ISSUER, "scope": [42]},
+            {"issuer": ISSUER, "scope": ["a=b", 7]},
+        ):
+            with pytest.raises(ValueError, match="oauth.scope"):
+                settings_from_args(
+                    argparse.Namespace(),
+                    default_audience=AUDIENCE,
+                    config_section=value,
+                )
+
+    def test_a_scope_name_may_contain_an_equals_sign(self):
+        """``=`` is legal in a scope-token, so the name must survive intact."""
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        settings = settings_from_args(
+            argparse.Namespace(),
+            default_audience=AUDIENCE,
+            config_section={
+                "issuer": ISSUER,
+                "scope": {"tools=read": ["calculator"]},
+            },
+        )
+
+        assert settings is not None
+        assert dict(settings.scope_map) == {"tools=read": ("calculator",)}
+
+    def test_scope_names_that_share_a_prefix_stay_separate(self):
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        settings = settings_from_args(
+            argparse.Namespace(),
+            default_audience=AUDIENCE,
+            config_section={
+                "issuer": ISSUER,
+                "scope": {"a": ["b=c"], "a=b": ["c"]},
+            },
+        )
+
+        assert settings is not None
+        assert dict(settings.scope_map) == {"a": ("b=c",), "a=b": ("c",)}
+
+    @pytest.mark.parametrize("text", [".nan", ".inf", "-.inf"])
+    def test_a_non_finite_ttl_is_rejected(self, tmp_path, text):
+        with pytest.raises(ValueError, match=r"oauth\.introspection_cache_ttl"):
+            self._settings(
+                tmp_path, f"  issuer: {ISSUER}\n  introspection_cache_ttl: {text}\n"
+            )
+
+    def test_an_oversized_integer_ttl_is_rejected(self, tmp_path):
+        """A YAML integer wider than a float cannot become a finite TTL."""
+        with pytest.raises(ValueError, match=r"oauth\.introspection_cache_ttl"):
+            self._settings(
+                tmp_path,
+                f"  issuer: {ISSUER}\n  introspection_cache_ttl: 1{'0' * 400}\n",
+            )
+
+    def test_a_bad_secret_type_does_not_echo_the_value(self, tmp_path):
+        with pytest.raises(ValueError) as excinfo:
+            self._settings(
+                tmp_path,
+                f"  issuer: {ISSUER}\n"
+                "  introspection_url: https://idp.example.com/introspect\n"
+                "  introspection_client_id: toolregistry\n"
+                "  introspection_client_secret: [hunter2]\n",
+            )
+
+        message = str(excinfo.value)
+        assert "oauth.introspection_client_secret" in message
+        assert "hunter2" not in message
+
+    def test_a_digit_only_secret_is_accepted_as_a_string(self, tmp_path):
+        """YAML turns an unquoted digit-only secret into an int; keep it."""
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(
+            f"oauth:\n  issuer: {ISSUER}\n"
+            "  introspection_url: https://idp.example.com/introspect\n"
+            "  introspection_client_id: toolregistry\n"
+            "  introspection_client_secret: 9182736450\n",
+            encoding="utf-8",
+        )
+
+        settings = _oauth_settings(
+            argparse.Namespace(), default_audience=AUDIENCE, config_path=str(path)
+        )
+
+        assert settings is not None
+        assert settings.introspection_client_secret == "9182736450"
+
+    @pytest.mark.parametrize("value", ["[hunter2]", "{'a': 1}", "true"])
+    def test_a_non_string_secret_is_rejected_without_echoing_it(self, tmp_path, value):
+        with pytest.raises(ValueError) as excinfo:
+            self._settings(
+                tmp_path,
+                f"  issuer: {ISSUER}\n"
+                "  introspection_url: https://idp.example.com/introspect\n"
+                "  introspection_client_id: toolregistry\n"
+                f"  introspection_client_secret: {value}\n",
+            )
+
+        message = str(excinfo.value)
+        assert "oauth.introspection_client_secret" in message
+        assert "hunter2" not in message
+
+    def test_a_bad_file_scope_is_rejected_even_when_the_flag_wins(self):
+        """A file typo must not wait for the flag to be removed."""
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        with pytest.raises(ValueError, match="oauth.scope"):
+            settings_from_args(
+                argparse.Namespace(oauth_scope=["tools:read=calculator"]),
+                default_audience=AUDIENCE,
+                config_section={"issuer": ISSUER, "scope": 42},
+            )
+
+    def test_a_bad_file_scopes_is_rejected_even_when_the_flag_wins(self):
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        with pytest.raises(ValueError, match="oauth.scopes"):
+            settings_from_args(
+                argparse.Namespace(oauth_scopes="openid"),
+                default_audience=AUDIENCE,
+                config_section={"issuer": ISSUER, "scopes": {"openid": True}},
+            )
+
+    def test_an_empty_scopes_flag_clears_a_file_list(self):
+        """Unlike ``--oauth-scope``, ``--oauth-scopes ''`` can clear a file."""
+        from toolregistry_server.oauth.verifier import settings_from_args
+
+        settings = settings_from_args(
+            argparse.Namespace(oauth_scopes=""),
+            default_audience=AUDIENCE,
+            config_section={"issuer": ISSUER, "scopes": ["openid"]},
+        )
+
+        assert settings is not None
+        assert settings.scopes_supported == ()
+
+    def test_a_non_string_issuer_is_reported_before_the_audience_gate(self):
+        """The audience gate must not mask the type error on ``issuer``."""
+        from toolregistry_server.cli import _oauth_settings
+
+        with pytest.raises(ValueError, match=r"oauth\.issuer"):
+            _oauth_settings(
+                argparse.Namespace(),
+                default_audience=None,
+                section={"issuer": 42},
+            )

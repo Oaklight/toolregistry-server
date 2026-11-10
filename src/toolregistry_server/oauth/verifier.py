@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import threading
 import time
 from collections import OrderedDict
@@ -901,7 +902,7 @@ def settings_from_args(
     introspection_client_id = _config_text(
         parsed, "oauth_introspection_client_id", section
     )
-    introspection_client_secret = _config_text(
+    introspection_client_secret = _config_secret(
         parsed, "oauth_introspection_client_secret", section
     )
     introspection_ttl = _config_number(parsed, "oauth_introspection_cache_ttl", section)
@@ -994,8 +995,68 @@ def _config_value(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any
     return section.get(key)
 
 
+def effective_identity(
+    parsed: Any, *, config_section: Mapping[str, Any] | None = None
+) -> tuple[str | None, str | None]:
+    """Return the merged, type-checked issuer and audience.
+
+    The CLI needs both before :func:`settings_from_args` runs, to decide
+    whether the command can derive an audience and whether to warn about a
+    wildcard bind.  Reading the section directly there would bypass the
+    type check, so a non-string ``issuer`` would hide behind the audience
+    error instead of naming its key.
+
+    Args:
+        parsed: The argparse namespace.
+        config_section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        ``(issuer, audience)``, each the flag value, the file value, or
+        ``None``.
+
+    Raises:
+        ValueError: If the file supplies a non-string issuer or audience.
+    """
+    section = dict(config_section or {})
+    return (
+        _config_text(parsed, "oauth_issuer", section),
+        _config_text(parsed, "oauth_audience", section),
+    )
+
+
+def _config_label(argument: str) -> str:
+    """Return the error label for one option's config key.
+
+    A credential's value must never reach the log, so its label carries no
+    value.
+    """
+    return f"oauth.{argument.removeprefix('oauth_')}"
+
+
+def _config_error(argument: str, expectation: str, value: Any) -> ValueError:
+    """Build the error for a wrongly-typed file value.
+
+    Args:
+        argument: The destination name without the leading dashes.
+        expectation: What the value should be, for example ``"a string"``.
+        value: The rejected value.  Omitted from the message when the key
+            names a secret.
+
+    Returns:
+        The error to raise.
+    """
+    label = _config_label(argument)
+    key = argument.removeprefix("oauth_")
+    if key.endswith("secret"):
+        return ValueError(f"{label} must be {expectation}")
+    return ValueError(f"{label} must be {expectation}, got {value!r}")
+
+
 def _config_text(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     """Return a string option, rejecting a non-string file value.
+
+    Only the file value is checked: argparse types every flag, so a flag
+    value is already a string by the time it reaches this function.
 
     Args:
         parsed: The argparse namespace.
@@ -1011,12 +1072,15 @@ def _config_text(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     value = _config_value(parsed, argument, section)
     if value is None or isinstance(value, str):
         return value
-    key = argument.removeprefix("oauth_")
-    raise ValueError(f"oauth.{key} must be a string, got {value!r}")
+    raise _config_error(argument, "a string", value)
 
 
 def _config_number(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
-    """Return a numeric option, rejecting a non-number file value.
+    """Return a finite numeric option, rejecting anything else.
+
+    NaN and the infinities are rejected here rather than in the settings: a
+    NaN cache TTL compares false against every bound, so a cache entry would
+    never expire and a revoked token would stay accepted until restart.
 
     Args:
         parsed: The argparse namespace.
@@ -1027,15 +1091,56 @@ def _config_number(parsed: Any, argument: str, section: Mapping[str, Any]) -> An
         The flag value, the file value, or ``None``.
 
     Raises:
-        ValueError: If the file supplies a value that is not a number.
+        ValueError: If the file supplies a value that is not a finite
+            number.
     """
     value = _config_value(parsed, argument, section)
-    if value is None or (
-        not isinstance(value, bool) and isinstance(value, (int, float))
-    ):
+    if value is None:
         return value
-    key = argument.removeprefix("oauth_")
-    raise ValueError(f"oauth.{key} must be a number, got {value!r}")
+    if not isinstance(value, bool) and isinstance(value, (int, float)):
+        try:
+            if math.isfinite(float(value)):
+                return value
+        except OverflowError:
+            # A YAML integer wider than a float cannot become one; it is
+            # finite as an integer but useless as a TTL.
+            pass
+    raise _config_error(argument, "a finite number", value)
+
+
+def _config_secret(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
+    """Return a credential option, accepting a digit-only integer from YAML.
+
+    A YAML parser turns an unquoted all-digit secret such as
+    ``introspection_client_secret: 9182736450`` into an ``int``; the value
+    is legal at most identity providers, so it is stringified rather than
+    rejected.  The value is never interpolated into an error: ``main()``
+    logs these messages verbatim.
+
+    The flag is typed by argparse, so only the file value is checked here.
+
+    Args:
+        parsed: The argparse namespace.
+        argument: The destination name without the leading dashes.
+        section: The ``oauth`` mapping from the configuration file.
+
+    Returns:
+        The flag value, the file value as a string, or ``None``.
+
+    Raises:
+        ValueError: If the file supplies neither a string nor an integer.
+    """
+    value = _config_value(parsed, argument, section)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # bool is an int subclass; a YAML ``true`` is never a secret.
+        raise ValueError(f"{_config_label(argument)} must be a string")
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"{_config_label(argument)} must be a string")
 
 
 def _config_bool(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
@@ -1055,15 +1160,21 @@ def _config_bool(parsed: Any, argument: str, section: Mapping[str, Any]) -> Any:
     value = _config_value(parsed, argument, section)
     if value is None or isinstance(value, bool):
         return value
-    key = argument.removeprefix("oauth_")
-    raise ValueError(f"oauth.{key} must be a boolean, got {value!r}")
+    raise _config_error(argument, "a boolean", value)
 
 
 def _config_scopes(parsed: Any, section: Mapping[str, Any]) -> str | None:
     """Return ``--oauth-scopes`` or ``oauth.scopes`` as one space-joined text.
 
-    The flag is a single space-separated string.  The file may hold the same
-    string or a list of strings, which is the natural YAML form.
+    The flag is a single space-separated string; argparse types it, so only
+    the file value is checked here.  The file may hold the same string or a
+    list of strings, which is the natural YAML form.
+
+    Precedence differs from ``oauth.scope`` in both directions and the
+    asymmetry is deliberate: an explicitly empty ``--oauth-scopes ''``
+    overrides a file list to nothing, because a non-``None`` flag always
+    wins here.  ``--oauth-scope`` cannot express "clear it", because its
+    argparse default is ``[]``.
 
     Args:
         parsed: The argparse namespace.
@@ -1076,10 +1187,27 @@ def _config_scopes(parsed: Any, section: Mapping[str, Any]) -> str | None:
         ValueError: If ``oauth.scopes`` is neither a string nor a list of
             strings.
     """
+    # Validate the file value even when the flag wins: a typo must not sit
+    # unnoticed until the flag is removed.
+    file_value = _file_scopes(section.get("scopes"))
     value = getattr(parsed, "oauth_scopes", None)
     if value is not None:
         return value
-    value = section.get("scopes")
+    return file_value
+
+
+def _file_scopes(value: Any) -> str | None:
+    """Validate the ``oauth.scopes`` file value and return it space-joined.
+
+    Args:
+        value: The ``oauth.scopes`` value.
+
+    Returns:
+        The scopes as one space-joined string, or ``None`` when absent.
+
+    Raises:
+        ValueError: If the value is neither a string nor a list of strings.
+    """
     if value is None:
         return None
     if isinstance(value, str):
@@ -1116,6 +1244,11 @@ def _parse_scope_config(
             names its source.
     """
     if raw_scopes:
+        # Validate the file value even when the flag wins, for the same
+        # reason ``_config_scopes`` does: a typo must not wait for the flag
+        # to be dropped before it is noticed.
+        if file_scope is not None:
+            _validate_file_scope(file_scope)
         return _parse_scope_entries(raw_scopes)
     if file_scope is None:
         return {}, {}
@@ -1123,6 +1256,28 @@ def _parse_scope_config(
         return _parse_scope_mapping(file_scope)
     if isinstance(file_scope, (list, tuple)):
         return _parse_scope_entries(list(file_scope), source="oauth.scope")
+    raise ValueError(
+        "oauth.scope must be a mapping from a scope to its entries, or a list "
+        f"of SCOPE=ENTRY[,ENTRY] strings, got {file_scope!r}"
+    )
+
+
+def _validate_file_scope(file_scope: Any) -> None:
+    """Check the shape of ``oauth.scope`` without building the tables.
+
+    Args:
+        file_scope: The ``oauth.scope`` value.
+
+    Raises:
+        ValueError: If the value is neither a mapping nor a list, or a
+            mapping value has the wrong shape.
+    """
+    if isinstance(file_scope, Mapping):
+        _parse_scope_mapping(file_scope)
+        return
+    if isinstance(file_scope, (list, tuple)):
+        _parse_scope_entries(list(file_scope), source="oauth.scope")
+        return
     raise ValueError(
         "oauth.scope must be a mapping from a scope to its entries, or a list "
         f"of SCOPE=ENTRY[,ENTRY] strings, got {file_scope!r}"
@@ -1151,19 +1306,25 @@ def _parse_scope_mapping(
     scope_map: dict[str, tuple[str, ...]] = {}
     scope_tools: dict[str, dict[str, bool]] = {}
     for scope, entries in mapping.items():
-        if isinstance(entries, str):
-            values = entries
-        elif isinstance(entries, (list, tuple)) and all(
-            isinstance(item, str) for item in entries
+        if (
+            isinstance(entries, str)
+            or isinstance(entries, (list, tuple))
+            and all(isinstance(item, str) for item in entries)
         ):
-            values = ",".join(entries)
+            values = entries
         else:
             raise ValueError(
                 "oauth.scope values must be a comma-separated string or a "
                 f"list of entry strings, got {entries!r} for {scope!r}"
             )
-        scope_text, namespaces, tools = _parse_scope_entry(
-            f"{scope}={values}", source="oauth.scope"
+        # Parse the mapping directly: a scope name may legally contain "="
+        # (RFC 6749 scope-token), so rebuilding a "SCOPE=ENTRY" string and
+        # splitting on the first "=" would silently move part of the name
+        # into the entries.
+        scope_text, namespaces, tools = _parse_scope_values(
+            scope if isinstance(scope, str) else str(scope),
+            values,
+            source="oauth.scope",
         )
         scope_map[scope_text] = namespaces
         if tools:
@@ -1172,7 +1333,7 @@ def _parse_scope_mapping(
 
 
 def _parse_scope_entries(
-    raw_scopes: Sequence[str],
+    raw_scopes: Sequence[Any],
     *,
     source: str = "--oauth-scope",
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, dict[str, bool]]]:
@@ -1183,14 +1344,16 @@ def _parse_scope_entries(
     prefix form keeps the existing syntax for namespaces unchanged.
 
     Args:
-        raw_scopes: The repeated flag values.
+        raw_scopes: The repeated flag values, or the ``oauth.scope`` list
+            form.
         source: Name used in the error message for a malformed entry.
 
     Returns:
         ``(scope_map, scope_tools)``.
 
     Raises:
-        ValueError: If an entry is malformed or grants nothing.
+        ValueError: If an entry is not a string, is malformed, or grants
+            nothing.
     """
     scope_map: dict[str, tuple[str, ...]] = {}
     scope_tools: dict[str, dict[str, bool]] = {}
@@ -1203,7 +1366,7 @@ def _parse_scope_entries(
 
 
 def _parse_scope_entry(
-    entry: str,
+    entry: Any,
     *,
     source: str = "--oauth-scope",
 ) -> tuple[str, tuple[str, ...], dict[str, bool]]:
@@ -1217,8 +1380,11 @@ def _parse_scope_entry(
         ``(scope, namespaces, tool_overrides)``.
 
     Raises:
-        ValueError: If the value is malformed or grants nothing.
+        ValueError: If the value is not a string, is malformed, or grants
+            nothing.
     """
+    if not isinstance(entry, str):
+        raise ValueError(f"{source} expects SCOPE=ENTRY[,ENTRY] strings, got {entry!r}")
     message = (
         f"{source} expects SCOPE=ENTRY[,ENTRY], got {entry!r}; "
         "an entry is a namespace, +tool or -tool"
@@ -1226,10 +1392,50 @@ def _parse_scope_entry(
     if "=" not in entry:
         raise ValueError(message)
     scope, values = entry.split("=", 1)
+    return _parse_scope_values(scope.strip(), values, source=source, hint=entry)
+
+
+def _parse_scope_values(
+    scope: str,
+    values: str | Sequence[str],
+    *,
+    source: str,
+    hint: str | None = None,
+) -> tuple[str, tuple[str, ...], dict[str, bool]]:
+    """Build one scope's tables from a scope name and its entries.
+
+    Scope names and entries are supplied separately, so a scope name may
+    contain ``=`` (RFC 6749 ``scope-token`` allows it) without the split
+    point being guessed.
+
+    Args:
+        scope: The token scope, kept verbatim apart from surrounding
+            whitespace.
+        values: The scope's entries, as one comma-separated string or as a
+            sequence of strings.
+        source: Name used in the error message.
+        hint: The original value for the message; defaults to the composed
+            ``SCOPE=ENTRY`` form.
+
+    Returns:
+        ``(scope, namespaces, tool_overrides)``.
+
+    Raises:
+        ValueError: If the scope is empty, an entry is malformed, or nothing
+            is granted.
+    """
     scope = scope.strip()
+    message = (
+        f"{source} expects SCOPE=ENTRY[,ENTRY], got {hint or f'{scope}={values}'!r}; "
+        "an entry is a namespace, +tool or -tool"
+    )
+    items = values.split(",") if isinstance(values, str) else list(values)
     namespaces: list[str] = []
     tools: dict[str, bool] = {}
-    for value in (item.strip() for item in values.split(",")):
+    for item in items:
+        if not isinstance(item, str):
+            raise ValueError(f"{source} entries must be strings, got {item!r}")
+        value = item.strip()
         if not value:
             continue
         if value.startswith("+") and len(value) > 1:
@@ -1299,5 +1505,6 @@ __all__ = [
     "OAuthTokenVerifier",
     "build_oauth_resolver",
     "build_resolver",
+    "effective_identity",
     "settings_from_args",
 ]
