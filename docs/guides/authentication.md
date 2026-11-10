@@ -333,6 +333,10 @@ OAuth 访问令牌或 Bearer 密钥。
 
 没有密钥或令牌时只列出 OAuth2。未配置 `--oauth-issuer` 时，文档与之前完全一致。
 
+完整的选项表与各命令默认值见 [OAuth 参考](../reference/oauth.md)；部署步骤见
+[使用外部授权服务器部署](oauth-deployment.md)，客户端配置见
+[连接 OAuth 客户端](oauth-clients.md)。
+
 ### 限制
 
 未实现令牌内省（RFC 7662）：部署方必须签发服务器可离线校验的 JWT。只签发不透明令牌的

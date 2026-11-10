@@ -13,6 +13,9 @@
 - **OAuth 2.0 资源服务器基础**（#234）：`openapi`、`mcp`（HTTP 传输）、`gateway` 与 `local-hub` 接受 `--oauth-issuer`、`--oauth-audience`、`--oauth-jwks` 以及可重复的 `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]`。由外部授权服务器签发的 Bearer 令牌在本地用该服务器的 JWKS 校验（仅 RS256/ES256、精确 `iss`、`aud`/RFC 8707 `resource`、`exp`/`nbf` 允许 60 秒偏差；JWKS 端点优先取 `--oauth-jwks`，否则依次从 RFC 8414/OIDC 元数据、`<issuer>/.well-known/jwks.json` 获取，并缓存 5 分钟；未知 `kid` 最多每 30 秒触发一次重新拉取）。作用域映射显式且遵循最小权限：未映射的作用域不授予任何权限。先尝试 API 密钥和静态令牌，再尝试 OAuth，因此省略 `--oauth-issuer` 时行为不变。MCP 受保护资源元数据在 `authorization_servers` 中公布配置的 issuer；被拒绝的请求在独立服务器与 gateway 上都携带 `WWW-Authenticate: Bearer resource_metadata="<元数据 URL>"`（跟随当前 MCP 路径）；绑定 Unix socket 的 hub 必须显式提供 `--oauth-audience`。未实现令牌内省（RFC 7662）；`PyJWT`（含 `crypto`）成为 `gateway` extra 的新依赖。配置外部 issuer 后，受保护资源元数据不再公布 `scopes_supported`，因为授权服务器可能在 authorize 阶段拒绝通用的 `mcp` 作用域：`--oauth-scopes "openid profile email offline_access"` 指定要公布的作用域，空值则省略该字段，未配置 OAuth 的服务器保持原来的 `["mcp"]`。
 - **OpenAPI 文档描述 OAuth2 流程**（#235）：配置 `--oauth-issuer` 后，对外文档新增 `components.securitySchemes.OAuth2`，使用 `authorizationCode` 流程。`authorizationUrl` 与 `tokenUrl` 来自 issuer 的 RFC 8414 或 OIDC 元数据，可用 `--oauth-authorization-url` / `--oauth-token-url` 覆盖；`--oauth-refresh-url` 可添加可选的 `refreshUrl`。`scopes` 即 `--oauth-scopes` 列表（允许为空）。同时接受 API 密钥或静态令牌时，文档级 `security` 为 `[{"OAuth2": []}, {"HTTPBearer": []}]`，表示「或」；仅 OAuth 的部署只列出 OAuth2；未配置 OAuth 时文档不变。端点无法确定时省略该方案并记录警告。独立服务器与 gateway 的两套 OpenAPI 组装共用同一个构建器。即使没有密钥存储，静态 `--tokens` 现在也会与 OAuth 并存。
 
+- **OAuth 部署与客户端文档**（#240）：新增页面完整覆盖资源服务器——[OAuth 参考](reference/oauth.md) 列出全部选项、优先级与各命令推导的 audience；[部署指南](guides/oauth-deployment.md) 说明发现链、反向代理、最小权限作用域映射与故障排查；[客户端配置](guides/oauth-clients.md) 覆盖 Gemini 自定义连接应用（机密客户端、Google 托管重定向 URI）、Claude 与 ChatGPT 连接器（CIMD、DCR 或手动注册）以及 Swagger UI。对 #234 与 #235 的条目只做交叉引用，不再重复。这些页面也记录了当前缺口：配置文件没有 OAuth 段、不支持内省、没有内置授权服务器，以及内置 Swagger UI 页面缺少 `oauth2-redirect.html`。
+
+
 ## [0.9.0] - 2026-11-09
 
 ### 新增

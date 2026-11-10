@@ -120,6 +120,8 @@ nav:
   - 指南:
       - 配置: guides/configuration.md
       - 认证: guides/authentication.md
+      - OAuth 部署: guides/oauth-deployment.md
+      - OAuth 客户端: guides/oauth-clients.md
       - OpenAPI 适配器: guides/openapi.md
       - MCP 适配器: guides/mcp.md
       - 扩展: guides/extending.md
@@ -129,6 +131,7 @@ nav:
       - examples/index.md
   - 参考:
       - 命令行工具: reference/cli/index.md
+      - OAuth 参考: reference/oauth.md
       - 协议适配器: reference/adapters.md
       - API 参考:
           - reference/api/index.md
