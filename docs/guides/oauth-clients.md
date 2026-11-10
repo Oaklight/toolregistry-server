@@ -70,15 +70,24 @@ OpenAI 的自定义 MCP 连接器同样从 401 质询发现授权服务器。顺
 
 只要设置了 `--oauth-issuer`，对外 OpenAPI 文档就包含 `OAuth2` 授权码方案。在 Swagger UI 中：
 
-1. 打开文档（gateway：`https://tools.example.com/openapi/openapi.json`）。
+1. 打开页面：独立 `openapi` 服务器为 `https://tools.example.com/docs`，使用默认挂载的
+   gateway 为 `https://tools.example.com/openapi/docs`。
 2. 点击 **Authorize**，选择 `OAuth2` 方案，填入 AS 签发的作用域并继续。
 3. Swagger UI 把浏览器送到 `authorizationUrl`；AS 回调后它在 `tokenUrl` 换取令牌，并用得到的
    Bearer 令牌调用工具。
 
-在 AS 注册 Swagger UI 的重定向 URI。标准 Swagger UI 期望文档页面旁有一个
-`oauth2-redirect.html`。内置 `/docs` 页面目前不提供该文件，因此即使文档与方案都正确，
-最终回调也会失败。在修复之前，请使用能完成授权码流程的 OAuth 客户端，或自建 Swagger UI
-并在同源提供其重定向页面。
+在 AS 注册 Swagger UI 的重定向 URI。Swagger UI 期望文档页面旁有一个
+`oauth2-redirect.html`，OpenAPI 前端会自己提供该页面——独立服务器在监听器根路径，gateway
+在挂载路径之下：
+
+| 部署 | 需注册的重定向 URI |
+|------|--------------------|
+| `toolregistry-server openapi` | `https://tools.example.com/oauth2-redirect.html` |
+| 使用默认 `/openapi` 挂载的 `gateway` | `https://tools.example.com/openapi/oauth2-redirect.html` |
+
+`/docs` 页面会把对应位置传给 Swagger UI，因此即使 `--openapi-path` 改变了挂载路径，回调也会
+落在服务提供的页面上。该页面有意不做鉴权——AS 重定向浏览器时不带 Bearer 令牌——并且不包含
+任何密钥。
 
 Authorize 对话框中的作用域来自 `--oauth-scopes`；它们必须是 AS 签发作用域的子集。
 
@@ -92,6 +101,7 @@ Authorize 对话框中的作用域来自 `--oauth-scopes`；它们必须是 AS �
 | DCR 报 `invalid_client` | AS 关闭了 DCR | 启用 DCR，或改用 CIMD/手动注册 |
 | 登录成功后工具服务器仍返回 401 | audience/resource 不匹配 | 让 `aud` 或 `resource` 等于 `--oauth-audience` |
 | 密钥轮换后 401 | 缓存的 JWKS 缺少新 `kid` | 30 秒后重试；确认 AS 已公布新密钥 |
+| AS 回调后浏览器出现 404 | 注册的重定向 URI 不是服务提供的 `oauth2-redirect.html` 地址 | 注册 `<公开源><openapi 路径>/oauth2-redirect.html`；独立服务器在源根路径提供该页面 |
 
 ## 另见
 

@@ -343,8 +343,12 @@ OAuth 访问令牌或 Bearer 密钥。
 
 ### 限制
 
-未实现令牌内省（RFC 7662）：部署方必须签发服务器可离线校验的 JWT。只签发不透明令牌的
-授权服务器需要内省代理，或改用 `--keys-db`。
+本地校验看不到令牌签发之后被撤销或禁用的情况，因此令牌会一直有效到过期。配置
+`--oauth-introspection-url`（连同客户端 id 与密钥）可让每个本地校验通过的令牌都向授权
+服务器的 RFC 7662 端点确认；应答按 `--oauth-introspection-cache-ttl` 缓存，它决定被撤销
+的令牌还会被接受多久。端点失败时拒绝令牌，除非设置了 `--oauth-introspection-optional`。
+令牌本身仍必须是服务器可离线校验的 JWT：内省不会让不透明令牌可用。见
+[OAuth 参考](../reference/oauth.md#令牌内省)。
 
 进程内 Python API：`toolregistry_server.oauth` 的 `OAuthSettings`、`OAuthTokenVerifier` 与
 `build_resolver()` 构建与命令行相同的校验器和组合解析器。

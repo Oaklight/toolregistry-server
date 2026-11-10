@@ -40,6 +40,9 @@ sequenceDiagram
 
 服务器先读 RFC 8414 文档中的 `jwks_uri`，再尝试 `/.well-known/openid-configuration`，最后才
 回退到 `<issuer>/.well-known/jwks.json`。两份元数据都不提供的提供方需要 `--oauth-jwks`。
+最后回退在拼接 URL 前会去掉 issuer 的末尾斜杠，因此以 `https://auth.example.com/` 公布的
+issuer 会拼接为 `https://auth.example.com/.well-known/jwks.json`，不会出现双斜杠；`iss`
+比较本身仍逐字节进行。
 
 ## 第 1 步 — 配置授权服务器
 
@@ -138,6 +141,51 @@ curl -s https://auth.example.com/.well-known/oauth-authorization-server | jq
 即可访问所有工具，包括破坏性或文件系统工具。AS 侧没有通配符替换：AS 签发作用域，这里决定
 它授予什么。
 
+一个作用域条目还可以用 `+tool-name` 与 `-tool-name` 允许或拒绝单个工具：
+
+```bash
+--oauth-scope "tools:read=calculator,+web-search,-calculator-danger"
+```
+
+它授予 `calculator` 命名空间，在命名空间未列出时仍允许 `web-search`，并在允许的命名空间内
+拒绝 `calculator-danger`。两个被授予的作用域对同一工具意见不一致时，拒绝优先。
+
+## 用内省实现及时撤销
+
+本地 JWT 校验看不到令牌签发之后发生的撤销，因此令牌会一直有效到过期。若这个窗口太长，请
+配置 RFC 7662 内省端点：
+
+```bash
+--oauth-introspection-url https://auth.example.com/introspect \
+--oauth-introspection-client-id toolregistry \
+--oauth-introspection-client-secret "$INTROSPECTION_SECRET" \
+--oauth-introspection-cache-ttl 5
+```
+
+- 端点在本地校验之后调用，因此 AS 必须仍签发 RS256 或 ES256 JWT。内省不会让不透明令牌可用。
+- 结果按令牌缓存 TTL，该 TTL 就是被撤销令牌仍被接受的最长时间。默认 5 秒；`0` 表示每个
+  请求都内省。
+- 端点失败时默认拒绝令牌。若可用性比立即撤销更重要，可加 `--oauth-introspection-optional`
+  回退到本地结果。
+- 同样的设置可以写在配置文件的 `oauth:` 段中：`introspection_url`、
+  `introspection_client_id`、`introspection_client_secret`、`introspection_cache_ttl`
+  与 `introspection_optional`，按客户端上限写在 `client_concurrency`。选项优先于文件。
+
+内省端点需要自己的客户端凭据，它不是最终用户授权的那个客户端。若进程列表可见，不要让该
+密钥出现在命令行中——配置文件是更合适的位置。
+
+## 按客户端并发
+
+`--client-concurrency` 是每客户端的上限。对 OAuth 客户端，可以用以下任一方式收紧：
+
+```bash
+--oauth-client-concurrency reports-bot=2 \
+--oauth-concurrency-claim max_concurrency
+```
+
+声明中的正整数优先于静态条目。无效的声明会被忽略，而不是拒绝令牌。上限按 OAuth 客户端
+生效，因此同一用户的两个客户端从不共享预算，等待超时的调用会以 `busy` 结果记录。
+
 ## 故障排查
 
 | 现象 | 可能原因 | 处理 |
@@ -150,6 +198,9 @@ curl -s https://auth.example.com/.well-known/oauth-authorization-server | jq
 | 服务器无法访问 AS 元数据 | 私有网络，或 AS 不提供 RFC 8414 文档 | 传入 `--oauth-jwks`（Swagger 还需 `--oauth-authorization-url` / `--oauth-token-url`） |
 | 客户端提示不支持动态注册 | AS 关闭了 DCR，或客户端需要 CIMD | 在 AS 启用 DCR 或 CIMD，或预先注册客户端并手动填入凭据 |
 | Swagger 的 Authorize 没有反应 | 文档没有 OAuth2 方案 | 确认设置了 `--oauth-issuer` 且端点可解析；否则方案会被省略并记录警告 |
+| AS 回调后 Swagger 停在 404 | AS 注册的重定向 URI 与服务提供的重定向页不一致 | 注册 `<公开源><openapi 路径>/oauth2-redirect.html`；页面随 `--openapi-path` 移动 |
+| 启用内省后所有令牌都被拒绝 | 端点不可达，或客户端 id 与密钥有误 | 检查启动日志与端点；加上 `--oauth-introspection-optional` 回退到本地校验可确认这一判断 |
+| 已撤销的令牌仍然可用 | 未配置内省端点，或缓存 TTL 尚未到期 | 配置 `--oauth-introspection-url`，并缩短 `--oauth-introspection-cache-ttl`（默认 5 秒） |
 
 ## 另见
 

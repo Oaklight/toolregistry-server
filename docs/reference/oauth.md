@@ -19,22 +19,50 @@ title: OAuth 参考
 | `--oauth-issuer URL` | - | 接受的精确 `iss`。设置后启用 OAuth 校验 |
 | `--oauth-audience URL` | 按命令推导 | 期望的 `aud` 或 RFC 8707 `resource` 值 |
 | `--oauth-jwks URL` | 自动发现 | JWKS 端点，覆盖发现结果 |
-| `--oauth-scope SCOPE=NAMESPACE[,NAMESPACE]` | - | 把一个令牌作用域映射到命名空间模式；可重复。未映射的作用域不授予任何权限 |
+| `--oauth-scope SCOPE=ENTRY[,ENTRY]` | - | 把一个令牌作用域映射到命名空间模式与工具覆盖；可重复。每个条目是命名空间模式、`+tool-name`（允许单个工具）或 `-tool-name`（拒绝单个工具）。未映射的作用域不授予任何权限 |
 | `--oauth-scopes "SCOPE ..."` | 配置 issuer 时省略 | 在受保护资源元数据与 OpenAPI OAuth2 方案中公布的作用域，空格分隔 |
 | `--oauth-authorization-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 的授权端点 |
 | `--oauth-token-url URL` | 来自 AS 元数据 | OpenAPI `authorizationCode` 的令牌端点 |
 | `--oauth-refresh-url URL` | - | 可选的 OpenAPI `refreshUrl`；仅显式设置时公布 |
+| `--oauth-concurrency-claim CLAIM` | `max_concurrency` | 可能携带客户端在途调用上限的令牌声明；非正整数会被忽略 |
+| `--oauth-client-concurrency CLIENT=LIMIT` | - | 单个 OAuth 客户端的静态在途调用上限；可重复。有效的并发声明优先于该表 |
+| `--oauth-introspection-url URL` | - | RFC 7662 内省端点。设置后，每个本地校验通过的令牌都会向它确认 |
+| `--oauth-introspection-client-id ID` | - | 内省端点使用的客户端 id（HTTP Basic）；与 URL 同时必需 |
+| `--oauth-introspection-client-secret SECRET` | - | 内省端点使用的客户端密钥（HTTP Basic）；与 URL 同时必需 |
+| `--oauth-introspection-cache-ttl SECONDS` | `5` | 一次内省结果的复用时长；它决定被撤销的令牌还会被接受多久。`0` 关闭缓存 |
+| `--oauth-introspection-optional` | 关闭 | 内省端点失败时回退到本地校验；默认情况下失败即拒绝令牌 |
 
-三个端点选项只影响对外提供的 OpenAPI 文档。令牌校验使用 issuer、audience 与 JWKS。
+三个端点选项只影响对外提供的 OpenAPI 文档。令牌校验使用 issuer、audience 与 JWKS；
+内省使用它自己的端点。
+
+### 作用域条目
+
+`--oauth-scope` 的形式是 `SCOPE=ENTRY[,ENTRY]`。每个条目可以是：
+
+| 条目 | 作用 |
+|------|------|
+| `calculator` 或 `web/*` | 允许该命名空间模式。`*` 允许所有命名空间 |
+| `+tool-name` | 在命名空间列表之外允许单个工具 |
+| `-tool-name` | 在允许的命名空间内拒绝单个工具 |
+
+例如 `--oauth-scope "tools:read=calculator,+web-search,-calculator-danger"` 允许
+`calculator` 命名空间，在命名空间未列出时仍允许 `web-search`，并拒绝
+`calculator-danger`。两个被授予的作用域对同一工具意见不一致时，拒绝优先，因此新增
+作用域不会放宽已有的拒绝。作用域从 `scope` 声明读取，缺失时回退到部分身份平台使用
+的 `scp`（字符串或 JSON 数组）。
 
 ### 优先级
 
 - **JWKS**：`--oauth-jwks`，否则 RFC 8414 元数据中的 `jwks_uri`，否则 OIDC 发现，最后是
   `<issuer>`（去掉末尾斜杠）`/.well-known/jwks.json`。issuer 带路径时先尝试 RFC 8414
-  形式（well-known 段在路径之前），再尝试后缀形式。
+  形式（well-known 段在路径之前），再尝试后缀形式。去掉末尾斜杠同样作用于最后的回退：
+  issuer 配置为 `https://auth.example.com/` 且元数据不可达时，仍会请求
+  `https://auth.example.com/.well-known/jwks.json`，而不是出现双斜杠。`iss` 本身仍逐字节比较。
 - **OpenAPI 端点**：显式选项，否则 RFC 8414 或 OIDC 元数据中的 `authorization_endpoint` /
   `token_endpoint`。两者都无法提供完整端点时，OAuth2 方案会被省略并记录警告。
 - **Audience**：`--oauth-audience`，否则按命令推导的 URL（见下表）。不会隐式回退到 issuer。
+- **并发**：`--oauth-concurrency-claim` 指定的声明中的正整数，否则该客户端在
+  `--oauth-client-concurrency` 中的条目。两者都只能收紧进程的 `--client-concurrency`。
 
 令牌的 `aud` 或 RFC 8707 `resource` 包含配置的 audience 时才被接受。
 
@@ -54,12 +82,97 @@ title: OAuth 参考
 | 受保护资源元数据（RFC 9728） | `/.well-known/oauth-protected-resource<mcp 路径>` | `resource`、`authorization_servers: [issuer]`、`bearer_methods_supported`。仅在设置 `--oauth-scopes` 时包含 `scopes_supported` |
 | 401 质询 | 每个被拒绝的请求 | `WWW-Authenticate: Bearer resource_metadata="<PRM URL>"` |
 | OpenAPI 安全方案 | `/openapi.json` | `OAuth2`（`authorizationCode`）；同时接受密钥或静态令牌时再加 `HTTPBearer` |
-| 期望的令牌声明 | 每个请求 | `iss`（精确）、`aud` 或 `resource`、`exp`、可选 `nbf`；`scope` 用于命名空间映射 |
+| 期望的令牌声明 | 每个请求 | `iss`（精确）、`aud` 或 `resource`、`exp`、可选 `nbf`；`scope`（或 `scp`）用于作用域映射；`client_id` 或 `azp` 表示客户端身份；`--oauth-concurrency-claim` 指定的声明（默认 `max_concurrency`）可携带在途上限 |
+
+## Swagger UI 重定向页
+
+Swagger UI 在授权码流程结束时打开文档页旁的 `oauth2-redirect.html`。OpenAPI 前端会自己
+提供该页面，两个后端都如此：
+
+| 后端 | 页面 | Swagger UI 设置 |
+|------|------|-----------------|
+| 独立 `openapi`（`httpserver`） | 监听器根路径的 `GET /oauth2-redirect.html` | `/docs` 把 `oauth2RedirectUrl` 设为相对路径 `oauth2-redirect.html` |
+| `gateway`（ASGI） | `GET <openapi 路径>/oauth2-redirect.html`，例如 `/openapi/oauth2-redirect.html` | `/docs` 把 `oauth2RedirectUrl` 设为 `<openapi 路径>/oauth2-redirect.html`，文档 URL 设为 `<openapi 路径>/openapi.json` |
+
+两者都跟随配置的路径，因此 `--openapi-path /rest` 会把页面移到
+`/rest/oauth2-redirect.html`。gateway 在 Bearer 包装之前应答该路径，独立路由则免于
+令牌检查。
+
+!!! warning "重定向页不做鉴权"
+    授权服务器重定向浏览器到这里时不带 Bearer 令牌，因此该路由不能要求令牌；加上检查会把
+    回调变成 `401`，流程无法完成。页面是静态的，不加载任何外部资源，不包含密钥，只把授权
+    响应交回打开它的 Swagger UI 窗口。
+
+在授权服务器上注册的重定向 URI 就是该页面的公开地址：独立服务器为
+`<公开源>/oauth2-redirect.html`，gateway 为 `<公开源><openapi 路径>/oauth2-redirect.html`。
+
+## 令牌内省
+
+本地 JWKS 校验看不到令牌在签发后被授权服务器撤销或禁用；令牌会一直有效到过期。配置 RFC
+7662 内省端点可以缩小这个窗口：
+
+```bash
+toolregistry-server gateway --config config.yaml \
+  --oauth-issuer https://auth.example.com \
+  --oauth-introspection-url https://auth.example.com/introspect \
+  --oauth-introspection-client-id toolregistry \
+  --oauth-introspection-client-secret "$INTROSPECTION_SECRET" \
+  --oauth-introspection-cache-ttl 5
+```
+
+- 本地校验通过后才调用端点，请求体用表单提交令牌与 `token_type_hint=access_token`，
+  客户端凭据放在 HTTP Basic 中。只有 `active: true` 的应答才接受令牌。
+- 内省不会让不透明令牌可用：本地仍先做 JWT 校验，因此 AS 必须继续签发 RS256 或 ES256 JWT。
+- 结果按令牌缓存 `--oauth-introspection-cache-ttl`（默认 5 秒）。缓存只保存令牌的
+  SHA-256 摘要，从不保存令牌本身，肯定与否定应答都会缓存。该 TTL 就是被撤销令牌仍被
+  接受的最长时间；`0` 关闭缓存，每个请求都内省。
+- 端点失败时拒绝令牌。`--oauth-introspection-optional` 改为回退到本地结果，用撤销延迟
+  换取可用性。
+- 令牌与请求体从不写入日志；失败只记录端点与异常类型。
+- 设置 URL 却没有客户端 id 与密钥会导致启动失败。不设置 URL 则只做本地校验，这是默认行为。
+
+端点必须能从工具服务器访问。若它位于私有网络，请向服务器开放，或使用
+`--oauth-introspection-optional`。
+
+## Principal、作用域与记账
+
+OAuth 令牌与 API 密钥产生同类 principal，因此授权层在每个前端上的行为一致：
+
+- **名称** —— `sub` 声明，否则 `client_id`/`azp`，否则 `oauth`。
+- **客户端** —— `client_id`，否则 `azp`。它与 `sub` 分开保存，因此同一用户的两个客户端是
+  不同的 principal，作用域、并发预算与执行日志行都各自独立。
+- **作用域** —— 只由 `--oauth-scope` 映射决定。未映射的作用域不授予任何权限，
+  `+tool`/`-tool` 条目在命名空间之上生效。
+- **并发** —— `--oauth-concurrency-claim` 或 `--oauth-client-concurrency`；只能收紧进程的
+  `--client-concurrency`，不能放宽。同一用户的两个客户端从不共享预算，记账键为
+  `oauth:<client_id>:<label>`。
+- **列表** —— MCP 的 `tools/list` 与 OpenAPI 前端的 `/tools`、`/openapi.json` 只显示该
+  令牌可调用的工具。
+- **执行日志** —— 每次调用记录 `client_id`（OAuth 客户端）与 `outcome`（`ok`、`error`、
+  `busy` 或 `denied`）。被拒绝的调用以 `ERROR` 状态记录，精确结果放在 metadata 中，
+  参数为空，因为未被允许的调用的载荷对审计该决定没有用处。配置 issuer 会像配置密钥
+  存储一样默认开启执行日志；`--no-execution-log` 可关闭。
+
+每次请求都会重新读取令牌及其声明，因此启用内省后，作用域变更或撤销在下一个请求生效；
+未启用时，在下一个令牌生效。无需重启。
 
 ## 配置文件
 
-目前 OAuth 只能通过命令行选项配置。工具来源配置文件（`--config`）没有 OAuth 段，因此容器或
-服务管理器必须传递这些选项，或使用由环境变量生成的等价命令行。见[已知缺口](#已知缺口)。
+工具来源配置文件（`--config`）可以带 `oauth` 段。只有内省设置与静态客户端上限从中读取；
+每个键都以命令行选项优先。
+
+```yaml
+oauth:
+  introspection_url: https://auth.example.com/introspect
+  introspection_client_id: toolregistry
+  introspection_client_secret: change-me
+  introspection_cache_ttl: 5
+  introspection_optional: false
+  client_concurrency:
+    reports-bot: 2
+```
+
+issuer、audience 与作用域映射仍是命令行选项，因此 OAuth 仍需要相应的选项。
 
 独立 `openapi` 命令上的 OAuth 需要带加密后端的 PyJWT：请安装
 `toolregistry-server[openapi]`。基础安装仍不含第三方包，`[gateway]`/`[mcp]` 已自带该依赖。
@@ -68,9 +181,9 @@ title: OAuth 参考
 
 以下能力尚未提供：
 
-- 配置文件中没有 OAuth 段。
-- 不支持令牌内省（RFC 7662）：AS 必须签发 JWT。
 - 没有内置授权服务器，也没有客户端注册命令。
+- 内省不会让不透明令牌可用：本地 JWT 校验仍先执行。
+- `oauth` 配置段只覆盖内省与静态客户端上限；issuer、audience 与作用域映射仍是选项。
 
 ## 另见
 
