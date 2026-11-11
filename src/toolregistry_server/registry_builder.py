@@ -513,6 +513,7 @@ def apply_config(
     config: "ToolConfig",
     *,
     strict_spec_regex: bool = False,
+    oauth_provider: Any | None = None,
 ) -> None:
     """Apply a ``ToolConfig`` to an existing registry.
 
@@ -531,12 +532,19 @@ def apply_config(
         config: Parsed ``ToolConfig`` describing sources to register.
         strict_spec_regex: Abort on an invalid regex in an OpenAPI source
             instead of skipping that source.
+        oauth_provider: Resolves upstream credentials for the sources the
+            file's ``oauth.clients`` section declares.  Required when that
+            section has entries, so a protected source never connects
+            without its ``Authorization`` header.
 
     Raises:
         SpecPatternError: If *strict_spec_regex* is true and an OpenAPI
             source contains an invalid pattern.
+        toolregistry.config.ConfigError: If ``oauth.clients`` declares a
+            credential and no *oauth_provider* was supplied.
     """
-    from toolregistry.config import MCPSource, OpenAPISource, PythonSource
+    if oauth_provider is None:
+        _refuse_unresolved_oauth_clients(config)
 
     loaded_count = 0
     skipped_count = 0
@@ -564,13 +572,7 @@ def apply_config(
             continue
 
         try:
-            if isinstance(source, PythonSource):
-                register_python_source(registry, source)
-            elif isinstance(source, MCPSource):
-                register_mcp_source(registry, source)
-            elif isinstance(source, OpenAPISource) and not register_openapi_source(
-                registry, source, strict=strict_spec_regex
-            ):
+            if not _register_one(registry, source, strict_spec_regex, oauth_provider):
                 skipped_count += 1
                 continue
             loaded_count += 1
@@ -595,11 +597,55 @@ def apply_config(
         registry.apply_metadata_config(config.tool_metadata)
 
 
+def _refuse_unresolved_oauth_clients(config: "ToolConfig") -> None:
+    """Raise when ``oauth.clients`` has entries but no provider resolves them.
+
+    Raises:
+        toolregistry.config.ConfigError: If the config file declares at
+            least one upstream OAuth credential.
+    """
+    from toolregistry.config import ConfigError
+
+    from .oauth.upstream.config import load_oauth_clients
+
+    if load_oauth_clients(config.source or None, config):
+        raise ConfigError(
+            "oauth.clients is set but apply_config got no oauth_provider; "
+            "pass an OAuthClientProvider or serve the config through App"
+        )
+
+
+def _register_one(
+    registry: "ToolRegistry",
+    source: "ToolSource",
+    strict_spec_regex: bool,
+    oauth_provider: Any | None,
+) -> bool:
+    """Register one source; return ``False`` when it was skipped.
+
+    A provider failure propagates, so the caller records the source as
+    failed instead of connecting it without its ``Authorization`` header.
+    """
+    from toolregistry.config import MCPSource, OpenAPISource, PythonSource
+
+    if isinstance(source, PythonSource):
+        register_python_source(registry, source)
+    elif isinstance(source, MCPSource):
+        headers = (
+            oauth_provider.headers_for(source) if oauth_provider is not None else None
+        )
+        register_mcp_source(registry, source, oauth_headers=headers)
+    elif isinstance(source, OpenAPISource):
+        return register_openapi_source(registry, source, strict=strict_spec_regex)
+    return True
+
+
 def registry_from_config(
     config: "ToolConfig",
     post_register_hooks: "list[PostRegisterHook] | None" = None,
     *,
     strict_spec_regex: bool = False,
+    oauth_provider: Any | None = None,
 ) -> "ToolRegistry":
     """Create a new ToolRegistry and populate it from configuration.
 
@@ -615,6 +661,7 @@ def registry_from_config(
             is registered.
         strict_spec_regex: Abort on an invalid regex in an OpenAPI source
             instead of skipping that source.
+        oauth_provider: Passed to :func:`apply_config`.
 
     Returns:
         A new, fully configured ToolRegistry instance.
@@ -622,6 +669,8 @@ def registry_from_config(
     Raises:
         SpecPatternError: If *strict_spec_regex* is true and an OpenAPI
             source contains an invalid pattern.
+        toolregistry.config.ConfigError: If ``oauth.clients`` declares a
+            credential and no *oauth_provider* was supplied.
     """
     from toolregistry import ToolRegistry
 
@@ -631,7 +680,12 @@ def registry_from_config(
         for hook in post_register_hooks:
             registry.add_post_register_hook(hook)
 
-    apply_config(registry, config, strict_spec_regex=strict_spec_regex)
+    apply_config(
+        registry,
+        config,
+        strict_spec_regex=strict_spec_regex,
+        oauth_provider=oauth_provider,
+    )
     return registry
 
 
