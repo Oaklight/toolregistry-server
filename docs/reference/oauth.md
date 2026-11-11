@@ -366,6 +366,11 @@ flow, and completion compares the pending row's URI with the current list
 again, so a callback removed by a reload cannot finish a flow started before
 it.
 
+The comparison is textual, and the browser normalises the URL it sends: the
+host is lowercased and a default port is dropped. Write the entry in that
+normalised form (`https://panel.example.com/ext/gateway/oauth/callback`, not
+`https://Panel.Example.com:443/...`), or the callback is refused.
+
 Every OAuth request the server makes on its own behalf — discovery, JWKS,
 introspection and the upstream token POST — is screened by
 `toolregistry.netpolicy` before a connection opens. A loopback, link-local or
@@ -374,6 +379,17 @@ opts in: `--oauth-allow-private-hosts` or `oauth.allow_private_hosts` for the
 resource server, and a per-entry `allow_private_hosts: true` in
 `oauth.clients`. On the upstream side a refusal is transient and keeps the
 stored grant; its message names neither the URL nor a resolved address.
+
+Redirects are refused on every screened request, so a 3xx cannot re-aim the
+request at another host or replay an introspection credential there.
+
+The policy ends at the dial, as it does for MCP and OpenAPI sources: it
+resolves the name, judges every answer, and then hands the URL to the HTTP
+client, which resolves it again. A name whose DNS answer changes between the
+two lookups (DNS rebinding, core #399) can therefore still reach an address
+the first lookup did not return. Pinning the checked address to the
+connection needs a transport that accepts one; the OAuth clients use
+`urllib`, which does not.
 
 The gateway panel drives the authorization-code flow. A source with
 `reauth_required` shows an **Authorize** button, which calls

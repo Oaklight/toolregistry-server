@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **OAuth follow-ups from the #278 review**: verifier discovery, JWKS and introspection refuse redirects (a 3xx can no longer re-aim a screened request at another host); an existing lock file or `.locks` directory is tightened to `0600`/`0700` and a symlinked one is refused; a transient authorize failure answers 503; the OAuth callback always answers HTML, including on an unexpected error, and its back link is relative so it works under a mount prefix; a source removed or changed by a diff closes the MCP connection it opened; and the OAuth reference documents DNS rebinding and callback URL normalisation.
 - **One-shot `apply_config` no longer skips `oauth.clients`** (#275): `apply_config` and `registry_from_config` take an `oauth_provider`; without one, a config with `oauth.clients` entries raises `ConfigError` instead of connecting a protected source unauthenticated.
 - **Network I/O no longer holds the source manager's state lock** (#265), and startup resolves protected sources' tokens concurrently (#277), so status reads stay responsive and N protected sources cost about one IdP round trip.
 - **Processes sharing a token store no longer refresh the same token twice** (#266): token acquisition holds a per-source `flock` in `<token_store>.locks/`, so the waiter reuses the holder's token.
