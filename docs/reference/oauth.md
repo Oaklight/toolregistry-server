@@ -280,8 +280,9 @@ strings`。即使同时给出了对应选项，类型错误的标量值也会被
 `local-hub` 需要显式的 `audience` 或 `--server-url`，因为它的绑定地址永远不是公开
 audience。
 
-独立 `openapi` 命令上的 OAuth 需要带加密后端的 PyJWT：请安装
-`toolregistry-server[openapi]`。基础安装仍不含第三方包，`[gateway]`/`[mcp]` 已自带该依赖。
+令牌校验使用随包内置的 `zerodep` JWS 模块，因此任何 OAuth 路径都不需要第三方加密包。
+支持 RS256/RS384/RS512、PS256/PS384/PS512 与 ES256/ES384；默认白名单为 `RS256` 与
+`ES256`。独立 `openapi` 命令因此可在基础安装上使用。
 
 ### 回调白名单、出站筛查与面板授权流程
 

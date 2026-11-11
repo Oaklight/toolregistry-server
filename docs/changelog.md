@@ -81,6 +81,7 @@
 
 ### 变更
 
+- **OAuth 令牌校验不再依赖 PyJWT**：资源服务器校验器改用随包内置的 `zerodep` `jwt` 模块（0.2.0），因此 `openapi` 与 `gateway` 不再安装任何第三方加密包；`openapi` 现在是为兼容保留的空 extra，`pyjwt[crypto]` 移入 `dev` extra，测试用它签发 RS256 令牌。支持 RS256/384/512、PS256/384/512 与 ES256/384，默认白名单不变（`RS256`、`ES256`），`exp`/`iss` 仍为必需。一处行为变化：`iat` 位于未来的令牌现在会被视为"过早"而拒绝，容忍范围由配置的偏差决定（默认 60 秒）；PyJWT 只检查 `iat` 是否为数字。
 - **独立 OpenAPI 服务器变为零依赖，FastAPI 移至 `gateway` extra**（epic #101）：`toolregistry-server openapi` 现在只运行在内联的 `httpserver` 上，因此 `pip install toolregistry-server` 即可提供完整的 OpenAPI 契约，无需任何第三方包。FastAPI 组装移至 gateway 私有的 `toolregistry_server.gateway.openapi_asgi`，只由 gateway 的 ASGI 后端使用；`create_openapi_app` 与 ETag/请求体上限中间件不再能从 `adapters.openapi` 导入。`pyproject.toml` 新增 `gateway = [fastapi, uvicorn]`，`openapi = []` 作为空别名保留；`all` 改为拉取 `[gateway]` 与 `[mcp]`。**破坏性变更**：`openapi` 命令移除 `--backend` 与 `--reload`（两者都只属于 uvicorn；gateway 保留 `--backend`），`OpenAPIAdapter(..., backend=...)` 被移除，`OpenAPIAdapter.app` 现在返回内联的 `httpserver.App` 而不是 ASGI 应用。未安装该 extra 时启动 gateway 会抛出指明 `toolregistry-server[gateway]` 的 `ImportError`。见[OpenAPI API](guides/openapi.md)与[安装](get-started/installation.md)。
 
 - **需要密钥的部署在 MCP 上只接受客户端密钥**（#145、#223）：配置了 `--keys-db` 或在 `local-hub` 模式下，携带静态运维令牌的 MCP 请求会在整条路径上被拒绝（包括 `tools/list`），因为共享凭据无法标识客户端；`--allow-operator-token`（gateway、mcp 与 local-hub）可以显式放行。OpenAPI 与管理面板继续接受运维令牌。`local-hub` 现在要求 `--keys-db`，`hub-shim` 访问需要密钥的 hub 时必须提供密钥文件。

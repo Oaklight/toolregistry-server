@@ -31,14 +31,14 @@ pip install toolregistry-server[gateway]
 - `FastAPI` (>=0.119.0)
 - `Uvicorn` 及标准扩展 (>=0.24.0)
 
-独立 `openapi` 命令不需要该 extra。它自己的 extra 保持精简，现在包含带加密后端的
-`PyJWT`，因此无需安装 `[gateway]` 或 `[mcp]` 也能在该命令上使用 OAuth 资源服务器：
+独立 `openapi` 命令不需要该 extra。它的 OAuth 资源服务器使用随包内置的 `zerodep`
+JWS 模块校验令牌，因此除 `toolregistry` 本身外不需要任何第三方包：
 
 ```bash
 pip install toolregistry-server[openapi]
 ```
 
-不安装任何 extra 时，基础安装仍不包含第三方包（包括 PyJWT）。
+该 extra 仅为兼容保留，不再安装任何依赖。不安装任何 extra 时，基础安装仍不包含第三方包。
 
 ### MCP 支持
 
