@@ -330,9 +330,8 @@ class UrllibTransport:
     @staticmethod
     def _open(request: Any, timeout: float) -> Any:
         """Open *request* and decode JSON, mapping transport errors."""
-        opener = urllib.request.build_opener(_NoRedirect)
         try:
-            with opener.open(request, timeout=timeout) as response:
+            with _outbound.open_url(request, timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             payload: Any = None
@@ -355,14 +354,6 @@ class UrllibTransport:
             raise TransientOAuthError(
                 f"OAuth request failed: {type(exc).__name__}"
             ) from None
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuse every redirect, so no request is replayed to another origin."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        """Return ``None`` so urllib raises the 3xx as an ``HTTPError``."""
-        return None
 
 
 def redact(text: str, *secrets: str | None) -> str:

@@ -11,7 +11,10 @@ address (such as a cloud metadata service) unless the operator opts in with
 
 from __future__ import annotations
 
-__all__ = ["OutboundRefused", "screen_url"]
+import urllib.request
+from typing import Any
+
+__all__ = ["OutboundRefused", "open_url", "screen_url"]
 
 
 class OutboundRefused(ValueError):
@@ -36,3 +39,31 @@ def screen_url(url: str, *, allow_private_hosts: bool = False) -> None:
         validate_outbound_url(url, allow_private_hosts=allow_private_hosts)
     except UnsafeAddressError as exc:
         raise OutboundRefused(str(exc)) from None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so a screened request cannot be re-aimed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Return ``None`` so urllib raises the 3xx as an ``HTTPError``."""
+        return None
+
+
+def open_url(request: str | urllib.request.Request, timeout: float) -> Any:
+    """Open *request* without following redirects.
+
+    :func:`screen_url` checks only the URL it is given.  The default opener
+    would follow a 3xx to any host, including a private one, and would replay
+    an ``Authorization`` header there, so every screened request is opened
+    through this function instead.  A redirect surfaces as
+    :class:`urllib.error.HTTPError` with its 3xx status.
+
+    Args:
+        request: A URL or a prepared request.
+        timeout: Seconds before the request is abandoned.
+
+    Returns:
+        The response object, usable as a context manager.
+    """
+    opener = urllib.request.build_opener(_NoRedirect)
+    return opener.open(request, timeout=timeout)

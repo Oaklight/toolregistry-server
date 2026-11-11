@@ -24,6 +24,7 @@ from toolregistry_server.oauth import (
     OAuthResolver,
     OAuthSettings,
     OAuthTokenVerifier,
+    _outbound,
     build_resolver,
     settings_from_args,
 )
@@ -113,7 +114,7 @@ def _token(key, kid: str, **claims) -> str:
 @pytest.fixture()
 def jwks(monkeypatch) -> _JwksServer:
     server = _JwksServer(JWK1)
-    monkeypatch.setattr(urllib.request, "urlopen", server)
+    monkeypatch.setattr(_outbound, "open_url", server)
     return server
 
 
@@ -282,7 +283,7 @@ class TestJwksDiscovery:
             rfc8414={"jwks_uri": "https://idp.example.com/custom/jwks"},
             oidc=None,
         )
-        monkeypatch.setattr(urllib.request, "urlopen", server)
+        monkeypatch.setattr(_outbound, "open_url", server)
 
         assert _verifier(jwks_uri=None).verify(_token(KEY1, "key-1")) is not None
         assert custom in server.urls
@@ -294,7 +295,7 @@ class TestJwksDiscovery:
             rfc8414=None,
             oidc={"jwks_uri": "https://idp.example.com/custom/jwks"},
         )
-        monkeypatch.setattr(urllib.request, "urlopen", server)
+        monkeypatch.setattr(_outbound, "open_url", server)
 
         assert _verifier(jwks_uri=None).verify(_token(KEY1, "key-1")) is not None
         assert f"{ISSUER}/.well-known/oauth-authorization-server" in server.urls
@@ -302,7 +303,7 @@ class TestJwksDiscovery:
 
     def test_discovery_miss_falls_back_to_the_well_known_path(self, monkeypatch):
         server, _custom = self._server({"keys": [JWK1]}, rfc8414=None, oidc=None)
-        monkeypatch.setattr(urllib.request, "urlopen", server)
+        monkeypatch.setattr(_outbound, "open_url", server)
 
         assert _verifier(jwks_uri=None).verify(_token(KEY1, "key-1")) is not None
         assert f"{ISSUER}/.well-known/jwks.json" in server.urls
@@ -315,7 +316,7 @@ class TestJwksDiscovery:
         server = _RoutedServer(
             {rfc8414: {"jwks_uri": JWKS_URL}, JWKS_URL: {"keys": [JWK1]}}
         )
-        monkeypatch.setattr(urllib.request, "urlopen", server)
+        monkeypatch.setattr(_outbound, "open_url", server)
 
         verifier = OAuthTokenVerifier(OAuthSettings(issuer=issuer, audience=AUDIENCE))
 
@@ -325,7 +326,7 @@ class TestJwksDiscovery:
 
     def test_an_explicit_jwks_uri_skips_discovery(self, monkeypatch):
         server = _RoutedServer({JWKS_URL: {"keys": [JWK1]}})
-        monkeypatch.setattr(urllib.request, "urlopen", server)
+        monkeypatch.setattr(_outbound, "open_url", server)
 
         assert _verifier().verify(_token(KEY1, "key-1")) is not None
         assert server.urls == [JWKS_URL]
@@ -337,7 +338,7 @@ class TestJwksDiscovery:
         issuer = ISSUER + "/"
         fallback = f"{ISSUER}/.well-known/jwks.json"
         server = _RoutedServer({fallback: {"keys": [JWK1]}})
-        monkeypatch.setattr(urllib.request, "urlopen", server)
+        monkeypatch.setattr(_outbound, "open_url", server)
 
         verifier = OAuthTokenVerifier(OAuthSettings(issuer=issuer, audience=AUDIENCE))
 
@@ -599,7 +600,7 @@ def _introspection_settings(**overrides) -> OAuthSettings:
 class TestIntrospection:
     def test_a_locally_valid_token_is_confirmed_with_the_endpoint(self, monkeypatch):
         endpoint = _IntrospectionEndpoint(active=True)
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
         verifier = OAuthTokenVerifier(_introspection_settings())
         token = _token(KEY1, "key-1")
 
@@ -613,7 +614,7 @@ class TestIntrospection:
 
     def test_an_inactive_token_is_rejected(self, monkeypatch):
         endpoint = _IntrospectionEndpoint(active=False)
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
 
         assert (
             OAuthTokenVerifier(_introspection_settings()).verify(_token(KEY1, "key-1"))
@@ -622,7 +623,7 @@ class TestIntrospection:
 
     def test_the_answer_is_cached_for_the_ttl(self, monkeypatch):
         endpoint = _IntrospectionEndpoint(active=True)
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
         verifier = OAuthTokenVerifier(
             _introspection_settings(introspection_cache_ttl=60)
         )
@@ -634,7 +635,7 @@ class TestIntrospection:
 
     def test_a_zero_ttl_disables_the_cache(self, monkeypatch):
         endpoint = _IntrospectionEndpoint(active=True)
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
         verifier = OAuthTokenVerifier(
             _introspection_settings(introspection_cache_ttl=0)
         )
@@ -646,7 +647,7 @@ class TestIntrospection:
 
     def test_an_expired_cache_entry_is_refetched(self, monkeypatch):
         endpoint = _IntrospectionEndpoint(active=False)
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
         verifier = OAuthTokenVerifier(
             _introspection_settings(introspection_cache_ttl=60)
         )
@@ -663,7 +664,7 @@ class TestIntrospection:
     def test_an_endpoint_failure_fails_closed_by_default(self, monkeypatch):
         endpoint = _IntrospectionEndpoint()
         endpoint.failure = OSError("connection refused")
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
 
         assert (
             OAuthTokenVerifier(_introspection_settings()).verify(_token(KEY1, "key-1"))
@@ -673,7 +674,7 @@ class TestIntrospection:
     def test_a_failure_is_cached_for_the_ttl(self, monkeypatch):
         endpoint = _IntrospectionEndpoint()
         endpoint.failure = OSError("connection refused")
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
         verifier = OAuthTokenVerifier(
             _introspection_settings(
                 introspection_optional=True, introspection_cache_ttl=60
@@ -691,7 +692,7 @@ class TestIntrospection:
     def test_a_cached_failure_expires_like_any_other_answer(self, monkeypatch):
         endpoint = _IntrospectionEndpoint()
         endpoint.failure = OSError("connection refused")
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
         verifier = OAuthTokenVerifier(
             _introspection_settings(
                 introspection_optional=True, introspection_cache_ttl=60
@@ -713,7 +714,7 @@ class TestIntrospection:
     def test_optional_mode_falls_back_to_local_verification(self, monkeypatch):
         endpoint = _IntrospectionEndpoint()
         endpoint.failure = OSError("connection refused")
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
 
         verifier = OAuthTokenVerifier(
             _introspection_settings(introspection_optional=True)
@@ -724,7 +725,7 @@ class TestIntrospection:
     def test_a_failure_log_never_contains_the_token(self, monkeypatch):
         endpoint = _IntrospectionEndpoint()
         endpoint.failure = OSError("connection refused")
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
         logged: list[str] = []
 
         class _Recorder:
@@ -741,7 +742,7 @@ class TestIntrospection:
 
     def test_no_endpoint_means_no_introspection(self, monkeypatch):
         endpoint = _IntrospectionEndpoint()
-        monkeypatch.setattr(urllib.request, "urlopen", endpoint)
+        monkeypatch.setattr(_outbound, "open_url", endpoint)
 
         assert _verifier().verify(_token(KEY1, "key-1")) is not None
         assert endpoint.calls == []
