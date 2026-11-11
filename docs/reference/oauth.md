@@ -353,9 +353,10 @@ value: the `openapi`, `mcp` and `gateway` commands derive an audience when
 they can, and `local-hub` needs an explicit `audience` or `--server-url`
 because its bind address is never a public audience.
 
-On the standalone `openapi` command, OAuth needs PyJWT with a crypto backend:
-install `toolregistry-server[openapi]`. The base install stays free of
-third-party packages, and `[gateway]`/`[mcp]` already carry it.
+Token verification runs on the vendored `zerodep` JWS module, so no OAuth path
+needs a third-party cryptography package. RS256/RS384/RS512, PS256/PS384/PS512
+and ES256/ES384 are supported; the default allowlist is `RS256` and `ES256`.
+The standalone `openapi` command therefore works with the base install.
 
 ### Callback allowlist, outbound screening and the panel flow
 
