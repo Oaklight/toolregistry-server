@@ -26,6 +26,14 @@
       "upstream_hash": "627564aeda9dd450e788ab73a2afe263ad14fcf81f650e2d9115a41e359f1b55",
       "version": "0.4.4"
     },
+    "jwt": {
+      "files": {
+        "jwt.py": "068021668806f581c2ffd1d3f0d7e07b1e814fb415ab699f376688db41cc0d7a"
+      },
+      "requested": true,
+      "upstream_hash": "083c050aadc48c481b10bfa66c1b75ffc3d37e03c4ada7366a23f833c929b18f",
+      "version": "0.2.0"
+    },
     "structlog": {
       "files": {
         "structlog.py": "6340d09bd07480fc691a61a64b323ba8d736c2c8fa5596ae3b455ac3fffc9d93"
@@ -36,7 +44,7 @@
     }
   },
   "source": {
-    "ref": "48606bf6f1530fd8b19475b6c82e04086130fe3d",
+    "ref": "d2294c490ba78b2cb18af55e732d6d9adef86ba6",
     "repo": "Oaklight/zerodep"
   }
 }

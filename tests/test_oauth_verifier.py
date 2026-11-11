@@ -14,7 +14,7 @@ import urllib.request
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from toolregistry_server.adapters.mcp.server import _prm_scopes
 from toolregistry_server.cli import CLI, _oauth_settings
@@ -177,6 +177,53 @@ class TestSignatureAndClaims:
 
     def test_a_malformed_token_is_rejected(self, jwks):
         assert _verifier().verify("not-a-jwt") is None
+
+
+class TestVendoredAlgorithms:
+    """The vendored JWS verifier covers the algorithms the allowlist names."""
+
+    @staticmethod
+    def _ec_keypair(kid: str, curve, alg: str):
+        key = ec.generate_private_key(curve)
+        jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(key.public_key()))
+        jwk.update({"kid": kid, "alg": alg, "use": "sig"})
+        return key, jwk
+
+    @staticmethod
+    def _ec_token(key, kid: str, alg: str, **claims) -> str:
+        now = int(time.time())
+        payload = {
+            "iss": ISSUER,
+            "aud": AUDIENCE,
+            "sub": "user-1",
+            "iat": now,
+            "exp": now + 300,
+        }
+        payload.update(claims)
+        return jwt.encode(payload, key, algorithm=alg, headers={"kid": kid})
+
+    def test_an_es256_token_is_accepted(self, monkeypatch):
+        key, jwk = self._ec_keypair("ec-1", ec.SECP256R1(), "ES256")
+        monkeypatch.setattr(_outbound, "open_url", _JwksServer(jwk))
+        assert _verifier().verify(self._ec_token(key, "ec-1", "ES256")) is not None
+
+    def test_a_tampered_es256_token_is_rejected(self, monkeypatch):
+        key, jwk = self._ec_keypair("ec-1", ec.SECP256R1(), "ES256")
+        monkeypatch.setattr(_outbound, "open_url", _JwksServer(jwk))
+        token = self._ec_token(key, "ec-1", "ES256")
+        head, body, signature = token.split(".")
+        forged = f"{head}.{body}.{signature[:-4]}AAAA"
+        assert _verifier().verify(forged) is None
+
+    def test_a_token_outside_the_allowlist_is_rejected(self, jwks):
+        # The key is in the JWKS, but the settings allow only ES256.
+        settings = OAuthSettings(
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            jwks_uri=JWKS_URL,
+            algorithms=("ES256",),
+        )
+        assert OAuthTokenVerifier(settings).verify(_token(KEY1, "key-1")) is None
 
 
 class TestJwksCache:
