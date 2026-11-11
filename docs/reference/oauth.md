@@ -362,7 +362,12 @@ The module applies any public-key operation through `libcrypto` over `ctypes`
 when the library is available, and falls back to pure Python otherwise; the
 result is the same either way. `ZERODEP_JWT_BACKEND=python` forces the
 fallback, and `toolregistry_server._vendor.jwt.BACKEND` reports which one is
-active.
+active. Without `libcrypto` each verification costs more CPU; the JWKS cache
+bounds the fetch, not the per-token check.
+
+An RSA modulus shorter than 2048 bits is refused, so a key of that size in the
+JWKS is skipped and tokens signed with it are rejected. PyJWT accepted such a
+key.
 
 ### Callback allowlist, outbound screening and the panel flow
 
