@@ -289,9 +289,14 @@ audience。
 `toolregistry_server._vendor.jwt.BACKEND` 报告当前生效的实现。没有 `libcrypto` 时，每次
 校验的 CPU 开销更高；JWKS 缓存限制的是文档拉取，而不是逐个令牌的校验。
 
-短于 2048 位的 RSA 模数会被拒绝，因此 JWKS 中这种长度的密钥会被跳过，用其签名的令牌
-会被拒绝。PyJWT 2.13 对这类密钥只发出警告，除非设置 `enforce_minimum_key_length` 才会
-拒绝；更早的版本根本不检查，因此使用 1024 位密钥的身份提供方此前可用，现在无法使用。
+短于 2048 位的 RSA 模数会被拒绝：`key_from_jwk` 抛错，该密钥不会进入 JWKS 缓存，用它
+签名的令牌全部被拒绝。
+
+PyJWT 的行为不同。2.12 及更早版本完全不检查密钥长度；2.13 及以后在 `api_jws` 中把模数
+与 `_MIN_KEY_SIZE = 2048` 比较，但默认只记录 `InsecureKeyLengthWarning` 并继续校验，
+只有调用方传入 `options={"enforce_minimum_key_length": True}` 时才拒绝，而本校验器从未
+传过该选项。因此使用 1024 位密钥的身份提供方此前可以通过校验，现在不能。请检查签发方
+JWKS 中的密钥并轮换到至少 2048 位，或改用 ES256 密钥。
 
 ### 回调白名单、出站筛查与面板授权流程
 

@@ -43,7 +43,7 @@
 
 ### 变更
 
-- **OAuth 令牌校验不再依赖 PyJWT**：资源服务器校验器改用随包内置的 `zerodep` `jwt` 模块（0.2.0），因此 `openapi` 与 `gateway` 不再安装任何第三方加密包；`openapi` 现在是为兼容保留的空 extra，`pyjwt[crypto]` 移入 `dev` extra，测试用它签发 RS256 令牌。支持 RS256/384/512、PS256/384/512 与 ES256/384，默认白名单不变（`RS256`、`ES256`），`exp`/`iss` 仍为必需。一处行为变化：`iat` 位于未来的令牌现在会被视为"过早"而拒绝，容忍范围由配置的偏差决定（默认 60 秒）；PyJWT 只检查 `iat` 是否为数字。
+- **OAuth 令牌校验不再依赖 PyJWT**：资源服务器校验器改用随包内置的 `zerodep` `jwt` 模块（0.2.0），因此 `openapi` 与 `gateway` 不再安装任何第三方加密包；`openapi` 现在是为兼容保留的空 extra，`pyjwt[crypto]` 移入 `dev` extra，测试用它签发 RS256 令牌。支持 RS256/384/512、PS256/384/512 与 ES256/384，默认白名单不变（`RS256`、`ES256`），`exp`/`iss` 仍为必需。两处边界行为发生变化。`iat` 位于未来的令牌现在会被视为"过早"而拒绝，容忍范围由配置的偏差决定（默认 60 秒）；PyJWT 只检查 `iat` 是否为数字。短于 2048 位的 RSA 签名密钥现在会被拒绝：该 JWK 会从 JWKS 缓存中丢弃，因此用 1024 位身份提供方密钥签发的令牌全部无法校验。PyJWT 2.13 对此只发出 `InsecureKeyLengthWarning`，除非传入`options={"enforce_minimum_key_length": True}` 才会拒绝；PyJWT 2.12 及更早版本完全不检查密钥长度。
 
 ### 修复
 
