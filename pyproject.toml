@@ -41,21 +41,17 @@ keywords = [
 dependencies = ["toolregistry>=0.20.1,<1.0.0"]
 
 [project.optional-dependencies]
-# The standalone ``openapi`` command runs on the vendored httpserver, so the
-# extra stays small.  OAuth verification needs PyJWT and a crypto backend; the
-# base install remains dependency-free, and a deployment that enables OAuth
-# on this command installs the extra.
-openapi = ["pyjwt[crypto]>=2.10"]
+# The standalone ``openapi`` command runs on the vendored httpserver, and its
+# OAuth token verification runs on the vendored ``jwt`` module, so the extra
+# needs no third-party package at all.  It is kept so an install that names it
+# keeps working.
+openapi = []
 # FastAPI and uvicorn are needed only by the gateway's ASGI backend.  The
 # httpserver gateway backend and the whole standalone OpenAPI server work
 # without them.
 gateway = [
     "fastapi>=0.119.0",
     "uvicorn[standard]>=0.24.0",
-    # OAuth resource-server verification (RS256/ES256) needs PyJWT and a
-    # crypto backend.  mcp already brings PyJWT transitively; naming it here
-    # keeps a gateway-only install able to verify tokens.
-    "pyjwt[crypto]>=2.10",
 ]
 # Floor raised from 1.17.0: mcp < 1.22 imports a pydantic internal that
 # pydantic 2.12+ removed, so those versions fail at import with a current
@@ -68,6 +64,9 @@ mcp = ["mcp>=1.22.0,<3"]
 regex = ["regex>=2024.4.16"]
 all = ["toolregistry-server[gateway]", "toolregistry-server[mcp]"]
 dev = [
+    # The tests mint RS256 tokens with PyJWT; the server verifies them with
+    # the vendored ``jwt`` module, so PyJWT is a test-only dependency.
+    "pyjwt[crypto]>=2.10",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "httpx>=0.24.0",

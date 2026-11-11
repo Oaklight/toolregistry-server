@@ -40,6 +40,7 @@ from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlencode
 
+from .._vendor import jwt as _jwt
 from .._vendor.structlog import get_logger
 from ..keystore import Principal, PrincipalResolver, ScopeSpec
 from . import _outbound
@@ -47,7 +48,7 @@ from . import _outbound
 logger = get_logger()
 
 #: Signature algorithms the verifier accepts.  Symmetric algorithms are
-#: deliberately absent, and ``none`` is rejected by PyJWT.
+#: deliberately absent, and ``none`` is rejected by the vendored verifier.
 DEFAULT_ALGORITHMS: tuple[str, ...] = ("RS256", "ES256")
 
 #: Default clock leeway for ``exp`` and ``nbf``, in seconds.
@@ -449,8 +450,6 @@ class _JwksCache:
 
     def _fetch(self) -> None:
         """Fetch the JWKS document and replace the cached keys."""
-        import jwt
-
         self._last_attempt = time.monotonic()
         document = _load_json(
             self._url, self._timeout, allow_private_hosts=self._allow_private_hosts
@@ -461,9 +460,9 @@ class _JwksCache:
             if not kid:
                 continue
             try:
-                keys[str(kid)] = jwt.PyJWK(jwk).key
+                keys[str(kid)] = _jwt.key_from_jwk(jwk)
             except Exception:
-                # A key this PyJWT cannot use must not poison the cache.
+                # A key the verifier cannot use must not poison the cache.
                 continue
         self._keys = keys
         self._expires = time.monotonic() + self._ttl
@@ -514,18 +513,11 @@ class OAuthTokenVerifier:
     Args:
         settings: The verification settings.
 
-    Raises:
-        ImportError: If PyJWT is not installed.
+    Token verification uses the vendored ``zerodep`` JWS verifier, so the
+    OAuth path needs no third-party cryptography package.
     """
 
     def __init__(self, settings: OAuthSettings) -> None:
-        try:
-            import jwt  # noqa: F401
-        except ImportError as exc:  # pragma: no cover - dependency error
-            raise ImportError(
-                "OAuth token verification requires PyJWT. Install with: "
-                "pip install 'toolregistry-server[gateway]'"
-            ) from exc
         self._settings = settings
         self._cache: _JwksCache | None = None
         self._resolved_jwks_uri: str | None = None
@@ -587,11 +579,9 @@ class OAuthTokenVerifier:
 
     def verify(self, token: str) -> dict[str, Any] | None:
         """Return the verified claims, or ``None`` when the token is rejected."""
-        import jwt
-
         try:
-            header = jwt.get_unverified_header(token)
-        except jwt.PyJWTError:
+            header = _jwt.get_unverified_header(token)
+        except _jwt.JWTError:
             return None
         if header.get("alg") not in self._settings.algorithms:
             return None
@@ -600,15 +590,18 @@ class OAuthTokenVerifier:
         if key is None:
             return None
         try:
-            claims = jwt.decode(
+            # No ``audience`` argument: ``aud`` is checked by
+            # :meth:`_audience_matches`, which also accepts the RFC 8707
+            # ``resource`` claim.  ``require`` keeps the presence checks.
+            claims = _jwt.decode(
                 token,
                 key=key,
                 algorithms=list(self._settings.algorithms),
                 issuer=self._settings.issuer,
                 leeway=timedelta(seconds=self._settings.leeway),
-                options={"verify_aud": False, "require": ["exp", "iss"]},
+                require=("exp", "iss"),
             )
-        except jwt.PyJWTError:
+        except _jwt.JWTError:
             return None
         if not self._audience_matches(claims):
             return None
