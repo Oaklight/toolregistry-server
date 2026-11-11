@@ -1270,3 +1270,90 @@ def test_status_reads_do_not_wait_for_a_connecting_source(monkeypatch, tmp_path)
         release.set()
         adder.join(timeout=10)
     assert len(manager.list()) == 2
+
+
+class _Scripted(FakeProvider):
+    """Provider whose next headers_for outcome a test sets explicitly."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.outcome: object = {"Authorization": "Bearer AT"}
+
+    def headers_for(self, source):
+        self.seen.append(source)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+def _live_manager(monkeypatch, tmp_path):
+    calls = _patch_registration(monkeypatch)
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = _Scripted()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        write_config=False,
+        oauth_provider=provider,
+    )
+    (entry,) = manager.apply_initial()
+    assert entry.status is SourceStatus.APPLIED
+    return manager, provider, calls
+
+
+def _no_probe(source, headers):
+    return None
+
+
+def test_revalidation_fails_a_source_whose_grant_was_revoked(monkeypatch, tmp_path):
+    """#267: a definitive rejection turns a live APPLIED source FAILED."""
+    manager, provider, _ = _live_manager(monkeypatch, tmp_path)
+    provider.outcome = ReauthorizationRequired("invalid_grant")
+    (entry,) = manager.revalidate_oauth(probe=_no_probe)
+    assert entry.status is SourceStatus.FAILED
+    assert entry.reauth_required is True
+
+
+def test_revalidation_reconnects_after_a_token_rotation(monkeypatch, tmp_path):
+    manager, provider, calls = _live_manager(monkeypatch, tmp_path)
+    provider.outcome = {"Authorization": "Bearer NEW"}
+    probed: list[object] = []
+    (entry,) = manager.revalidate_oauth(probe=lambda s, h: probed.append(h))
+    assert entry.status is SourceStatus.APPLIED
+    assert calls[-1] == {"Authorization": "Bearer NEW"}
+    # A reconnect already proves the new header; no separate probe runs.
+    assert probed == []
+
+
+def test_revalidation_probe_rejection_requires_reauth(monkeypatch, tmp_path):
+    manager, _, _ = _live_manager(monkeypatch, tmp_path)
+
+    def rejected(source, headers):
+        raise _status_error(401)
+
+    (entry,) = manager.revalidate_oauth(probe=rejected)
+    assert entry.status is SourceStatus.FAILED
+    assert entry.reauth_required is True
+    assert "401" in (entry.error or "")
+
+
+def test_revalidation_keeps_a_source_on_a_transient_failure(monkeypatch, tmp_path):
+    manager, provider, _ = _live_manager(monkeypatch, tmp_path)
+    provider.outcome = TransientOAuthError("idp down")
+    (entry,) = manager.revalidate_oauth(probe=_no_probe)
+    assert entry.status is SourceStatus.APPLIED
+    assert entry.reauth_required is False
+
+
+def test_revalidation_without_oauth_does_nothing(monkeypatch, tmp_path):
+    _patch_registration(monkeypatch)
+    path = _write(tmp_path, MCP_SOURCE)
+    manager = SourceManager(ToolRegistry(), _config(path), config_path=path)
+    manager.apply_initial()
+
+    def boom(source, headers):  # pragma: no cover - must not run
+        raise AssertionError("probed a source without OAuth")
+
+    (entry,) = manager.revalidate_oauth(probe=boom)
+    assert entry.status is SourceStatus.APPLIED

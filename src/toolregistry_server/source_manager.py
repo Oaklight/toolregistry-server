@@ -508,6 +508,37 @@ def _headers_or_error(provider: Any, source: ToolSource) -> Any:
         return exc
 
 
+#: Seconds between background OAuth credential checks (#267).
+DEFAULT_OAUTH_REVALIDATE_INTERVAL = 300.0
+
+#: Seconds one credential probe may take before it is abandoned.
+OAUTH_PROBE_TIMEOUT = 30.0
+
+
+def _probe_mcp_credential(source: MCPSource, headers: Mapping[str, str]) -> None:
+    """Open a throwaway MCP session with *headers* and list its tools.
+
+    Nothing is registered.  An HTTP 401/403 propagates as the SDK raised it,
+    so :func:`_auth_rejection_status` classifies it like a connect failure.
+    """
+    import asyncio
+
+    from toolregistry.integrations.mcp.client import MCPClient
+
+    merged = {**dict(source.headers or {}), **dict(headers)}
+
+    async def _run() -> None:
+        client = MCPClient(
+            source.url or "",
+            headers=merged,
+            allow_private_hosts=source.allow_private_hosts,
+        )
+        async with client:
+            await client.list_tools()
+
+    asyncio.run(asyncio.wait_for(_run(), OAUTH_PROBE_TIMEOUT))
+
+
 def _in_scope(source: ToolSource, config: ToolConfig) -> bool:
     """Whether *source* should be registered under *config*."""
     return bool(source.enabled) and _should_load_source(source, config)
@@ -635,6 +666,10 @@ class SourceManager:
         #: state core tracks survive.
         self._openapi_integrations: dict[SourceKey, Any] = {}
         self._last_written_hash: str | None = None
+        #: The OAuth header each applied MCP source connected with, so a
+        #: revalidation pass can tell a rotated token from an unchanged one.
+        #: Kept in memory only; never part of a status payload.
+        self._oauth_headers: dict[SourceKey, dict[str, str]] = {}
         #: Error from the most recent watcher reload, cleared on success.
         self.last_reload_error: str | None = None
 
@@ -1219,6 +1254,143 @@ class SourceManager:
                 self.last_reload_error = None
         return True
 
+    def revalidate_oauth(
+        self,
+        probe: Callable[[MCPSource, Mapping[str, str]], None] | None = None,
+    ) -> tuple[SourceEntry, ...]:
+        """Check the credential of every applied OAuth-protected MCP source.
+
+        A live connection keeps the header it connected with, so a token
+        revoked at the authorization server, or one that expired while the
+        connection was idle, would otherwise leave the source ``APPLIED``.
+        For each such source the header is resolved again:
+
+        * a definitive token-endpoint rejection unregisters the source's
+          tools and marks it ``FAILED`` with ``reauth_required``;
+        * a transient failure (IdP unreachable, store busy) changes nothing
+          and is retried on the next pass;
+        * a rotated token reconnects the source with the new header;
+        * an unchanged token is probed with a throwaway session, and an HTTP
+          401/403 is handled like a rejection on connect.
+
+        The pass runs under the apply lock, so it never interleaves with a
+        mutation or a reload, and status reads stay unblocked.
+
+        Args:
+            probe: Credential check for an unchanged token; defaults to a
+                short-lived MCP session that lists tools.
+
+        Returns:
+            The entries after the pass, in declaration order.
+        """
+        check = probe or _probe_mcp_credential
+        with self._apply_lock:
+            provider = self.oauth_provider
+            if provider is not None:
+                with self._lock:
+                    candidates = [
+                        (key, entry)
+                        for key, entry in self._entries.items()
+                        if entry.status is SourceStatus.APPLIED
+                        and isinstance(entry.source, MCPSource)
+                        and key in self._oauth_headers
+                    ]
+                for key, entry in candidates:
+                    self._revalidate_one(provider, key, entry, check)
+        return self.list()
+
+    def _revalidate_one(
+        self,
+        provider: Any,
+        key: SourceKey,
+        entry: SourceEntry,
+        probe: Callable[[MCPSource, Mapping[str, str]], None],
+    ) -> None:
+        """Revalidate one source; see :meth:`revalidate_oauth`."""
+        source = entry.source
+        assert isinstance(source, MCPSource)
+        outcome = _headers_or_error(provider, source)
+        if isinstance(outcome, Exception):
+            if getattr(outcome, "reauth_required", False):
+                self._fail_live_source(key, entry, _safe_error(outcome))
+            else:
+                logger.info(
+                    f"OAuth revalidation of {_describe_source(source)} deferred: "
+                    f"{_safe_error(outcome)}"
+                )
+            return
+        if outcome is None:
+            # The declaration left; the next diff reconnects without it.
+            return
+        if dict(outcome) != self._oauth_headers.get(key):
+            self._reconnect(key, entry)
+            return
+        try:
+            probe(source, outcome)
+        except Exception as exc:  # noqa: BLE001 - one source must not abort
+            status = _auth_rejection_status(exc)
+            if status is None:
+                logger.info(
+                    f"OAuth probe of {_describe_source(source)} inconclusive: "
+                    f"{_safe_error(exc)}"
+                )
+                return
+            self._mark_oauth_rejection(source)
+            self._fail_live_source(
+                key,
+                entry,
+                f"HTTP {status} from the MCP server; the OAuth token was rejected",
+            )
+
+    def _fail_live_source(
+        self, key: SourceKey, entry: SourceEntry, message: str
+    ) -> None:
+        """Unregister a live source whose credential is dead.
+
+        Its tools cannot be called any more, so leaving them registered would
+        keep a false green.  A ``FAILED`` entry is retried by the next diff
+        or retry, exactly like a failed connect.
+        """
+        logger.warning(
+            f"OAuth credential of {_describe_source(entry.source)} is no longer "
+            f"accepted (re-authorization required): {message}"
+        )
+        counts = {"registered": 0, "unregistered": 0, "enabled": 0, "disabled": 0}
+        scope = (
+            self.route_table.batch_changes()
+            if self.route_table is not None
+            else nullcontext()
+        )
+        with scope:
+            _remove_names(self.registry, entry.names, counts)
+            self._openapi_integrations.pop(key, None)
+            self._oauth_headers.pop(key, None)
+            with self._lock:
+                self._entries[key] = SourceEntry(
+                    key,
+                    entry.source,
+                    frozenset(),
+                    SourceStatus.FAILED,
+                    message,
+                    reauth_required=True,
+                )
+
+    def _reconnect(self, key: SourceKey, entry: SourceEntry) -> None:
+        """Re-register a source so its connection carries the current header."""
+        counts = {"registered": 0, "unregistered": 0, "enabled": 0, "disabled": 0}
+        scope = (
+            self.route_table.batch_changes()
+            if self.route_table is not None
+            else nullcontext()
+        )
+        with scope:
+            _remove_names(self.registry, entry.names, counts)
+            fresh = self._apply_source(key, entry.source, self.config)
+            self._after_registration(self.config, set(fresh.names))
+            with self._lock:
+                self._entries[key] = fresh
+        self._sync_parameter_overrides(self.config, self.config, set(fresh.names))
+
     def _reload_failed(self, exc: BaseException) -> bool:
         """Record and log a skipped reload.
 
@@ -1435,6 +1607,9 @@ class SourceManager:
         if oauth_headers is not None:
             # Only a successful connect proves the credential works end to end.
             self._mark_oauth_accepted(source)
+            self._oauth_headers[key] = dict(oauth_headers)
+        else:
+            self._oauth_headers.pop(key, None)
         return SourceEntry(key, source, names, SourceStatus.APPLIED)
 
     def _oauth_failure(
@@ -1896,6 +2071,45 @@ class SourceManager:
             if index == position:
                 return key
         raise IndexError(position)
+
+
+class OAuthRevalidator(threading.Thread):
+    """Daemon thread that calls :meth:`SourceManager.revalidate_oauth`.
+
+    It bounds how long a revoked upstream token stays ``APPLIED`` to one
+    *interval* while the process runs (#267).  A pass with no OAuth-protected
+    source does no network I/O.
+
+    Args:
+        manager: The source manager to drive.
+        interval: Seconds between passes.
+    """
+
+    def __init__(
+        self,
+        manager: SourceManager,
+        *,
+        interval: float = DEFAULT_OAUTH_REVALIDATE_INTERVAL,
+    ) -> None:
+        super().__init__(name="toolregistry-server-oauth-revalidate", daemon=True)
+        self.manager = manager
+        self.interval = interval
+        self._stop_event = threading.Event()
+
+    def run(self) -> None:
+        while not self._stop_event.wait(self.interval):
+            try:
+                self.manager.revalidate_oauth()
+            except Exception as exc:  # noqa: BLE001 - a bug must not kill the thread
+                logger.warning(
+                    f"OAuth revalidation failed; will retry: {_safe_error(exc)}"
+                )
+
+    def stop(self, timeout: float | None = None) -> None:
+        """Ask the thread to exit, optionally waiting *timeout* seconds."""
+        self._stop_event.set()
+        if timeout is not None and self.is_alive():
+            self.join(timeout)
 
 
 class ConfigWatcher(threading.Thread):

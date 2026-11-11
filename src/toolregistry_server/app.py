@@ -101,6 +101,9 @@ class App:
         self.oauth_client_provider = None
         #: The running config watcher, when ``config_reload`` is enabled.
         self.config_watcher = None
+        #: The background upstream-credential check (#267), once a source
+        #: manager is attached.
+        self.oauth_revalidator = None
         #: The gateway adapter created by :meth:`create_gateway`, if any.
         self._gateway: GatewayAdapter | None = None
 
@@ -246,8 +249,35 @@ class App:
         # One source diff produces one route rebuild instead of one per
         # registry event.
         manager.attach_route_table(route_table)
+        self._start_oauth_revalidator(manager)
         if kwargs.get("config_reload"):
             self._start_config_watcher(manager)
+
+    def _start_oauth_revalidator(self, manager: SourceManager) -> None:
+        """Start the periodic upstream OAuth credential check.
+
+        It runs whatever the config says today, because a reload can add an
+        ``oauth.clients`` entry later; a pass without protected sources does
+        no network I/O.
+        """
+        import atexit
+
+        from .source_manager import OAuthRevalidator
+
+        if self.oauth_revalidator is not None:
+            return
+        revalidator = OAuthRevalidator(manager)
+        revalidator.start()
+        self.oauth_revalidator = revalidator
+        atexit.register(self.stop_oauth_revalidator)
+
+    def stop_oauth_revalidator(self, timeout: float | None = 2.0) -> None:
+        """Stop the upstream OAuth credential check, if it is running."""
+        revalidator = self.oauth_revalidator
+        if revalidator is None:
+            return
+        revalidator.stop(timeout=timeout)
+        self.oauth_revalidator = None
 
     def _start_config_watcher(self, manager: SourceManager) -> None:
         """Start the config watcher, or explain why it cannot run."""
