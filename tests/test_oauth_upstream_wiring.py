@@ -1447,22 +1447,20 @@ def test_a_transient_reconnect_failure_is_retried(monkeypatch, tmp_path):
 
 def test_a_rotation_keeps_a_runtime_override(monkeypatch, tmp_path):
     """The operator's runtime override survives a token rotation."""
-    from toolregistry.tool import Tool
-
     manager, provider, _ = _registering_manager(monkeypatch, tmp_path, [])
+
     (name,) = manager.list()[0].names
-    replacement = Tool(
-        name=name,
-        description="operator replacement",
-        parameters=manager.registry._tools[name].parameters,
-        function=lambda: "overridden",
-    )
+
+    def replacement() -> str:
+        """Operator replacement."""
+        return "overridden"
+
     manager.registry.override(name, replacement)
     provider.outcome = {"Authorization": "Bearer NEW"}
     (entry,) = manager.revalidate_oauth(probe=_no_probe)
     assert entry.status is SourceStatus.APPLIED
     assert name in entry.names
-    assert manager.registry._tools[name].description == "operator replacement"
+    assert manager.registry._tools[name].description == "Operator replacement."
     assert name in manager.registry.list_overrides()
 
 
