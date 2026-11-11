@@ -1293,6 +1293,9 @@ class SourceManager:
         with self._apply_lock:
             provider = self.oauth_provider
             if provider is not None:
+                # Retry what an earlier pass queued before this pass can
+                # queue anything, so a failed reconnect waits one interval.
+                self._retry_pending_reconnects()
                 with self._lock:
                     candidates = [
                         (key, entry)
@@ -1303,7 +1306,6 @@ class SourceManager:
                     ]
                 for key, entry in candidates:
                     self._revalidate_one(provider, key, entry, check)
-                self._retry_pending_reconnects()
         return self.list()
 
     def _retry_pending_reconnects(self) -> None:
