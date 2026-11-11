@@ -1651,6 +1651,11 @@ def test_two_providers_sharing_a_store_post_once(tmp_path, clock):
             target=lambda: results.__setitem__("second", second.headers_for(_source()))
         )
         waiter.start()
+        # The waiter must be blocked on the refresh lock, not merely idle:
+        # without the lock it would have posted (and emptied its queue).
+        waiter.join(timeout=1)
+        assert waiter.is_alive() is True
+        assert second_transport.posts == []
         proceed.set()
         holder.join(timeout=10)
         waiter.join(timeout=10)

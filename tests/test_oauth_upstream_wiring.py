@@ -1443,3 +1443,91 @@ def test_a_transient_reconnect_failure_is_retried(monkeypatch, tmp_path):
     # The next pass retries it instead of skipping a FAILED entry forever.
     (entry,) = manager.revalidate_oauth(probe=_no_probe)
     assert entry.status is SourceStatus.APPLIED
+
+
+def test_a_rotation_keeps_a_runtime_override(monkeypatch, tmp_path):
+    """The operator's runtime override survives a token rotation."""
+    from toolregistry.tool import Tool
+
+    manager, provider, _ = _registering_manager(monkeypatch, tmp_path, [])
+    (name,) = manager.list()[0].names
+    replacement = Tool(
+        name=name,
+        description="operator replacement",
+        parameters=manager.registry._tools[name].parameters,
+        function=lambda: "overridden",
+    )
+    manager.registry.override(name, replacement)
+    provider.outcome = {"Authorization": "Bearer NEW"}
+    (entry,) = manager.revalidate_oauth(probe=_no_probe)
+    assert entry.status is SourceStatus.APPLIED
+    assert name in entry.names
+    assert manager.registry._tools[name].description == "operator replacement"
+    assert name in manager.registry.list_overrides()
+
+
+def test_removing_a_source_closes_its_connection(monkeypatch, tmp_path):
+    """A diff that drops a declaration closes the integration it opened."""
+    manager, _, registered = _registering_manager(monkeypatch, tmp_path, [])
+    (key,) = manager._mcp_integrations
+    manager.remove(key)
+    assert registered[0].closed is True
+    assert key not in manager._mcp_integrations
+    assert registered[0] not in manager.registry._mcp_integrations
+
+
+def test_the_revalidator_thread_runs_a_pass_then_stops(monkeypatch, tmp_path):
+    """The background thread drives revalidate_oauth and exits on stop."""
+    import threading
+
+    from toolregistry_server.source_manager import OAuthRevalidator
+
+    manager, _, _ = _registering_manager(monkeypatch, tmp_path, [])
+    ran = threading.Event()
+
+    def pass_once(probe=None):
+        ran.set()
+        return manager.list()
+
+    monkeypatch.setattr(manager, "revalidate_oauth", pass_once)
+    thread = OAuthRevalidator(manager, interval=0.01)
+    thread.start()
+    try:
+        assert ran.wait(timeout=5)
+    finally:
+        thread.stop(timeout=5)
+    assert thread.is_alive() is False
+
+
+def test_the_default_probe_presents_the_resolved_header(monkeypatch):
+    """The probe opens a throwaway session carrying the token and static headers."""
+    from toolregistry.integrations.mcp import client as client_module
+
+    from toolregistry_server.source_manager import _probe_mcp_credential
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, target, headers=None, allow_private_hosts=False):
+            seen["target"] = target
+            seen["headers"] = headers
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def list_tools(self):
+            return []
+
+    monkeypatch.setattr(client_module, "MCPClient", FakeClient)
+    source = MCPSource(
+        transport="streamable-http",
+        url="https://mcp.example.com/mcp",
+        namespace="example",
+        headers={"X-Static": "1"},
+    )
+    _probe_mcp_credential(source, {"Authorization": "Bearer AT"})
+    assert seen["target"] == "https://mcp.example.com/mcp"
+    assert seen["headers"] == {"X-Static": "1", "Authorization": "Bearer AT"}

@@ -1352,3 +1352,39 @@ class TestUpstreamAuthorization:
         assert status == 400
         assert b"<script>" not in body
         assert b"&lt;script&gt;" in body
+
+    def test_authorize_reports_a_transient_failure_as_unavailable(self, oauth_panel):
+        info, wrapped = oauth_panel
+
+        def unavailable(source, redirect_uri):
+            from toolregistry_server.oauth.upstream.provider import (
+                TransientOAuthError,
+            )
+
+            raise TransientOAuthError("identity provider unreachable")
+
+        wrapped.oauth_provider.start_authorization = unavailable
+        status, body = _request(
+            f"{info.url}/ext/gateway/sources/s1/authorize",
+            "POST",
+            {"redirect_uri": "https://panel.example.test/cb"},
+        )
+        assert status == 503
+        assert "unreachable" in _json(body)["message"]
+
+    def test_callback_answers_html_even_on_an_unexpected_error(self, oauth_panel):
+        info, wrapped = oauth_panel
+
+        def broken(code, state):
+            raise RuntimeError("boom")
+
+        wrapped.oauth_provider.complete_authorization = broken
+        status, body = _request(f"{info.url}/ext/gateway/oauth/callback?code=C&state=S")
+        assert status == 500
+        assert b"<html>" in body
+        assert b"boom" not in body
+
+    def test_the_callback_back_link_is_relative(self, oauth_panel):
+        info, _ = oauth_panel
+        _, body = _request(f"{info.url}/ext/gateway/oauth/callback?code=C&state=S")
+        assert b"href='../../../'" in body

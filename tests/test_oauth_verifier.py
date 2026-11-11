@@ -1505,3 +1505,36 @@ class TestOAuthSectionSurface:
         assert settings is not None
         assert settings.issuer == ISSUER
         assert settings.jwks_uri == "https://flag/keys"
+
+
+class TestOutboundOptIn:
+    """The screening opt-in must reach OAuthSettings (#264)."""
+
+    def _settings(self, tmp_path, body: str, **namespace):
+        from toolregistry_server.cli import _oauth_settings
+
+        path = tmp_path / "tools.yaml"
+        path.write_text(f"oauth:\n{body}", encoding="utf-8")
+        return _oauth_settings(
+            argparse.Namespace(**namespace),
+            default_audience=AUDIENCE,
+            config_path=str(path),
+        )
+
+    def test_the_flag_reaches_the_settings(self, tmp_path):
+        settings = self._settings(
+            tmp_path,
+            f"  issuer: {ISSUER}\n",
+            oauth_allow_private_hosts=True,
+        )
+        assert settings.allow_private_hosts is True
+
+    def test_the_file_key_reaches_the_settings(self, tmp_path):
+        settings = self._settings(
+            tmp_path, f"  issuer: {ISSUER}\n  allow_private_hosts: true\n"
+        )
+        assert settings.allow_private_hosts is True
+
+    def test_off_by_default(self, tmp_path):
+        settings = self._settings(tmp_path, f"  issuer: {ISSUER}\n")
+        assert settings.allow_private_hosts is False
