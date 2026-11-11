@@ -1112,3 +1112,64 @@ def test_excluding_a_source_clears_its_reauth_flag(tmp_path, monkeypatch):
     assert updated.status is SourceStatus.EXCLUDED
     assert updated.reauth_required is False
     assert added == set()
+
+
+def test_apply_config_refuses_oauth_clients_without_a_provider(tmp_path):
+    """A one-shot apply must not connect a protected source unauthenticated."""
+    from toolregistry.config import ConfigError
+
+    from toolregistry_server.registry_builder import apply_config
+
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    with pytest.raises(ConfigError, match="oauth_provider"):
+        apply_config(ToolRegistry(), _config(path))
+
+
+def test_apply_config_passes_the_provider_header(monkeypatch, tmp_path):
+    """With a provider, the one-shot path presents the resolved header."""
+    from toolregistry_server import registry_builder
+    from toolregistry_server.registry_builder import apply_config
+
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    calls: list[object] = []
+
+    def fake_register(registry, source, *, oauth_headers=None):
+        calls.append(oauth_headers)
+
+    monkeypatch.setattr(registry_builder, "register_mcp_source", fake_register)
+    provider = FakeProvider()
+    apply_config(ToolRegistry(), _config(path), oauth_provider=provider)
+    assert calls == [{"Authorization": "Bearer AT"}]
+
+
+def test_apply_config_skips_a_source_whose_token_fails(monkeypatch, tmp_path):
+    """A provider failure skips the source instead of connecting without auth."""
+    from toolregistry_server import registry_builder
+    from toolregistry_server.registry_builder import apply_config
+
+    path = _write(tmp_path, MCP_SOURCE, OAUTH_SECTION)
+    calls: list[object] = []
+
+    def fake_register(registry, source, *, oauth_headers=None):
+        calls.append(oauth_headers)
+
+    monkeypatch.setattr(registry_builder, "register_mcp_source", fake_register)
+    provider = FakeProvider(error=OAuthClientError("offline"))
+    apply_config(ToolRegistry(), _config(path), oauth_provider=provider)
+    assert calls == []
+
+
+def test_apply_config_without_oauth_needs_no_provider(monkeypatch, tmp_path):
+    """A config with no oauth.clients keeps the old one-shot behaviour."""
+    from toolregistry_server import registry_builder
+    from toolregistry_server.registry_builder import apply_config
+
+    path = _write(tmp_path, MCP_SOURCE)
+    calls: list[object] = []
+
+    def fake_register(registry, source, *, oauth_headers=None):
+        calls.append(oauth_headers)
+
+    monkeypatch.setattr(registry_builder, "register_mcp_source", fake_register)
+    apply_config(ToolRegistry(), _config(path))
+    assert calls == [None]
