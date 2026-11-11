@@ -1279,7 +1279,10 @@ class SourceManager:
         * an unchanged token is probed with a throwaway session, and an HTTP
           401/403 is handled like a rejection on connect.
 
-        The pass runs under the apply lock, so it never interleaves with a
+        The probes run one after another under the apply lock, so a pass
+        with several slow sources delays a concurrent mutation or reload by
+        up to one probe timeout per source.  The pass runs under the apply
+        lock, so it never interleaves with a
         mutation or a reload, and status reads stay unblocked.
 
         Args:
@@ -1459,6 +1462,8 @@ class SourceManager:
         appended = list(getattr(self.registry, "_mcp_integrations", ()))[before:]
         if appended:
             self._mcp_integrations[key] = appended[-1]
+        else:
+            self._mcp_integrations.pop(key, None)
 
     def _close_mcp_integration(self, key: SourceKey) -> None:
         """Close and forget the MCP integration *key* registered through."""
@@ -1793,6 +1798,7 @@ class SourceManager:
             for key in set(old_sources) - set(new_sources):
                 self._openapi_integrations.pop(key, None)
                 self._oauth_headers.pop(key, None)
+                self._close_mcp_integration(key)
                 self._reconnect_pending.discard(key)
                 entry = self._entries.get(key)
                 if entry is not None:
@@ -1900,6 +1906,7 @@ class SourceManager:
         # register the new one if it is in scope.
         if entry is not None:
             _remove_names(self.registry, entry.names, counts)
+            self._close_mcp_integration(key)
         fresh = self._apply_source(key, source, new_config)
         counts["registered"] += len(fresh.names)
         return fresh, set(fresh.names)

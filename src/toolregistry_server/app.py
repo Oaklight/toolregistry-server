@@ -321,6 +321,11 @@ class App:
         provider created by a config reload lives on the source manager, so
         both are closed.  Calling it twice is harmless.
         """
+        # Stop the revalidator first: a pass in flight would otherwise use a
+        # store this method is about to close.
+        from .source_manager import OAUTH_PROBE_TIMEOUT
+
+        self.stop_oauth_revalidator(timeout=OAUTH_PROBE_TIMEOUT + 5)
         manager = self.source_manager
         for provider in (
             self.oauth_client_provider,

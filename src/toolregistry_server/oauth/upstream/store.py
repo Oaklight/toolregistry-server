@@ -457,10 +457,21 @@ class TokenStore:
             return _no_release
         directory = f"{self._path}.locks"
         _prepare_directory(os.path.join(directory, "x"))
+        info = os.lstat(directory)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise OSError(
+                f"refusing the OAuth lock directory {directory!r}: "
+                "it is not a plain directory"
+            )
+        with contextlib.suppress(OSError):
+            os.chmod(directory, 0o700)
         name = hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:32]
         lock_path = os.path.join(directory, name)
         _refuse_unsafe_target(lock_path)
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | _NOFOLLOW, 0o600)
+        # A file that already existed keeps its old mode unless reset here.
+        with contextlib.suppress(OSError):
+            os.fchmod(descriptor, 0o600)
         wait = REFRESH_LOCK_TIMEOUT if timeout is None else timeout
         deadline = time.monotonic() + wait
         while True:

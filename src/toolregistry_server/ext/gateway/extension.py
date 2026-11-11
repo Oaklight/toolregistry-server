@@ -50,6 +50,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..._vendor.structlog import get_logger
 from .panel_logs import parse_filters, principal_view, select_entries, summarise
 from .panel_sources import (
     mcp_auth_to_headers,
@@ -72,6 +73,8 @@ from .panel_tools import (
 from .panel_tools import (
     tool_detail as _tool_detail,
 )
+
+logger = get_logger()
 
 #: Extension name: the URL segment and the asset directory key.
 GATEWAY_EXTENSION_NAME = "gateway"
@@ -896,7 +899,7 @@ class GatewayAdminExtension:
         so this route cannot deliver a code to a host the operator did not
         list.  The PKCE verifier stays in the token store.
         """
-        from ...oauth.upstream.provider import OAuthClientError
+        from ...oauth.upstream.provider import OAuthClientError, TransientOAuthError
 
         sources = self._require(self._sources, "source manager")
         provider = self._oauth_provider()
@@ -907,6 +910,9 @@ class GatewayAdminExtension:
         entry = sources.get(source_id)
         try:
             started = provider.start_authorization(entry.source, redirect_uri)
+        except TransientOAuthError as exc:
+            # The IdP or the store is unreachable; the request itself is fine.
+            raise _Unavailable(str(exc)) from exc
         except OAuthClientError as exc:
             raise _BadRequest(str(exc)) from exc
         return {"authorization": started.to_dict()}
@@ -917,8 +923,17 @@ class GatewayAdminExtension:
         The authorization server redirects the operator's browser here, so
         the answer is a small HTML page rather than JSON.  Every value
         reflected into it is escaped, and neither the code nor a token is
-        ever echoed.
+        ever echoed.  An unexpected error still answers with this page, not
+        the panel's JSON error shape, because a browser is reading it.
         """
+        try:
+            return self._oauth_callback(request)
+        except Exception as exc:  # noqa: BLE001 - the browser needs a page
+            logger.warning(f"OAuth callback failed: {type(exc).__name__}")
+            return _callback_page(500, "Authorization failed unexpectedly.")
+
+    def _oauth_callback(self, request: Any) -> Any:
+        """Handle the callback; see :meth:`oauth_callback`."""
         from ...oauth.upstream.provider import OAuthClientError
 
         params = request.query_params
@@ -952,7 +967,10 @@ class GatewayAdminExtension:
         if sources is None or listing is None:
             return False
         for entry in listing():
-            declaration = provider.declaration_for(entry.source)
+            try:
+                declaration = provider.declaration_for(entry.source)
+            except Exception:  # noqa: BLE001 - an ambiguous selector is skipped
+                continue
             if declaration is None or declaration.source != selector:
                 continue
             try:
@@ -1038,7 +1056,9 @@ def _callback_page(status: int, message: str) -> Any:
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<title>Authorization</title></head><body>"
         f"<p>{html.escape(message)}</p>"
-        "<p><a href='/'>Back to the panel</a></p></body></html>"
+        # The callback lives at <panel>/ext/gateway/oauth/callback, so this
+        # relative link reaches the panel root under any mount prefix.
+        "<p><a href='../../../'>Back to the panel</a></p></body></html>"
     )
     return Response(
         body=body,

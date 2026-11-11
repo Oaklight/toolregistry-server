@@ -551,3 +551,28 @@ def test_the_refresh_lock_files_are_owner_only(tmp_path):
 def test_an_in_memory_store_has_a_no_op_refresh_lock(store):
     store.acquire_refresh_lock(SOURCE)()
     store.acquire_refresh_lock(SOURCE)()
+
+
+def test_a_lock_directory_that_is_a_symlink_is_refused(tmp_path):
+    """A writable state dir must not turn a symlink into an arbitrary write."""
+    path = tmp_path / "tokens.db"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / "tokens.db.locks").symlink_to(elsewhere)
+    with (
+        TokenStore(path) as opened,
+        pytest.raises(OSError, match="not a plain directory"),
+    ):
+        opened.acquire_refresh_lock(SOURCE)
+
+
+def test_an_existing_lock_file_is_tightened_to_owner_only(tmp_path):
+    """A file created earlier with a wider mode is reset on acquisition."""
+    path = tmp_path / "tokens.db"
+    with TokenStore(path) as opened:
+        opened.acquire_refresh_lock(SOURCE)()
+    (lock_file,) = list((tmp_path / "tokens.db.locks").iterdir())
+    os.chmod(lock_file, 0o644)
+    with TokenStore(path) as reopened:
+        reopened.acquire_refresh_lock(SOURCE)()
+    assert stat.S_IMODE(os.stat(lock_file).st_mode) == 0o600
