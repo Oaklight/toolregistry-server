@@ -366,8 +366,10 @@ active. Without `libcrypto` each verification costs more CPU; the JWKS cache
 bounds the fetch, not the per-token check.
 
 An RSA modulus shorter than 2048 bits is refused, so a key of that size in the
-JWKS is skipped and tokens signed with it are rejected. PyJWT accepted such a
-key.
+JWKS is skipped and tokens signed with it are rejected. PyJWT 2.13 warns about
+such a key but still verifies unless `enforce_minimum_key_length` is set, and
+earlier versions do not check it at all, so an identity provider with a 1
+024-bit key worked before and does not now.
 
 ### Callback allowlist, outbound screening and the panel flow
 
