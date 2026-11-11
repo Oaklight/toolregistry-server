@@ -35,6 +35,7 @@ and `local-hub` — accept the same group. OAuth is off until
 | `--oauth-introspection-client-secret SECRET` | - | Client secret for the introspection endpoint (HTTP Basic); required together with the URL |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | How long one introspection result is reused; this bounds how long a revoked token is still accepted. `0` disables caching |
 | `--oauth-introspection-optional` | off | Fall back to local verification when the introspection endpoint fails; by default a failure rejects the token |
+| `--oauth-allow-private-hosts` | off | Let discovery, JWKS and introspection reach a loopback, link-local or private address; the outbound address policy refuses such a host by default |
 
 The three endpoint flags affect only the served OpenAPI document. Token
 verification uses the issuer, audience and JWKS; introspection uses its own
@@ -271,7 +272,7 @@ the source fails the load. Tokens are kept in SQLite outside the
 configuration file. The client secret itself is never written there; a
 salted, iterated fingerprint of it is, so rotating the secret discards a stale
 re-authorization verdict without storing the secret. The start/complete pair
-is embedder-only in stage 1: no panel route calls it yet. The panel's
+is driven by the gateway panel; see below. The panel's
 connection test does not attach the upstream credential, and its result says
 so when a declaration selects the source. See
 [the deployment guide](../guides/oauth-deployment.md#upstream-credentials-for-a-protected-mcp-source).
@@ -355,6 +356,59 @@ because its bind address is never a public audience.
 On the standalone `openapi` command, OAuth needs PyJWT with a crypto backend:
 install `toolregistry-server[openapi]`. The base install stays free of
 third-party packages, and `[gateway]`/`[mcp]` already carry it.
+
+### Callback allowlist, outbound screening and the panel flow
+
+`redirect_uris` lists the callback URLs an `authorization_code` entry may use,
+compared exactly. `start_authorization` refuses any other `redirect_uri`
+before discovery runs or a pending row is written, an empty list refuses every
+flow, and completion compares the pending row's URI with the current list
+again, so a callback removed by a reload cannot finish a flow started before
+it.
+
+Every OAuth request the server makes on its own behalf — discovery, JWKS,
+introspection and the upstream token POST — is screened by
+`toolregistry.netpolicy` before a connection opens. A loopback, link-local or
+private host (for example `169.254.169.254`) is refused unless the operator
+opts in: `--oauth-allow-private-hosts` or `oauth.allow_private_hosts` for the
+resource server, and a per-entry `allow_private_hosts: true` in
+`oauth.clients`. On the upstream side a refusal is transient and keeps the
+stored grant; its message names neither the URL nor a resolved address.
+
+The gateway panel drives the authorization-code flow. A source with
+`reauth_required` shows an **Authorize** button, which calls
+`POST /ext/gateway/sources/<id>/authorize` with the panel's callback URL,
+`<panel origin>/ext/gateway/oauth/callback`. List that exact URL in the
+entry's `redirect_uris` and register it at the authorization server. The
+callback completes the exchange, retries the source, and answers with a small
+HTML page that echoes neither the code nor a token. Without an `oauth.clients`
+declaration both routes answer 503.
+
+While the server runs, every applied OAuth-protected MCP source is checked
+every 300 seconds. A definitive token-endpoint rejection, or an HTTP 401/403
+from a short probe session, unregisters the source's tools and marks it
+`failed` with `reauth_required`; a rotated token reconnects the source with
+the new header; a transient failure changes nothing until the next pass. A
+revoked upstream grant therefore surfaces within one interval instead of at
+the next restart.
+
+Two processes may share one token store. Token acquisition for a source holds
+an exclusive `flock` on a per-source file in `<token_store>.locks/` (directory
+`0700`, files `0600`), so a second process waits, re-reads the row and reuses
+the token instead of requesting another; an identity provider that rotates
+refresh tokens on use no longer retires one process's result. The kernel drops
+the lock when its holder exits, so there is no stale lease, and a wait longer
+than 30 seconds is a transient store error. The store must be on a local
+filesystem: `flock` is not reliable over NFS.
+
+`apply_config` and `registry_from_config` accept an `oauth_provider`. Without
+one, a config whose `oauth.clients` has entries raises `ConfigError` rather
+than connecting a protected source unauthenticated.
+
+Startup resolves the tokens of protected sources concurrently (at most eight
+at once) and then registers in declaration order, and network I/O no longer
+holds the lock that status reads use, so the panel stays responsive while a
+slow source connects.
 
 ## Known gaps
 

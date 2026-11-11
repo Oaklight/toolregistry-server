@@ -64,6 +64,7 @@ The gateway command keeps its `--backend` choice.
 | `--oauth-introspection-client-secret SECRET` | - | Client secret for the introspection endpoint (HTTP Basic); required with the URL |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | How long one introspection result is reused; bounds how long a revoked token is still accepted. `0` disables caching |
 | `--oauth-introspection-optional` | `false` | Fall back to local verification when the introspection endpoint fails; by default a failure rejects the token |
+| `--oauth-allow-private-hosts` | `false` | Let OAuth discovery, JWKS and introspection reach a loopback, link-local or private address; refused by default |
 | `--max-body-size BYTES` | `1048576` (1 MiB) | Largest accepted request body. Must be positive; a larger body returns `413` with a JSON error |
 | `--profile PROFILE` | - | Deployment profile: `remote`, `local`, or a profile declared under `profiles:` in the config file |
 | `--regex-timeout SECONDS` | `0.05` | Per-match ceiling for spec-supplied regexes (requires the `regex` extra). `0` disables execution |
@@ -113,6 +114,7 @@ toolregistry-server mcp [options]
 | `--oauth-introspection-client-secret SECRET` | - | Client secret for the introspection endpoint (HTTP Basic); required with the URL |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | How long one introspection result is reused; bounds how long a revoked token is still accepted. `0` disables caching |
 | `--oauth-introspection-optional` | `false` | Fall back to local verification when the introspection endpoint fails; by default a failure rejects the token |
+| `--oauth-allow-private-hosts` | `false` | Let OAuth discovery, JWKS and introspection reach a loopback, link-local or private address; refused by default |
 | `--server-url URL` | derived from `--host`/`--port` | Public URL advertised in OAuth protected-resource metadata (required behind a reverse proxy) |
 | `--tools-list-ttl-ms MS` | `300000` | `ttlMs` cache hint for `tools/list`; `0` disables caching |
 | `--tools-list-cache-scope {public,private}` | `private` | `cacheScope` hint for `tools/list` |
@@ -182,6 +184,7 @@ every request. The admin panel is disabled by default.
 | `--oauth-introspection-client-secret SECRET` | - | Client secret for the introspection endpoint (HTTP Basic); required with the URL |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | How long one introspection result is reused; bounds how long a revoked token is still accepted. `0` disables caching |
 | `--oauth-introspection-optional` | `false` | Fall back to local verification when the introspection endpoint fails; by default a failure rejects the token |
+| `--oauth-allow-private-hosts` | `false` | Let OAuth discovery, JWKS and introspection reach a loopback, link-local or private address; refused by default |
 | `--server-url URL` | derived from `--host`/`--port` | Public MCP URL used in protected-resource metadata |
 | `--backend {fastapi,httpserver}` | `fastapi` | Multiple frontends require `fastapi`; `httpserver` can serve only the openapi frontend |
 | `--openapi-path PATH` | `/openapi` | OpenAPI mount path (rejected with `--backend httpserver`, which serves at the listener root) |
@@ -277,6 +280,7 @@ package bootstrap. The spawned hub inherits the variable.
 | `--oauth-introspection-client-secret SECRET` | - | Client secret for the introspection endpoint (HTTP Basic); required with the URL |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | How long one introspection result is reused; bounds how long a revoked token is still accepted. `0` disables caching |
 | `--oauth-introspection-optional` | `false` | Fall back to local verification when the introspection endpoint fails; by default a failure rejects the token |
+| `--oauth-allow-private-hosts` | `false` | Let OAuth discovery, JWKS and introspection reach a loopback, link-local or private address; refused by default |
 | `--server-url URL` | from `--host`/`--port` | Public MCP URL advertised in protected-resource metadata |
 
 !!! note
