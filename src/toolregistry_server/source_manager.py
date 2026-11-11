@@ -711,6 +711,12 @@ class SourceManager:
             entries: dict[SourceKey, SourceEntry] = {}
             registered: set[str] = set()
             self._openapi_integrations.clear()
+            # The bookkeeping maps are per-pass too: a repeated initial apply
+            # must not keep a key recorded for a source that no longer
+            # registers one.
+            self._mcp_integrations.clear()
+            self._oauth_headers.clear()
+            self._reconnect_pending.clear()
             sources = index_sources(self.config.tools)
             prefetched = self._prefetch_oauth_headers(sources, self.config)
             for key, source in sources.items():
@@ -1279,11 +1285,10 @@ class SourceManager:
         * an unchanged token is probed with a throwaway session, and an HTTP
           401/403 is handled like a rejection on connect.
 
-        The probes run one after another under the apply lock, so a pass
-        with several slow sources delays a concurrent mutation or reload by
-        up to one probe timeout per source.  The pass runs under the apply
-        lock, so it never interleaves with a
-        mutation or a reload, and status reads stay unblocked.
+        The probes run one after another under the apply lock.  A pass with
+        several slow sources therefore delays a concurrent mutation or reload
+        by up to one probe timeout per source, while status reads stay
+        unblocked.
 
         Args:
             probe: Credential check for an unchanged token; defaults to a
