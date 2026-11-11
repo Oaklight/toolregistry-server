@@ -286,7 +286,11 @@ audience。
 
 该模块在可用时通过 `ctypes` 调用 `libcrypto` 完成公钥运算，否则回退到纯 Python 实现；
 两者的结果相同。设置 `ZERODEP_JWT_BACKEND=python` 可强制使用回退实现，
-`toolregistry_server._vendor.jwt.BACKEND` 报告当前生效的实现。
+`toolregistry_server._vendor.jwt.BACKEND` 报告当前生效的实现。没有 `libcrypto` 时，每次
+校验的 CPU 开销更高；JWKS 缓存限制的是文档拉取，而不是逐个令牌的校验。
+
+短于 2048 位的 RSA 模数会被拒绝，因此 JWKS 中这种长度的密钥会被跳过，用其签名的令牌
+会被拒绝。PyJWT 接受这类密钥。
 
 ### 回调白名单、出站筛查与面板授权流程
 
