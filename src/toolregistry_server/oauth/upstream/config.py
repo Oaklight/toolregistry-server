@@ -79,6 +79,7 @@ OAUTH_CLIENT_KEYS: frozenset[str] = frozenset(
         "token_endpoint",
         "client_auth",
         "token_store",
+        "redirect_uris",
     }
 )
 
@@ -118,6 +119,9 @@ class OAuthClientConfig:
             (``client_secret_basic``).
         token_store: SQLite token-store path for this source.  ``None``
             uses :func:`default_token_store_path`.
+        redirect_uris: Callback URLs an authorization-code flow may use,
+            compared exactly.  Empty refuses every flow, so a caller that can
+            start one cannot have the code delivered to a host it controls.
     """
 
     source: str
@@ -133,6 +137,7 @@ class OAuthClientConfig:
         "client_secret_post"
     )
     token_store: str | None = None
+    redirect_uris: tuple[str, ...] = ()
 
     @property
     def store_path(self) -> str:
@@ -167,6 +172,8 @@ class OAuthClientConfig:
         data["client_auth"] = self.client_auth
         if self.token_store:
             data["token_store"] = self.token_store
+        if self.redirect_uris:
+            data["redirect_uris"] = list(self.redirect_uris)
         return data
 
 
@@ -302,6 +309,7 @@ def _build_declaration(entry: Any, index: int) -> OAuthClientConfig:
         ),
         client_auth=client_auth,
         token_store=_token_store_path(entry.get("token_store"), where),
+        redirect_uris=_parse_redirect_uris(entry.get("redirect_uris"), where),
     )
 
 
@@ -394,6 +402,22 @@ def _parse_scopes(value: Any, where: str) -> tuple[str, ...]:
         if scope not in scopes:
             scopes.append(scope)
     return tuple(scopes)
+
+
+def _parse_redirect_uris(value: Any, where: str) -> tuple[str, ...]:
+    """Return the allowlisted callback URLs, deduplicated and in order."""
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError(f"{where}.redirect_uris must be a list of URLs")
+    uris: list[str] = []
+    for index, item in enumerate(value):
+        uri = _optional_url(item, f"{where}.redirect_uris[{index}]")
+        if uri is None:
+            raise ConfigError(f"{where}.redirect_uris[{index}] must not be empty")
+        if uri not in uris:
+            uris.append(uri)
+    return tuple(uris)
 
 
 def _is_selector(value: str) -> bool:

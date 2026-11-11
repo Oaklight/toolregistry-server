@@ -431,3 +431,41 @@ def test_default_token_store_honours_xdg_state_home(tmp_path, monkeypatch):
     assert default_token_store_path() == str(
         tmp_path / "toolregistry" / "oauth-clients.db"
     )
+
+
+def test_redirect_uris_are_parsed_and_deduplicated(tmp_path):
+    declarations = _load(
+        tmp_path,
+        """\
+        - source: "namespace:example"
+          issuer: https://idp.example.com
+          client_id: toolregistry
+          client_secret: secret
+          grant: authorization_code
+          redirect_uris:
+            - https://gateway.example.com/callback
+            - https://gateway.example.com/callback
+        """,
+    )
+    assert declarations[0].redirect_uris == ("https://gateway.example.com/callback",)
+    assert declarations[0].to_dict()["redirect_uris"] == [
+        "https://gateway.example.com/callback"
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["https://gateway.example.com/callback", "[relative/callback]", "['']"],
+)
+def test_malformed_redirect_uris_are_rejected(tmp_path, value):
+    with pytest.raises(ConfigError, match="redirect_uris"):
+        _load(
+            tmp_path,
+            f"""\
+            - source: "namespace:example"
+              issuer: https://idp.example.com
+              client_id: toolregistry
+              client_secret: secret
+              redirect_uris: {value}
+            """,
+        )
