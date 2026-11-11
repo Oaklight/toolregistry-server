@@ -290,12 +290,26 @@ audience。
 拒绝所有流程；完成时会再次用当前列表比对待处理行中的 URI，因此重载移除的回调无法完成
 此前已开始的流程。
 
+比较是文本比较，而浏览器会规范化它发送的 URL：主机名转为小写，默认端口被去掉。请按这种
+规范形式书写条目（`https://panel.example.com/ext/gateway/oauth/callback`，而不是
+`https://Panel.Example.com:443/...`），否则回调会被拒绝。
+
+
 服务器自身发起的每个 OAuth 请求——发现、JWKS、内省以及上游令牌 POST——都会在建立连接
 之前经过 `toolregistry.netpolicy` 筛查。回环、链路本地或私有主机（例如
 `169.254.169.254`）默认被拒绝，除非运维显式开启：资源服务器使用
 `--oauth-allow-private-hosts` 或 `oauth.allow_private_hosts`，`oauth.clients` 使用
 逐条目的 `allow_private_hosts: true`。在上游一侧，拒绝属于暂时性失败并保留已存凭据；
 其消息既不包含 URL，也不包含解析出的地址。
+
+每个经过筛查的请求都拒绝重定向，因此 3xx 无法把请求改指到另一台主机，也无法在那里重放
+内省凭据。
+
+与 MCP、OpenAPI 来源一样，该策略止于拨号之前：它解析域名、判断每个应答，然后把 URL
+交给 HTTP 客户端，由客户端再次解析。若两次解析之间 DNS 应答改变（DNS rebinding，
+core #399），请求仍可能到达第一次解析未返回的地址。要把已检查的地址固定到连接上，需要
+支持指定地址的传输层；OAuth 客户端使用 `urllib`，它不支持。
+
 
 gateway 面板负责驱动授权码流程。带有 `reauth_required` 的来源会显示 **授权** 按钮，
 它以面板的回调 URL `<面板源>/ext/gateway/oauth/callback` 调用
