@@ -31,6 +31,7 @@ title: OAuth 参考
 | `--oauth-introspection-client-secret SECRET` | - | 内省端点使用的客户端密钥（HTTP Basic）；与 URL 同时必需 |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | 一次内省结果的复用时长；它决定被撤销的令牌还会被接受多久。`0` 关闭缓存 |
 | `--oauth-introspection-optional` | 关闭 | 内省端点失败时回退到本地校验；默认情况下失败即拒绝令牌 |
+| `--oauth-allow-private-hosts` | 关闭 | 允许发现、JWKS 与内省访问回环、链路本地或私有地址；出站地址策略默认拒绝此类主机 |
 
 三个端点选项只影响对外提供的 OpenAPI 文档。令牌校验使用 issuer、audience 与 JWKS；
 内省使用它自己的端点。
@@ -221,7 +222,7 @@ MCP 来源，并带有 `issuer` 或 `discovery_url`、`client_id`、`client_secr
 `authorization_code`）、可选的 `token_endpoint`、`client_auth`（`client_secret_post`
 或 `client_secret_basic`）以及绝对路径的 `token_store`。两个条目不能选中同一来源；
 未知键、相对路径的 `token_store`，或来源已设置 `Authorization` 头，都会使加载失败。
-令牌保存在配置文件之外的 SQLite 中。客户端密钥本身从不写入其中，但会保存一个加盐、多次迭代的指纹，以便在轮换密钥时丢弃过期的重新授权判定，同时不保存密钥。第 1 阶段的 start/complete 流程仅供嵌入方调用，面板路由尚未使用。面板的连接测试不会附加上游凭据，当声明选中该来源时，测试结果会说明这一点。参见
+令牌保存在配置文件之外的 SQLite 中。客户端密钥本身从不写入其中，但会保存一个加盐、多次迭代的指纹，以便在轮换密钥时丢弃过期的重新授权判定，同时不保存密钥。start/complete 流程由 gateway 面板驱动，见下文。面板的连接测试不会附加上游凭据，当声明选中该来源时，测试结果会说明这一点。参见
 [部署指南](../guides/oauth-deployment.md#受保护-mcp-来源的上游凭据)。
 
 已存令牌在被 MCP 服务器拒绝之前会一直复用。连接时来源返回 HTTP 401/403，会丢弃
@@ -281,6 +282,43 @@ audience。
 
 独立 `openapi` 命令上的 OAuth 需要带加密后端的 PyJWT：请安装
 `toolregistry-server[openapi]`。基础安装仍不含第三方包，`[gateway]`/`[mcp]` 已自带该依赖。
+
+### 回调白名单、出站筛查与面板授权流程
+
+`redirect_uris` 列出 `authorization_code` 条目可使用的回调 URL，按精确匹配比较。
+`start_authorization` 会在发现文档或写入待处理行之前拒绝其他 `redirect_uri`；列表为空时
+拒绝所有流程；完成时会再次用当前列表比对待处理行中的 URI，因此重载移除的回调无法完成
+此前已开始的流程。
+
+服务器自身发起的每个 OAuth 请求——发现、JWKS、内省以及上游令牌 POST——都会在建立连接
+之前经过 `toolregistry.netpolicy` 筛查。回环、链路本地或私有主机（例如
+`169.254.169.254`）默认被拒绝，除非运维显式开启：资源服务器使用
+`--oauth-allow-private-hosts` 或 `oauth.allow_private_hosts`，`oauth.clients` 使用
+逐条目的 `allow_private_hosts: true`。在上游一侧，拒绝属于暂时性失败并保留已存凭据；
+其消息既不包含 URL，也不包含解析出的地址。
+
+gateway 面板负责驱动授权码流程。带有 `reauth_required` 的来源会显示 **授权** 按钮，
+它以面板的回调 URL `<面板源>/ext/gateway/oauth/callback` 调用
+`POST /ext/gateway/sources/<id>/authorize`。请把这个 URL 原样写入条目的
+`redirect_uris`，并在授权服务器注册。回调完成兑换、重试该来源，并返回一个小型 HTML
+页面，既不回显授权码也不回显令牌。没有 `oauth.clients` 声明时，两个路由都返回 503。
+
+服务器运行期间，每个已应用、受 OAuth 保护的 MCP 来源每 300 秒检查一次。令牌端点的
+确定性拒绝，或短探测会话收到的 HTTP 401/403，会注销该来源的工具并将其标记为
+`failed` 与 `reauth_required`；令牌轮换后会用新请求头重新连接；暂时性失败在下一轮之前
+不做任何改变。因此被撤销的上游授权会在一个周期内显现，而不必等到下次重启。
+
+两个进程可以共享同一个令牌存储。某个来源的令牌获取会持有 `<token_store>.locks/` 中
+逐来源文件上的排他 `flock`（目录 `0700`，文件 `0600`），因此第二个进程会等待、重新读取
+该行并复用令牌，而不是再请求一次；使用即轮换刷新令牌的身份提供方不会再作废其中一个
+进程的结果。持有者退出时内核会释放该锁，因此不存在过期租约；等待超过 30 秒属于暂时性
+存储错误。存储必须位于本地文件系统：`flock` 在 NFS 上不可靠。
+
+`apply_config` 与 `registry_from_config` 接受 `oauth_provider`。未提供时，若配置中
+`oauth.clients` 有条目，会抛出 `ConfigError`，而不是以未认证方式连接受保护来源。
+
+启动时并发解析受保护来源的令牌（最多同时 8 个），然后按声明顺序注册；网络 I/O 不再
+占用状态读取所用的锁，因此慢速来源连接期间面板仍能及时响应。
 
 ## 已知缺口
 

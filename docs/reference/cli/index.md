@@ -63,6 +63,7 @@ toolregistry-server openapi [选项]
 | `--oauth-introspection-client-secret SECRET` | - | 内省端点使用的客户端密钥（HTTP Basic）；与 URL 同时必需 |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | 一次内省结果的复用时长；决定被撤销的令牌还会被接受多久。`0` 关闭缓存 |
 | `--oauth-introspection-optional` | `false` | 内省端点失败时回退到本地校验；默认情况下失败即拒绝令牌 |
+| `--oauth-allow-private-hosts` | `false` | 允许 OAuth 发现、JWKS 与内省访问回环、链路本地或私有地址；默认拒绝 |
 | `--max-body-size BYTES` | `1048576`（1 MiB） | 接受的最大请求体。必须为正数；超限返回带 JSON 错误的 `413` |
 | `--profile PROFILE` | - | 部署配置：`remote`、`local`，或配置文件 `profiles:` 中声明的名称 |
 | `--regex-timeout SECONDS` | `0.05` | 来自 spec 的正则单次匹配上限（需要 `regex` extra）。`0` 禁用执行 |
@@ -112,6 +113,7 @@ toolregistry-server mcp [选项]
 | `--oauth-introspection-client-secret SECRET` | - | 内省端点使用的客户端密钥（HTTP Basic）；与 URL 同时必需 |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | 一次内省结果的复用时长；决定被撤销的令牌还会被接受多久。`0` 关闭缓存 |
 | `--oauth-introspection-optional` | `false` | 内省端点失败时回退到本地校验；默认情况下失败即拒绝令牌 |
+| `--oauth-allow-private-hosts` | `false` | 允许 OAuth 发现、JWKS 与内省访问回环、链路本地或私有地址；默认拒绝 |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 在 OAuth 受保护资源元数据中公布的公开 URL（反向代理后必需） |
 | `--tools-list-ttl-ms MS` | `300000` | `tools/list` 的 `ttlMs` 缓存提示；`0` 禁用缓存 |
 | `--tools-list-cache-scope {public,private}` | `private` | `tools/list` 的 `cacheScope` 提示 |
@@ -179,6 +181,7 @@ toolregistry-server gateway [选项]
 | `--oauth-introspection-client-secret SECRET` | - | 内省端点使用的客户端密钥（HTTP Basic）；与 URL 同时必需 |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | 一次内省结果的复用时长；决定被撤销的令牌还会被接受多久。`0` 关闭缓存 |
 | `--oauth-introspection-optional` | `false` | 内省端点失败时回退到本地校验；默认情况下失败即拒绝令牌 |
+| `--oauth-allow-private-hosts` | `false` | 允许 OAuth 发现、JWKS 与内省访问回环、链路本地或私有地址；默认拒绝 |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 受保护资源元数据中使用的公开 MCP URL |
 | `--backend {fastapi,httpserver}` | `fastapi` | 多个前端必须使用 `fastapi`；`httpserver` 只能提供 openapi 前端 |
 | `--openapi-path PATH` | `/openapi` | OpenAPI 挂载路径（`--backend httpserver` 下会被拒绝，因为该后端在监听器根路径提供服务） |
@@ -268,6 +271,7 @@ schema 与一组缓存。仅支持 POSIX；Windows 上动作会被拒绝并提�
 | `--oauth-introspection-client-secret SECRET` | - | 内省端点使用的客户端密钥（HTTP Basic）；与 URL 同时必需 |
 | `--oauth-introspection-cache-ttl SECONDS` | `5` | 一次内省结果的复用时长；决定被撤销的令牌还会被接受多久。`0` 关闭缓存 |
 | `--oauth-introspection-optional` | `false` | 内省端点失败时回退到本地校验；默认情况下失败即拒绝令牌 |
+| `--oauth-allow-private-hosts` | `false` | 允许 OAuth 发现、JWKS 与内省访问回环、链路本地或私有地址；默认拒绝 |
 | `--server-url URL` | 由 `--host`/`--port` 推导 | 在受保护资源元数据中公布的公开 MCP URL |
 
 !!! note
