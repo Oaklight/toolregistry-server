@@ -1529,3 +1529,15 @@ def test_the_default_probe_presents_the_resolved_header(monkeypatch):
     _probe_mcp_credential(source, {"Authorization": "Bearer AT"})
     assert seen["target"] == "https://mcp.example.com/mcp"
     assert seen["headers"] == {"X-Static": "1", "Authorization": "Bearer AT"}
+
+
+def test_a_repeated_initial_apply_resets_the_bookkeeping(monkeypatch, tmp_path):
+    """A second apply must not keep a key from a source that no longer registers."""
+    manager, _, _ = _registering_manager(monkeypatch, tmp_path, [])
+    manager._oauth_headers[("stale",)] = {"Authorization": "Bearer OLD"}
+    manager._reconnect_pending.add(("stale",))
+    manager._mcp_integrations[("stale",)] = object()
+    manager.apply_initial()
+    assert ("stale",) not in manager._oauth_headers
+    assert ("stale",) not in manager._reconnect_pending
+    assert ("stale",) not in manager._mcp_integrations
