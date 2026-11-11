@@ -521,3 +521,33 @@ def test_a_corrupt_manifest_is_read_as_empty(store):
         )
 
     assert store.declared_targets() == {}
+
+
+def test_the_refresh_lock_excludes_a_second_connection(tmp_path):
+    """#266: a second process waits for the holder instead of refreshing too."""
+    path = tmp_path / "tokens.db"
+    with TokenStore(path) as first, TokenStore(path) as second:
+        release = first.acquire_refresh_lock(SOURCE)
+        try:
+            with pytest.raises(TimeoutError):
+                second.acquire_refresh_lock(SOURCE, timeout=0.2)
+            # A different source uses a different lock file.
+            second.acquire_refresh_lock("namespace:other", timeout=0.2)()
+        finally:
+            release()
+        second.acquire_refresh_lock(SOURCE, timeout=0.2)()
+
+
+def test_the_refresh_lock_files_are_owner_only(tmp_path):
+    path = tmp_path / "tokens.db"
+    with TokenStore(path) as opened:
+        opened.acquire_refresh_lock(SOURCE)()
+    locks = tmp_path / "tokens.db.locks"
+    assert stat.S_IMODE(os.stat(locks).st_mode) == 0o700
+    (lock_file,) = list(locks.iterdir())
+    assert stat.S_IMODE(os.stat(lock_file).st_mode) == 0o600
+
+
+def test_an_in_memory_store_has_a_no_op_refresh_lock(store):
+    store.acquire_refresh_lock(SOURCE)()
+    store.acquire_refresh_lock(SOURCE)()
