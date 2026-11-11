@@ -1213,3 +1213,142 @@ class TestCallTester:
         finally:
             admin.stop()
         assert status == 401
+
+
+# ---------------------------------------------------------- #254 authorize
+
+
+@dataclasses.dataclass
+class _Declaration:
+    source: str
+
+
+class FakeOAuthProvider:
+    """Records the authorize/complete calls the panel makes."""
+
+    def __init__(self) -> None:
+        self.started: list[tuple[Any, str]] = []
+        self.completed: list[tuple[str, str]] = []
+
+    def declaration_for(self, source: Any) -> _Declaration | None:
+        return _Declaration("namespace:remote")
+
+    def start_authorization(self, source: Any, redirect_uri: str) -> Any:
+        from toolregistry_server.oauth.upstream.provider import (
+            AuthorizationRequest,
+            OAuthClientError,
+        )
+
+        if redirect_uri != "https://panel.example.test/cb":
+            raise OAuthClientError("redirect URI is not in the redirect_uris")
+        self.started.append((source, redirect_uri))
+        return AuthorizationRequest(
+            authorization_url="https://idp.example.test/authorize?state=S",
+            state="S",
+            expires_at="2026-11-10T12:10:00+00:00",
+        )
+
+    def complete_authorization(self, code: str, state: str) -> dict[str, Any]:
+        from toolregistry_server.oauth.upstream.provider import OAuthStateError
+
+        if state != "S":
+            raise OAuthStateError("unknown or already used authorization state")
+        self.completed.append((code, state))
+        return {"source": "namespace:remote", "has_access_token": True}
+
+
+class OAuthSources(FakeSources):
+    def __init__(self, base: FakeSources) -> None:
+        super().__init__()
+        self._entries = base._entries
+        self._next = base._next
+        self.oauth_provider = FakeOAuthProvider()
+        self.retried: list[Any] = []
+
+    def list(self) -> list[Any]:
+        return [_KeyedEntry(e.source_id, e.source) for e in self._entries.values()]
+
+    def retry(self, ref: Any) -> FakeEntry:
+        self.retried.append(ref)
+        return next(iter(self._entries.values()))
+
+
+@dataclasses.dataclass
+class _KeyedEntry(FakeEntry):
+    """A listed entry; the real ``SourceEntry`` exposes its ``key``."""
+
+    @property
+    def key(self) -> str:
+        return self.source_id
+
+
+@pytest.fixture()
+def oauth_panel(registry, sources):
+    wrapped = OAuthSources(sources)
+    admin, info = _start(registry, wrapped)
+    try:
+        yield info, wrapped
+    finally:
+        admin.stop()
+
+
+class TestUpstreamAuthorization:
+    def test_authorize_returns_the_authorization_url(self, oauth_panel):
+        info, wrapped = oauth_panel
+        status, body = _request(
+            f"{info.url}/ext/gateway/sources/s1/authorize",
+            "POST",
+            {"redirect_uri": "https://panel.example.test/cb"},
+        )
+        assert status == 200
+        data = _json(body)["authorization"]
+        assert data["authorization_url"].startswith("https://idp.example.test/")
+        assert "code_verifier" not in json.dumps(data)
+        assert wrapped.oauth_provider.started
+
+    def test_authorize_refuses_an_unlisted_redirect_uri(self, oauth_panel):
+        info, wrapped = oauth_panel
+        status, body = _request(
+            f"{info.url}/ext/gateway/sources/s1/authorize",
+            "POST",
+            {"redirect_uri": "https://attacker.example.net/cb"},
+        )
+        assert status == 400
+        assert "redirect_uris" in _json(body)["message"]
+        assert wrapped.oauth_provider.started == []
+
+    def test_authorize_without_a_provider_is_unavailable(self, panel):
+        status, _ = _request(
+            f"{panel.url}/ext/gateway/sources/s1/authorize",
+            "POST",
+            {"redirect_uri": "https://panel.example.test/cb"},
+        )
+        assert status == 503
+
+    def test_callback_completes_and_retries_the_source(self, oauth_panel):
+        info, wrapped = oauth_panel
+        status, body = _request(
+            f"{info.url}/ext/gateway/oauth/callback?code=CODE&state=S"
+        )
+        assert status == 200
+        assert b"Authorized namespace:remote" in body
+        assert b"CODE" not in body
+        assert wrapped.oauth_provider.completed == [("CODE", "S")]
+        assert wrapped.retried == ["s1"]
+
+    def test_callback_rejects_an_unknown_state(self, oauth_panel):
+        info, wrapped = oauth_panel
+        status, body = _request(
+            f"{info.url}/ext/gateway/oauth/callback?code=CODE&state=bad"
+        )
+        assert status == 400
+        assert wrapped.retried == []
+
+    def test_callback_escapes_the_reported_error(self, oauth_panel):
+        info, _ = oauth_panel
+        status, body = _request(
+            f"{info.url}/ext/gateway/oauth/callback?error=%3Cscript%3E"
+        )
+        assert status == 400
+        assert b"<script>" not in body
+        assert b"&lt;script&gt;" in body

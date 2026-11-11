@@ -105,6 +105,7 @@ const STRINGS = {
         'gw.sources.url': 'Spec or server URL',
         'gw.sources.module': 'Module or class',
         'gw.sources.retry': 'Retry',
+        'gw.sources.authorize': 'Authorize',
         'gw.sources.refreshSpec': 'Refresh spec',
         'gw.sources.refreshSkipped': 'Spec unchanged; no tools were touched.',
         'gw.sources.refreshed': 'Spec refreshed: {added} added, {removed} removed, {updated} updated, {unchanged} unchanged.',
@@ -293,6 +294,7 @@ const STRINGS = {
         'gw.sources.url': '规范或服务地址',
         'gw.sources.module': '模块或类',
         'gw.sources.retry': '重试',
+        'gw.sources.authorize': '授权',
         'gw.sources.refreshSpec': '刷新规范',
         'gw.sources.refreshSkipped': '规范未变化，未改动任何工具。',
         'gw.sources.refreshed': '规范已刷新：新增 {added}，移除 {removed}，更新 {updated}，未变 {unchanged}。',
@@ -1220,6 +1222,14 @@ function renderSources() {
                 onclick: () => retrySource(record.id),
             }));
         }
+        if (record.reauth_required) {
+            actions.push(el('button', {
+                class: 'gw-btn',
+                type: 'button',
+                text: T('gw.sources.authorize'),
+                onclick: () => authorizeSource(record.id),
+            }));
+        }
         actions.push(el('button', {
             class: 'gw-btn',
             type: 'button',
@@ -1537,6 +1547,25 @@ async function saveSource(form, sourceId) {
         await loadSources();
         const note = persistNote(result, 'gw.sources');
         if (note) host.appendChild(note);
+    } catch (error) {
+        host.appendChild(message(error.message, 'error'));
+    }
+}
+
+function oauthCallbackUrl() {
+    // The callback is served by this extension; the URL must also be listed
+    // in the source's oauth.clients redirect_uris.
+    return new URL(client.url('/oauth/callback'), window.location.href).href;
+}
+
+async function authorizeSource(sourceId) {
+    const host = root.querySelector('#gw-sources');
+    try {
+        const data = await call('post', '/sources/' + encodeURIComponent(sourceId) + '/authorize', {
+            redirect_uri: oauthCallbackUrl(),
+        });
+        const url = data.authorization && data.authorization.authorization_url;
+        if (url) window.location.assign(url);
     } catch (error) {
         host.appendChild(message(error.message, 'error'));
     }

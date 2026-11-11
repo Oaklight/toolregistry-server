@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import html
 import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -506,6 +507,8 @@ class GatewayAdminExtension:
         ctx.post("/sources/<source_id>/refresh", self.refresh_source)
         ctx.post("/sources/<source_id>/test", self.test_source)
         ctx.get("/sources/<source_id>/tools", self.source_tools)
+        ctx.post("/sources/<source_id>/authorize", self.authorize_source)
+        ctx.get("/oauth/callback", self.oauth_callback)
         ctx.get("/tools", self.list_tools)
         ctx.get("/tools/<path:name>", self.get_tool)
         ctx.post("/tools/<path:name>/call", self.call_tool)
@@ -873,6 +876,92 @@ class GatewayAdminExtension:
             result = {**result, "oauth_declaration": True, "note": note}
         return {"test": result}
 
+    # ---- upstream OAuth (#254 stage 2) ------------------------------------
+
+    def _oauth_provider(self) -> Any:
+        """Return the upstream OAuth provider, or refuse the request."""
+        sources = self._require(self._sources, "source manager")
+        provider = getattr(sources, "oauth_provider", None)
+        if provider is None:
+            raise _Unavailable("no oauth.clients declaration is loaded")
+        return provider
+
+    @_guard
+    def authorize_source(self, request: Any, source_id: str) -> dict[str, Any]:
+        """Start an authorization-code + PKCE flow for one source.
+
+        The body names the ``redirect_uri`` the panel's callback answers on.
+        It must appear verbatim in the declaration's ``redirect_uris``; the
+        provider refuses any other value before a pending row is written,
+        so this route cannot deliver a code to a host the operator did not
+        list.  The PKCE verifier stays in the token store.
+        """
+        from ...oauth.upstream.provider import OAuthClientError
+
+        sources = self._require(self._sources, "source manager")
+        provider = self._oauth_provider()
+        payload = _json_body(request)
+        redirect_uri = payload.get("redirect_uri")
+        if not isinstance(redirect_uri, str) or not redirect_uri:
+            raise _BadRequest("'redirect_uri' must be a non-empty string")
+        entry = sources.get(source_id)
+        try:
+            started = provider.start_authorization(entry.source, redirect_uri)
+        except OAuthClientError as exc:
+            raise _BadRequest(str(exc)) from exc
+        return {"authorization": started.to_dict()}
+
+    def oauth_callback(self, request: Any) -> Any:
+        """Finish an authorization flow and retry the source it was for.
+
+        The authorization server redirects the operator's browser here, so
+        the answer is a small HTML page rather than JSON.  Every value
+        reflected into it is escaped, and neither the code nor a token is
+        ever echoed.
+        """
+        from ...oauth.upstream.provider import OAuthClientError
+
+        params = request.query_params
+        error = params.get("error")
+        code = params.get("code")
+        state = params.get("state")
+        if error:
+            return _callback_page(400, f"The authorization server refused: {error}")
+        if not code or not state:
+            return _callback_page(400, "The callback is missing 'code' or 'state'.")
+        try:
+            provider = self._oauth_provider()
+            public = provider.complete_authorization(code, state)
+        except _Unavailable as exc:
+            return _callback_page(503, str(exc))
+        except OAuthClientError as exc:
+            return _callback_page(400, f"Authorization failed: {exc}")
+        selector = str(public.get("source", ""))
+        retried = self._retry_selector(provider, selector)
+        message = (
+            f"Authorized {selector}; the source was reconnected."
+            if retried
+            else f"Authorized {selector}. Retry the source from the panel."
+        )
+        return _callback_page(200, message)
+
+    def _retry_selector(self, provider: Any, selector: str) -> bool:
+        """Retry the source a selector names; return whether one was found."""
+        sources = self._sources
+        listing = getattr(sources, "list", None)
+        if sources is None or listing is None:
+            return False
+        for entry in listing():
+            declaration = provider.declaration_for(entry.source)
+            if declaration is None or declaration.source != selector:
+                continue
+            try:
+                sources.retry(entry.key)
+            except Exception:  # noqa: BLE001 - the grant is stored either way
+                return False
+            return True
+        return False
+
     # ---- tools -----------------------------------------------------------
 
     @_guard
@@ -928,6 +1017,24 @@ class GatewayAdminExtension:
         filters = parse_filters(request.query_params)
         entries = select_entries(log.get_entries(), filters)
         return summarise(entries)
+
+
+def _callback_page(status: int, message: str) -> Any:
+    """Return the static HTML page the OAuth callback answers with."""
+    from toolregistry._vendor.httpserver import Response
+
+    body = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>Authorization</title></head><body>"
+        f"<p>{html.escape(message)}</p>"
+        "<p><a href='/'>Back to the panel</a></p></body></html>"
+    )
+    return Response(
+        body=body,
+        status_code=status,
+        content_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
 
 
 def _entry_json(entry: Any) -> dict[str, Any]:
