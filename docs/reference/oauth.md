@@ -83,7 +83,7 @@ title: OAuth 参考
 | 受保护资源元数据（RFC 9728） | `/.well-known/oauth-protected-resource<mcp 路径>` | `resource`、`authorization_servers: [issuer]`、`bearer_methods_supported`。仅在设置 `--oauth-scopes` 时包含 `scopes_supported` |
 | 401 质询 | 每个被拒绝的请求 | `WWW-Authenticate: Bearer resource_metadata="<PRM URL>"` |
 | OpenAPI 安全方案 | `/openapi.json` | `OAuth2`（`authorizationCode`）；同时接受密钥或静态令牌时再加 `HTTPBearer` |
-| 期望的令牌声明 | 每个请求 | `iss`（精确）、`aud` 或 `resource`、`exp`、可选 `nbf`；`scope`（或 `scp`）用于作用域映射；`client_id` 或 `azp` 表示客户端身份；`--oauth-concurrency-claim` 指定的声明（默认 `max_concurrency`）可携带在途上限 |
+| 期望的令牌声明 | 每个请求 | `iss`（精确）、`aud` 或 `resource`、`exp`、可选 `nbf`，以及存在时的 `iat`（`iat` 位于未来时会在 60 秒偏差范围内被拒绝）；`scope`（或 `scp`）用于作用域映射；`client_id` 或 `azp` 表示客户端身份；`--oauth-concurrency-claim` 指定的声明（默认 `max_concurrency`）可携带在途上限 |
 
 ## Swagger UI 重定向页
 
@@ -283,6 +283,10 @@ audience。
 令牌校验使用随包内置的 `zerodep` JWS 模块，因此任何 OAuth 路径都不需要第三方加密包。
 支持 RS256/RS384/RS512、PS256/PS384/PS512 与 ES256/ES384；默认白名单为 `RS256` 与
 `ES256`。独立 `openapi` 命令因此可在基础安装上使用。
+
+该模块在可用时通过 `ctypes` 调用 `libcrypto` 完成公钥运算，否则回退到纯 Python 实现；
+两者的结果相同。设置 `ZERODEP_JWT_BACKEND=python` 可强制使用回退实现，
+`toolregistry_server._vendor.jwt.BACKEND` 报告当前生效的实现。
 
 ### 回调白名单、出站筛查与面板授权流程
 
