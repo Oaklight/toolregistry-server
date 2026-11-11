@@ -1051,15 +1051,17 @@ class OAuthClientProvider:
         Args:
             source: The source selector, or the parsed MCP source.
             redirect_uri: URI the authorization server will redirect to.
-                It must match the one the panel's callback uses.
+                It must appear verbatim in the declaration's
+                ``redirect_uris``.
 
         Returns:
             ``{"authorization_url", "state", "expires_at"}``.  The PKCE
             verifier is stored with the state and never returned.
 
         Raises:
-            OAuthClientError: If the declaration uses client credentials, or
-                no declaration selects *source*.
+            OAuthClientError: If the declaration uses client credentials,
+                no declaration selects *source*, or *redirect_uri* is not in
+                the declaration's ``redirect_uris``.
             TransientOAuthError: If the authorization endpoint cannot be
                 discovered.
         """
@@ -1070,6 +1072,7 @@ class OAuthClientProvider:
                 f"{declaration.source} uses the client-credentials grant; "
                 "no interactive authorization is available"
             )
+        _require_allowed_redirect(declaration, redirect_uri)
         endpoint = self._authorization_endpoint(declaration)
         verifier = secrets.token_urlsafe(64)
         challenge = (
@@ -1126,7 +1129,7 @@ class OAuthClientProvider:
 
         Raises:
             OAuthStateError: If the state is unknown, already used or
-                expired.
+                expired, or its redirect URI is no longer allowlisted.
             ReauthorizationRequired: If the authorization server rejects the
                 code or the client.
             TransientOAuthError: On a retryable server or transport error.
@@ -1145,6 +1148,12 @@ class OAuthClientProvider:
         if declaration is None:
             raise OAuthStateError(
                 f"no OAuth declaration for {pending.source_id!r}; reload the config"
+            )
+        if pending.redirect_uri not in declaration.redirect_uris:
+            # The allowlist may have changed between start and completion.
+            raise OAuthStateError(
+                "the authorization request's redirect URI is no longer "
+                "allowed; start again"
             )
         fields = {
             "grant_type": "authorization_code",
@@ -1397,6 +1406,27 @@ class OAuthClientProvider:
             self._stores.clear()
         for store in stores:
             store.close()
+
+
+def _require_allowed_redirect(
+    declaration: OAuthClientConfig, redirect_uri: str
+) -> None:
+    """Refuse a callback URL the declaration does not list verbatim.
+
+    Raises:
+        OAuthClientError: If *redirect_uri* is not in ``redirect_uris``.
+    """
+    if redirect_uri in declaration.redirect_uris:
+        return
+    if not declaration.redirect_uris:
+        raise OAuthClientError(
+            f"{declaration.source} lists no redirect_uris; add the callback "
+            "URL to its oauth.clients entry"
+        )
+    raise OAuthClientError(
+        f"redirect URI {redact(redirect_uri)} is not in the redirect_uris of "
+        f"{declaration.source}"
+    )
 
 
 def _as_int(value: Any) -> int | None:

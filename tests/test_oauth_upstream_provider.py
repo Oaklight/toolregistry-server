@@ -9,6 +9,7 @@ and truncation behaviour under test is urllib's.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import http.server
 import json
@@ -39,6 +40,7 @@ from toolregistry_server.oauth.upstream.store import TokenRecord, TokenStore
 
 NOW = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
 SOURCE = "namespace:example"
+CALLBACK = "https://gateway.example.com/callback"
 TOKEN_URL = "https://idp.example.com/token"
 AUTH_URL = "https://idp.example.com/authorize"
 
@@ -73,6 +75,7 @@ def _declaration(**overrides) -> OAuthClientConfig:
         "scopes": ("read",),
         "token_endpoint": TOKEN_URL,
         "token_store": ":memory:",
+        "redirect_uris": (CALLBACK,),
     }
     values.update(overrides)
     return OAuthClientConfig(**values)
@@ -1576,3 +1579,40 @@ def test_reconcile_leaves_a_row_it_never_declared(tmp_path, clock):
     with TokenStore(database, clock=clock) as check:
         assert check.get("namespace:other") is not None
     provider.close()
+
+
+def test_start_authorization_refuses_an_unlisted_redirect_uri(store, clock):
+    provider, transport = _authorization_provider(store, clock, [])
+    with pytest.raises(OAuthClientError, match="not in the redirect_uris"):
+        provider.start_authorization(SOURCE, "https://attacker.example.net/cb")
+    # Nothing is stored and nothing is discovered for a refused callback.
+    assert transport.posts == []
+    assert store.pop_pending("anything") is None
+
+
+def test_start_authorization_refuses_without_an_allowlist(store, clock):
+    transport = FakeTransport(
+        metadata={
+            "issuer": "https://idp.example.com",
+            "authorization_endpoint": AUTH_URL,
+            "token_endpoint": TOKEN_URL,
+        }
+    )
+    declaration = _declaration(grant="authorization_code", redirect_uris=())
+    provider = _provider(declaration, transport, store, clock)
+    with pytest.raises(OAuthClientError, match="lists no redirect_uris"):
+        provider.start_authorization(SOURCE, CALLBACK)
+
+
+def test_complete_authorization_rechecks_the_redirect_uri(store, clock):
+    provider, transport = _authorization_provider(
+        store, clock, [{"access_token": "ACAT", "expires_in": 3600}]
+    )
+    request = provider.start_authorization(SOURCE, CALLBACK)
+    narrowed = dataclasses.replace(
+        provider.declarations[0], redirect_uris=("https://other.example.com/cb",)
+    )
+    provider.replace_declarations((narrowed,))
+    with pytest.raises(OAuthStateError, match="no longer allowed"):
+        provider.complete_authorization("CODE", request.state)
+    assert transport.posts == []
