@@ -1059,7 +1059,7 @@ def test_close_oauth_clients_drops_a_reload_created_provider():
 # -- declaration swap ordering and the excluded-source flag ------------------
 
 
-def test_a_reload_swaps_declarations_under_the_manager_lock(tmp_path, monkeypatch):
+def test_a_reload_swaps_declarations_under_the_apply_lock(tmp_path, monkeypatch):
     """#274: a reload must not interleave with a panel mutation.
 
     The mutation persists and then syncs declarations while holding the
@@ -1073,7 +1073,7 @@ def test_a_reload_swaps_declarations_under_the_manager_lock(tmp_path, monkeypatc
     seen: list[bool] = []
 
     def recording(target, config):
-        seen.append(manager._lock._is_owned())
+        seen.append(manager._apply_lock._is_owned())
 
     monkeypatch.setattr(manager, "_reload_oauth_declarations", recording)
 
@@ -1173,3 +1173,100 @@ def test_apply_config_without_oauth_needs_no_provider(monkeypatch, tmp_path):
     monkeypatch.setattr(registry_builder, "register_mcp_source", fake_register)
     apply_config(ToolRegistry(), _config(path))
     assert calls == [None]
+
+
+TWO_MCP_SOURCES = """\
+  - type: mcp
+    transport: streamable-http
+    url: https://a.example.com/mcp
+    namespace: alpha
+  - type: mcp
+    transport: streamable-http
+    url: https://b.example.com/mcp
+    namespace: beta
+"""
+
+
+def test_startup_resolves_oauth_headers_concurrently(monkeypatch, tmp_path):
+    """#277: two slow token requests overlap instead of running in turn."""
+    import threading
+
+    barrier = threading.Barrier(2, timeout=5)
+
+    class Rendezvous(FakeProvider):
+        def headers_for(self, source):
+            # Both calls must be in flight at once, or the barrier breaks.
+            barrier.wait()
+            return {"Authorization": f"Bearer {source.namespace}"}
+
+    seen: list[str] = []
+
+    def fake_register(registry, source, *, oauth_headers=None):
+        seen.append(oauth_headers["Authorization"])
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", fake_register)
+    path = _write(tmp_path, TWO_MCP_SOURCES)
+    manager = SourceManager(
+        ToolRegistry(), _config(path), config_path=path, oauth_provider=Rendezvous()
+    )
+    entries = manager.apply_initial()
+    assert [entry.status for entry in entries] == [SourceStatus.APPLIED] * 2
+    # Registration keeps declaration order.
+    assert seen == ["Bearer alpha", "Bearer beta"]
+
+
+def test_a_prefetch_failure_fails_only_its_source(monkeypatch, tmp_path):
+    class OneFails(FakeProvider):
+        def headers_for(self, source):
+            if source.namespace == "alpha":
+                raise TransientOAuthError("idp down")
+            return {"Authorization": "Bearer AT"}
+
+    _patch_registration(monkeypatch)
+    path = _write(tmp_path, TWO_MCP_SOURCES)
+    manager = SourceManager(
+        ToolRegistry(), _config(path), config_path=path, oauth_provider=OneFails()
+    )
+    alpha, beta = manager.apply_initial()
+    assert alpha.status is SourceStatus.FAILED
+    assert "idp down" in (alpha.error or "")
+    assert beta.status is SourceStatus.APPLIED
+
+
+def test_status_reads_do_not_wait_for_a_connecting_source(monkeypatch, tmp_path):
+    """#265: list() answers while a mutation is blocked on network I/O."""
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_register(registry, source, *, oauth_headers=None):
+        started.set()
+        assert release.wait(timeout=10)
+
+    path = _write(tmp_path, MCP_SOURCE)
+    manager = SourceManager(
+        ToolRegistry(), _config(path), config_path=path, write_config=False
+    )
+    _patch_registration(monkeypatch)
+    manager.apply_initial()
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", slow_register)
+
+    new_source = dataclasses.replace(
+        manager.config.tools[0], namespace="other", url="https://o.example.com/mcp"
+    )
+    adder = threading.Thread(target=manager.add, args=(new_source,), daemon=True)
+    adder.start()
+    try:
+        assert started.wait(timeout=5)
+        answers: list[int] = []
+        reader = threading.Thread(
+            target=lambda: answers.append(len(manager.list())), daemon=True
+        )
+        reader.start()
+        reader.join(timeout=5)
+        assert answers == [1]
+    finally:
+        release.set()
+        adder.join(timeout=10)
+    assert len(manager.list()) == 2

@@ -49,6 +49,7 @@ import os
 import re
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
@@ -491,6 +492,22 @@ def _apply_profile_to_names(
             registry.disable(name, PROFILE_DISABLE_REASON)
 
 
+#: Upper bound on concurrent OAuth token requests at startup.
+MAX_OAUTH_PREFETCH = 8
+
+
+def _headers_or_error(provider: Any, source: ToolSource) -> Any:
+    """Return ``provider.headers_for(source)``, or the exception it raised.
+
+    ``BaseException`` is deliberately not caught, so an interrupt still
+    stops startup.
+    """
+    try:
+        return provider.headers_for(source)
+    except Exception as exc:  # noqa: BLE001 - reported per source
+        return exc
+
+
 def _in_scope(source: ToolSource, config: ToolConfig) -> bool:
     """Whether *source* should be registered under *config*."""
     return bool(source.enabled) and _should_load_source(source, config)
@@ -602,7 +619,15 @@ class SourceManager:
         self.oauth_provider = oauth_provider
         self.route_table: RouteTable | None = None
 
+        #: Guards the published state (:attr:`config`, :attr:`_entries`,
+        #: :attr:`last_reload_error`).  Held only to read or publish it,
+        #: never across network I/O, so status reads stay responsive while a
+        #: slow source connects.
         self._lock = threading.RLock()
+        #: Serialises every pass that registers sources: startup, mutations,
+        #: retries, refreshes and reloads.  Network I/O runs under this lock
+        #: only.  Lock order is ``_apply_lock`` then ``_lock``.
+        self._apply_lock = threading.RLock()
         self._entries: dict[SourceKey, SourceEntry] = {}
         #: The core integration that owns each OpenAPI source's spec, keyed
         #: like :attr:`_entries`.  A refresh calls the integration rather
@@ -633,22 +658,64 @@ class SourceManager:
         It is skipped when nothing was registered, and a failure is logged
         without unregistering the tools.
 
+        OAuth headers for the in-scope MCP sources are resolved concurrently
+        before the loop, so N protected sources cost about one identity-
+        provider round trip rather than N.  Registration itself still runs
+        in declaration order.
+
         Returns:
             One entry per source, in declaration order.
         """
-        with self._lock:
+        with self._apply_lock:
             entries: dict[SourceKey, SourceEntry] = {}
             registered: set[str] = set()
             self._openapi_integrations.clear()
-            for key, source in index_sources(self.config.tools).items():
-                entry = self._apply_source(key, source, self.config)
+            sources = index_sources(self.config.tools)
+            prefetched = self._prefetch_oauth_headers(sources, self.config)
+            for key, source in sources.items():
+                entry = self._apply_source(
+                    key, source, self.config, prefetched=prefetched
+                )
                 entries[key] = entry
                 registered.update(entry.names)
             self._notify_registered(registered)
             if self.config.tool_metadata:
                 self.registry.apply_metadata_config(self.config.tool_metadata)
-            self._entries = entries
+            with self._lock:
+                self._entries = entries
         return self.list()
+
+    def _prefetch_oauth_headers(
+        self, sources: Mapping[SourceKey, ToolSource], config: ToolConfig
+    ) -> dict[SourceKey, Any]:
+        """Resolve OAuth headers for the in-scope MCP sources concurrently.
+
+        The provider's per-source locks serialise work per declaration, so
+        running different sources in parallel is safe.  Each value is the
+        header mapping, ``None``, or the exception ``headers_for`` raised.
+
+        Returns:
+            Results keyed by source; empty when there is nothing to overlap.
+        """
+        provider = self.oauth_provider
+        if provider is None:
+            return {}
+        targets = [
+            (key, source)
+            for key, source in sources.items()
+            if isinstance(source, MCPSource) and _in_scope(source, config)
+        ]
+        if len(targets) < 2:
+            return {}
+        workers = min(len(targets), MAX_OAUTH_PREFETCH)
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="oauth-prefetch"
+        ) as pool:
+            futures = {
+                key: pool.submit(_headers_or_error, provider, source)
+                for key, source in targets
+            }
+            return {key: future.result() for key, future in futures.items()}
 
     # ---- Query API -------------------------------------------------------
 
@@ -717,7 +784,7 @@ class SourceManager:
         Returns:
             The mutation result for the new source.
         """
-        with self._lock:
+        with self._apply_lock:
             tools = (*self.config.tools, source)
             new_config = dataclasses.replace(self.config, tools=tools)
             self._validate_oauth_clients(new_config)
@@ -738,7 +805,7 @@ class SourceManager:
         Raises:
             KeyError: If *ref* is not a currently declared source.
         """
-        with self._lock:
+        with self._apply_lock:
             key = self.resolve_key(ref)
             position = self._position_of(key)
             removed = self._entries[key]
@@ -764,7 +831,7 @@ class SourceManager:
         Raises:
             KeyError: If *ref* is not a currently declared source.
         """
-        with self._lock:
+        with self._apply_lock:
             key = self.resolve_key(ref)
             position = self._position_of(key)
             tools = list(self.config.tools)
@@ -792,7 +859,7 @@ class SourceManager:
         Raises:
             KeyError: If *ref* is not a currently declared source.
         """
-        with self._lock:
+        with self._apply_lock:
             key = self.resolve_key(ref)
             entry = self._entries[key]
             if entry.status is not SourceStatus.FAILED:
@@ -810,7 +877,8 @@ class SourceManager:
                     self.on_registered(self.registry, set(entry.names))
                 if self.profile and entry.names:
                     _apply_profile_to_names(self.registry, entry.names, self.profile)
-                self._entries[key] = entry
+                with self._lock:
+                    self._entries[key] = entry
             # A successful retry registers tools without a diff; apply the
             # current block to the names it brought back.
             self._sync_parameter_overrides(self.config, self.config, set(entry.names))
@@ -857,7 +925,7 @@ class SourceManager:
                 refreshed document contains an invalid regex.  The affected
                 tools are dropped first.
         """
-        with self._lock:
+        with self._apply_lock:
             key, entry, source, integration = self._refresh_target(ref)
             scope = (
                 self.route_table.batch_changes()
@@ -1061,12 +1129,13 @@ class SourceManager:
         names = (
             entry.names - frozenset(result.removed) - frozenset(dropped)
         ) | frozenset(result.added)
-        self._entries[key] = dataclasses.replace(
-            entry,
-            names=frozenset(names),
-            status=SourceStatus.APPLIED,
-            error=None,
-        )
+        with self._lock:
+            self._entries[key] = dataclasses.replace(
+                entry,
+                names=frozenset(names),
+                status=SourceStatus.APPLIED,
+                error=None,
+            )
         added = set(result.added)
         if added:
             self._notify_registered(added)
@@ -1137,14 +1206,17 @@ class SourceManager:
         # The declaration swap and the source diff run under one lock: a
         # panel mutation that persists and then syncs declarations must not
         # interleave with a reload that swaps them, or the provider can end
-        # up holding a mix of the file and the in-memory config.
-        with self._lock:
+        # up holding a mix of the file and the in-memory config.  It is the
+        # apply lock, so status reads are not blocked by the reload's
+        # network I/O.
+        with self._apply_lock:
             try:
                 self._reload_oauth_declarations(target, config)
             except Exception as exc:  # noqa: BLE001 - a bad edit must not kill
                 return self._reload_failed(exc)
             self._apply_diff(config)
-            self.last_reload_error = None
+            with self._lock:
+                self.last_reload_error = None
         return True
 
     def _reload_failed(self, exc: BaseException) -> bool:
@@ -1288,20 +1360,30 @@ class SourceManager:
         key: SourceKey,
         source: ToolSource,
         config: ToolConfig,
+        *,
+        prefetched: Mapping[SourceKey, Any] | None = None,
     ) -> SourceEntry:
-        """Register one source and return its entry, recording failures."""
+        """Register one source and return its entry, recording failures.
+
+        *prefetched* holds the outcome of a concurrent ``headers_for`` call
+        made by :meth:`apply_initial`; a source missing from it is resolved
+        here.
+        """
         if not _in_scope(source, config):
             return SourceEntry(key, source, frozenset(), SourceStatus.EXCLUDED)
         oauth_headers: Mapping[str, str] | None = None
         if isinstance(source, MCPSource) and self.oauth_provider is not None:
-            try:
-                oauth_headers = self.oauth_provider.headers_for(source)
-            except Exception as exc:  # noqa: BLE001 - one source must not abort
+            if prefetched is not None and key in prefetched:
+                outcome = prefetched[key]
+            else:
+                outcome = _headers_or_error(self.oauth_provider, source)
+            if isinstance(outcome, Exception):
                 # A store failure is typed as ``TransientOAuthError`` by the
                 # provider; anything else reaching here is a bug, but it still
                 # becomes a FAILED entry rather than killing startup or a
-                # mutation.  ``BaseException`` is deliberately not caught.
-                return self._oauth_failure(key, source, exc)
+                # mutation.
+                return self._oauth_failure(key, source, outcome)
+            oauth_headers = outcome
         before_integrations = len(self.registry._openapi_integrations)
         try:
             names = _register_source(
@@ -1475,8 +1557,9 @@ class SourceManager:
                 # Publish the state even when a downstream hook raises: the
                 # registry already holds the new tools, so leaving the
                 # manager on the old config would desynchronise them.
-                self.config = new_config
-                self._entries = entries
+                with self._lock:
+                    self.config = new_config
+                    self._entries = entries
         self._sync_parameter_overrides(previous_config, new_config, new_names)
         return counts
 
