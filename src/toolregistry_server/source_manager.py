@@ -670,6 +670,12 @@ class SourceManager:
         #: revalidation pass can tell a rotated token from an unchanged one.
         #: Kept in memory only; never part of a status payload.
         self._oauth_headers: dict[SourceKey, dict[str, str]] = {}
+        #: The core MCP integration each MCP source registered through, so a
+        #: reconnect or a credential failure can close its connection.
+        self._mcp_integrations: dict[SourceKey, Any] = {}
+        #: Sources a background reconnect left ``FAILED`` for a transient
+        #: reason; the next revalidation pass retries them.
+        self._reconnect_pending: set[SourceKey] = set()
         #: Error from the most recent watcher reload, cleared on success.
         self.last_reload_error: str | None = None
 
@@ -1297,7 +1303,22 @@ class SourceManager:
                     ]
                 for key, entry in candidates:
                     self._revalidate_one(provider, key, entry, check)
+                self._retry_pending_reconnects()
         return self.list()
+
+    def _retry_pending_reconnects(self) -> None:
+        """Retry sources a background reconnect left failed transiently."""
+        for key in sorted(self._reconnect_pending, key=repr):
+            with self._lock:
+                entry = self._entries.get(key)
+            if entry is None or entry.status is not SourceStatus.FAILED:
+                self._reconnect_pending.discard(key)
+                continue
+            if entry.reauth_required:
+                self._reconnect_pending.discard(key)
+                continue
+            if self.retry(key).status is not SourceStatus.FAILED:
+                self._reconnect_pending.discard(key)
 
     def _revalidate_one(
         self,
@@ -1320,11 +1341,13 @@ class SourceManager:
                 )
             return
         if outcome is None:
-            # The declaration left; the next diff reconnects without it.
-            return
-        if dict(outcome) != self._oauth_headers.get(key):
+            # The declaration left the file, but an unchanged source is not
+            # re-registered by the diff, so the live connection would keep
+            # presenting the old bearer.  Reconnect without it.
             self._reconnect(key, entry)
             return
+        # Probe first, whether or not the token rotated: a working source is
+        # never torn down until the header it would reconnect with is proven.
         try:
             probe(source, outcome)
         except Exception as exc:  # noqa: BLE001 - one source must not abort
@@ -1341,6 +1364,9 @@ class SourceManager:
                 entry,
                 f"HTTP {status} from the MCP server; the OAuth token was rejected",
             )
+            return
+        if dict(outcome) != self._oauth_headers.get(key):
+            self._reconnect(key, entry)
 
     def _fail_live_source(
         self, key: SourceKey, entry: SourceEntry, message: str
@@ -1365,6 +1391,7 @@ class SourceManager:
             _remove_names(self.registry, entry.names, counts)
             self._openapi_integrations.pop(key, None)
             self._oauth_headers.pop(key, None)
+            self._close_mcp_integration(key)
             with self._lock:
                 self._entries[key] = SourceEntry(
                     key,
@@ -1376,7 +1403,26 @@ class SourceManager:
                 )
 
     def _reconnect(self, key: SourceKey, entry: SourceEntry) -> None:
-        """Re-register a source so its connection carries the current header."""
+        """Re-register a source so its connection carries the current header.
+
+        Core's unregister drops a tool's disabled flag and its override, so
+        both are captured first and put back on the names that come back:
+        a token rotation must not re-enable a tool the operator disabled or
+        discard a runtime override.  The old MCP connection is closed so a
+        periodic reconnect does not accumulate connections that still hold
+        the previous token.  A transient failure here leaves the source
+        ``FAILED``; the next revalidation pass retries it.
+        """
+        disabled = {
+            name: self.registry.get_disable_reason(name) or ""
+            for name in entry.names
+            if not self.registry.is_enabled(name)
+        }
+        overrides = {
+            name: self.registry._tools[name]
+            for name in entry.names
+            if name in self.registry._overrides and name in self.registry._tools
+        }
         counts = {"registered": 0, "unregistered": 0, "enabled": 0, "disabled": 0}
         scope = (
             self.route_table.batch_changes()
@@ -1385,11 +1431,47 @@ class SourceManager:
         )
         with scope:
             _remove_names(self.registry, entry.names, counts)
+            self._close_mcp_integration(key)
             fresh = self._apply_source(key, entry.source, self.config)
             self._after_registration(self.config, set(fresh.names))
+            for name, tool in overrides.items():
+                if name in fresh.names:
+                    self.registry._reinstate_override(name, tool)
+            for name, reason in disabled.items():
+                if name in fresh.names:
+                    self.registry.disable(name, reason)
             with self._lock:
                 self._entries[key] = fresh
+        if fresh.status is SourceStatus.FAILED and not fresh.reauth_required:
+            self._reconnect_pending.add(key)
+        else:
+            self._reconnect_pending.discard(key)
         self._sync_parameter_overrides(self.config, self.config, set(fresh.names))
+
+    def _remember_mcp_integration(
+        self, key: SourceKey, source: ToolSource, before: int
+    ) -> None:
+        """Record the MCP integration a registration pass appended."""
+        if not isinstance(source, MCPSource):
+            return
+        appended = list(getattr(self.registry, "_mcp_integrations", ()))[before:]
+        if appended:
+            self._mcp_integrations[key] = appended[-1]
+
+    def _close_mcp_integration(self, key: SourceKey) -> None:
+        """Close and forget the MCP integration *key* registered through."""
+        integration = self._mcp_integrations.pop(key, None)
+        if integration is None:
+            return
+        tracked = getattr(self.registry, "_mcp_integrations", None)
+        if tracked is not None and integration in tracked:
+            tracked.remove(integration)
+        try:
+            integration.close_sync()
+        except Exception as exc:  # noqa: BLE001 - closing is best-effort
+            logger.warning(
+                f"Could not close the previous MCP connection: {_safe_error(exc)}"
+            )
 
     def _reload_failed(self, exc: BaseException) -> bool:
         """Record and log a skipped reload.
@@ -1557,6 +1639,7 @@ class SourceManager:
                 return self._oauth_failure(key, source, outcome)
             oauth_headers = outcome
         before_integrations = len(self.registry._openapi_integrations)
+        before_mcp = len(getattr(self.registry, "_mcp_integrations", ()))
         try:
             names = _register_source(
                 self.registry,
@@ -1604,6 +1687,7 @@ class SourceManager:
                 key, source, frozenset(), SourceStatus.FAILED, _safe_error(exc)
             )
         self._remember_integration(key, source, before_integrations)
+        self._remember_mcp_integration(key, source, before_mcp)
         if oauth_headers is not None:
             # Only a successful connect proves the credential works end to end.
             self._mark_oauth_accepted(source)
@@ -1706,6 +1790,8 @@ class SourceManager:
             # Sources no longer declared: their tools leave the registry.
             for key in set(old_sources) - set(new_sources):
                 self._openapi_integrations.pop(key, None)
+                self._oauth_headers.pop(key, None)
+                self._reconnect_pending.discard(key)
                 entry = self._entries.get(key)
                 if entry is not None:
                     _remove_names(self.registry, entry.names, counts)

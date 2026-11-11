@@ -1322,8 +1322,8 @@ def test_revalidation_reconnects_after_a_token_rotation(monkeypatch, tmp_path):
     (entry,) = manager.revalidate_oauth(probe=lambda s, h: probed.append(h))
     assert entry.status is SourceStatus.APPLIED
     assert calls[-1] == {"Authorization": "Bearer NEW"}
-    # A reconnect already proves the new header; no separate probe runs.
-    assert probed == []
+    # The new header is probed before the working source is torn down.
+    assert probed == [{"Authorization": "Bearer NEW"}]
 
 
 def test_revalidation_probe_rejection_requires_reauth(monkeypatch, tmp_path):
@@ -1356,4 +1356,90 @@ def test_revalidation_without_oauth_does_nothing(monkeypatch, tmp_path):
         raise AssertionError("probed a source without OAuth")
 
     (entry,) = manager.revalidate_oauth(probe=boom)
+    assert entry.status is SourceStatus.APPLIED
+
+
+def _registering_manager(monkeypatch, tmp_path, outcomes):
+    """A live manager whose fake registration adds one tool per connect."""
+    registered: list[object] = []
+
+    def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    class _Integration:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close_sync(self) -> None:
+            self.closed = True
+
+    def fake_register(registry, source, *, oauth_headers=None):
+        outcome = outcomes.pop(0) if outcomes else None
+        if isinstance(outcome, BaseException):
+            raise outcome
+        registry.register(ping, namespace=source.namespace)
+        integration = _Integration()
+        registry._mcp_integrations.append(integration)
+        registered.append(integration)
+
+    monkeypatch.setattr(source_manager_module, "register_mcp_source", fake_register)
+    path = _write(tmp_path, MCP_SOURCE)
+    provider = _Scripted()
+    manager = SourceManager(
+        ToolRegistry(),
+        _config(path),
+        config_path=path,
+        write_config=False,
+        oauth_provider=provider,
+    )
+    (entry,) = manager.apply_initial()
+    assert entry.status is SourceStatus.APPLIED
+    return manager, provider, registered
+
+
+def test_a_rotation_keeps_a_disabled_tool_disabled(monkeypatch, tmp_path):
+    manager, provider, _ = _registering_manager(monkeypatch, tmp_path, [])
+    (name,) = manager.list()[0].names
+    manager.registry.disable(name, "operator")
+    provider.outcome = {"Authorization": "Bearer NEW"}
+    (entry,) = manager.revalidate_oauth(probe=_no_probe)
+    assert entry.status is SourceStatus.APPLIED
+    assert name in entry.names
+    assert manager.registry.is_enabled(name) is False
+    assert manager.registry.get_disable_reason(name) == "operator"
+
+
+def test_a_rotation_closes_the_previous_connection(monkeypatch, tmp_path):
+    manager, provider, registered = _registering_manager(monkeypatch, tmp_path, [])
+    provider.outcome = {"Authorization": "Bearer NEW"}
+    manager.revalidate_oauth(probe=_no_probe)
+    first, second = registered
+    assert first.closed is True
+    assert first not in manager.registry._mcp_integrations
+    assert second in manager.registry._mcp_integrations
+
+
+def test_a_rejected_new_header_keeps_the_working_source(monkeypatch, tmp_path):
+    manager, provider, registered = _registering_manager(monkeypatch, tmp_path, [])
+    provider.outcome = {"Authorization": "Bearer NEW"}
+
+    def unreachable(source, headers):
+        raise OSError("connection refused")
+
+    (entry,) = manager.revalidate_oauth(probe=unreachable)
+    # An inconclusive probe never tears the live source down.
+    assert entry.status is SourceStatus.APPLIED
+    assert len(registered) == 1
+
+
+def test_a_transient_reconnect_failure_is_retried(monkeypatch, tmp_path):
+    outcomes: list[object] = [None, OSError("blip")]
+    manager, provider, _ = _registering_manager(monkeypatch, tmp_path, outcomes)
+    provider.outcome = {"Authorization": "Bearer NEW"}
+    (entry,) = manager.revalidate_oauth(probe=_no_probe)
+    assert entry.status is SourceStatus.FAILED
+    assert entry.reauth_required is False
+    # The next pass retries it instead of skipping a FAILED entry forever.
+    (entry,) = manager.revalidate_oauth(probe=_no_probe)
     assert entry.status is SourceStatus.APPLIED
