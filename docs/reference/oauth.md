@@ -96,7 +96,7 @@ configured audience.
 | Protected-resource metadata (RFC 9728) | `/.well-known/oauth-protected-resource<mcp path>` | `resource`, `authorization_servers: [issuer]`, `bearer_methods_supported`. `scopes_supported` only when `--oauth-scopes` is set |
 | 401 challenge | Every rejected request | `WWW-Authenticate: Bearer resource_metadata="<PRM URL>"` |
 | OpenAPI security scheme | `/openapi.json` | `OAuth2` (`authorizationCode`) plus `HTTPBearer` when keys or static tokens are also accepted |
-| Expected token claims | Every request | `iss` (exact), `aud` or `resource`, `exp`, optional `nbf`; `scope` (or `scp`) for scope mapping; `client_id` or `azp` for the client identity; the `--oauth-concurrency-claim` claim (default `max_concurrency`) for an in-flight limit |
+| Expected token claims | Every request | `iss` (exact), `aud` or `resource`, `exp`, optional `nbf`, and `iat` when present (a future `iat` is rejected within the 60 s leeway); `scope` (or `scp`) for scope mapping; `client_id` or `azp` for the client identity; the `--oauth-concurrency-claim` claim (default `max_concurrency`) for an in-flight limit |
 
 ## Swagger UI redirect page
 
@@ -357,6 +357,12 @@ Token verification runs on the vendored `zerodep` JWS module, so no OAuth path
 needs a third-party cryptography package. RS256/RS384/RS512, PS256/PS384/PS512
 and ES256/ES384 are supported; the default allowlist is `RS256` and `ES256`.
 The standalone `openapi` command therefore works with the base install.
+
+The module applies any public-key operation through `libcrypto` over `ctypes`
+when the library is available, and falls back to pure Python otherwise; the
+result is the same either way. `ZERODEP_JWT_BACKEND=python` forces the
+fallback, and `toolregistry_server._vendor.jwt.BACKEND` reports which one is
+active.
 
 ### Callback allowlist, outbound screening and the panel flow
 
