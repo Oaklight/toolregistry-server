@@ -286,9 +286,8 @@ def _metadata_url_candidates(issuer: str) -> tuple[str, ...]:
 def _load_json(url: str, timeout: float, *, allow_private_hosts: bool = False) -> Any:
     """Fetch and decode one JSON document.
 
-    Kept module-level so tests can patch ``urllib.request.urlopen`` once,
-    and importing ``urllib`` lazily keeps a verifier that is never used from
-    touching the network stack.
+    Kept module-level so tests can patch :func:`_outbound.open_url` once.
+    Redirects are refused: the outbound policy screens only this URL.
 
     Raises:
         Exception: Whatever the transport raises; callers decide whether a
@@ -296,9 +295,7 @@ def _load_json(url: str, timeout: float, *, allow_private_hosts: bool = False) -
             the outbound address policy refuses the host.
     """
     _outbound.screen_url(url, allow_private_hosts=allow_private_hosts)
-    from urllib.request import urlopen
-
-    with urlopen(url, timeout=timeout) as response:  # noqa: S310
+    with _outbound.open_url(url, timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -337,7 +334,9 @@ def _post_form(
         headers=dict(headers),
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+    # A redirect would replay the HTTP Basic credential to the new host, so
+    # it is refused rather than followed.
+    with _outbound.open_url(request, timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

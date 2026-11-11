@@ -34,7 +34,12 @@ from toolregistry_server.isolation import (
     limiter_key,
     principal_key,
 )
-from toolregistry_server.oauth import OAuthResolver, OAuthSettings, OAuthTokenVerifier
+from toolregistry_server.oauth import (
+    OAuthResolver,
+    OAuthSettings,
+    OAuthTokenVerifier,
+    _outbound,
+)
 
 ISSUER = "https://idp.example.com/realms/dev"
 AUDIENCE = "https://tools.example.com/mcp"
@@ -72,7 +77,7 @@ def _urlopen(url: Any, timeout: float | None = None) -> _Response:
 
 @pytest.fixture(autouse=True)
 def _jwks(monkeypatch):
-    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    monkeypatch.setattr(_outbound, "open_url", _urlopen)
 
 
 def _settings(**overrides) -> OAuthSettings:
