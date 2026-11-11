@@ -638,11 +638,17 @@ class OAuthClientProvider:
         """
         store = self._store_call(self._store_for, declaration)
         with self._token_lock(declaration.source):
-            record = self._live_record(declaration, store, source_url)
-            if record is not None:
-                return record
-            if declaration.grant == "client_credentials":
-                return self._client_credentials(declaration, store, source_url)
+            # Another process sharing the store may be refreshing the same
+            # source; wait for it, then the row read below sees its result.
+            release = self._store_call(store.acquire_refresh_lock, declaration.source)
+            try:
+                record = self._live_record(declaration, store, source_url)
+                if record is not None:
+                    return record
+                if declaration.grant == "client_credentials":
+                    return self._client_credentials(declaration, store, source_url)
+            finally:
+                release()
         raise ReauthorizationRequired(
             f"{declaration.source} has no usable token; authorize it"
         )
@@ -1161,16 +1167,19 @@ class OAuthClientProvider:
             "redirect_uri": pending.redirect_uri,
             "code_verifier": pending.code_verifier,
         }
+        store = self._store_call(self._store_for, declaration)
         with self._token_lock(declaration.source):
             # The exchange and the write must not interleave with a concurrent
-            # access_token: a refresh holding the old refresh token could
-            # otherwise write after this completion and clobber the new grant.
-            record = self._exchange(
-                declaration,
-                self._store_call(self._store_for, declaration),
-                fields,
-                source_url=pending.source_url,
-            )
+            # access_token, in this process or another one sharing the store:
+            # a refresh holding the old refresh token could otherwise write
+            # after this completion and clobber the new grant.
+            release = self._store_call(store.acquire_refresh_lock, declaration.source)
+            try:
+                record = self._exchange(
+                    declaration, store, fields, source_url=pending.source_url
+                )
+            finally:
+                release()
         return record.to_public_dict()
 
     def _resolve_declaration(self, source: str | ToolSource) -> OAuthClientConfig:

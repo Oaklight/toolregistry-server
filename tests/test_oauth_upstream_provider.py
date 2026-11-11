@@ -1616,3 +1616,45 @@ def test_complete_authorization_rechecks_the_redirect_uri(store, clock):
     with pytest.raises(OAuthStateError, match="no longer allowed"):
         provider.complete_authorization("CODE", request.state)
     assert transport.posts == []
+
+
+def test_two_providers_sharing_a_store_post_once(tmp_path, clock):
+    """#266: the waiter re-reads the row the holder stored and reuses it."""
+    path = str(tmp_path / "tokens.db")
+    started = threading.Event()
+    proceed = threading.Event()
+
+    class Slow(FakeTransport):
+        def post_form(self, url, fields, headers, timeout):
+            started.set()
+            assert proceed.wait(timeout=10)
+            return super().post_form(url, fields, headers, timeout)
+
+    first_transport = Slow(responses=[{"access_token": "AT", "expires_in": 3600}])
+    second_transport = FakeTransport(responses=[])
+    declaration = _declaration(token_store=path)
+    first = OAuthClientProvider((declaration,), transport=first_transport, clock=clock)
+    second = OAuthClientProvider(
+        (declaration,), transport=second_transport, clock=clock
+    )
+    results: dict[str, object] = {}
+    holder = threading.Thread(
+        target=lambda: results.__setitem__("first", first.headers_for(_source()))
+    )
+    holder.start()
+    try:
+        assert started.wait(timeout=5)
+        waiter = threading.Thread(
+            target=lambda: results.__setitem__("second", second.headers_for(_source()))
+        )
+        waiter.start()
+        proceed.set()
+        holder.join(timeout=10)
+        waiter.join(timeout=10)
+    finally:
+        proceed.set()
+        first.close()
+        second.close()
+    assert results["first"] == results["second"] == {"Authorization": "Bearer AT"}
+    assert len(first_transport.posts) == 1
+    assert second_transport.posts == []

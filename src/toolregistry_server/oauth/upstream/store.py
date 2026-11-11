@@ -25,6 +25,7 @@ Security notes:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import random
@@ -283,6 +284,13 @@ BUSY_RETRIES = 3
 #: Base backoff for a retried busy write, in seconds.
 _BUSY_BACKOFF = 0.05
 
+#: Seconds a token acquisition waits for another process holding the same
+#: source's refresh lock before reporting the store as unavailable.
+REFRESH_LOCK_TIMEOUT = 30.0
+
+#: Poll interval while waiting for the refresh lock, in seconds.
+_REFRESH_LOCK_POLL = 0.05
+
 #: ``O_NOFOLLOW`` where the platform has it.  A zero value means the platform
 #: cannot refuse a symlink at ``open`` time; the ``lstat`` check still runs.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -354,6 +362,10 @@ def _create_private_file(database: str) -> None:
     os.close(descriptor)
 
 
+def _no_release() -> None:
+    """Release nothing: the store has no other process to coordinate with."""
+
+
 def _restrict_permissions(database: str) -> None:
     """Make the database and its WAL sidecars owner-only."""
     for candidate in (database, f"{database}-wal", f"{database}-shm"):
@@ -406,6 +418,72 @@ class TokenStore:
     def path(self) -> str:
         """Return the database path this store opened."""
         return self._path
+
+    def acquire_refresh_lock(
+        self, source_id: str, timeout: float | None = None
+    ) -> Callable[[], None]:
+        """Take the cross-process lock that serialises one source's token work.
+
+        Two processes sharing this file would otherwise both refresh an
+        expiring token, and an identity provider that rotates refresh tokens
+        on use would retire one of the results.  The lock is an exclusive
+        ``flock`` on a per-source file in ``<database>.locks/``; the waiter
+        re-reads the row after acquiring it and reuses the token the holder
+        stored.  The kernel releases the lock when the holder's descriptor
+        closes, including when the process dies, so there is no stale lease.
+        Threads of one process are already serialised per source by the
+        provider, and different sources use different files, so this lock
+        never serialises unrelated sources.
+
+        An in-memory store, or a platform without ``fcntl``, has no other
+        process to coordinate with and returns a no-op release.
+
+        Args:
+            source_id: The selector whose token is being acquired.
+            timeout: Seconds to wait; defaults to :data:`REFRESH_LOCK_TIMEOUT`.
+
+        Returns:
+            A callable that releases the lock.
+
+        Raises:
+            TimeoutError: If another process holds the lock past *timeout*.
+            OSError: If the lock file cannot be created safely.
+        """
+        if self._path == ":memory:":
+            return _no_release
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - non-POSIX platform
+            return _no_release
+        directory = f"{self._path}.locks"
+        _prepare_directory(os.path.join(directory, "x"))
+        name = hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:32]
+        lock_path = os.path.join(directory, name)
+        _refuse_unsafe_target(lock_path)
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | _NOFOLLOW, 0o600)
+        wait = REFRESH_LOCK_TIMEOUT if timeout is None else timeout
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(descriptor)
+                    raise TimeoutError(
+                        "another process holds the OAuth refresh lock"
+                    ) from None
+                time.sleep(_REFRESH_LOCK_POLL)
+            except OSError:
+                os.close(descriptor)
+                raise
+
+        def release() -> None:
+            # Closing the descriptor drops the flock with it.
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+        return release
 
     def _run_write(
         self, statement: str, parameters: tuple[Any, ...] = ()
