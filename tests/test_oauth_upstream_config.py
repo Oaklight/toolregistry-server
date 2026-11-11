@@ -469,3 +469,32 @@ def test_malformed_redirect_uris_are_rejected(tmp_path, value):
               redirect_uris: {value}
             """,
         )
+
+
+def test_allow_private_hosts_is_parsed(tmp_path):
+    declarations = _load(
+        tmp_path,
+        """\
+        - source: "namespace:example"
+          issuer: https://idp.example.com
+          client_id: toolregistry
+          client_secret: secret
+          allow_private_hosts: true
+        """,
+    )
+    assert declarations[0].allow_private_hosts is True
+    assert declarations[0].to_dict()["allow_private_hosts"] is True
+
+
+def test_a_non_boolean_allow_private_hosts_is_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="allow_private_hosts"):
+        _load(
+            tmp_path,
+            """\
+            - source: "namespace:example"
+              issuer: https://idp.example.com
+              client_id: toolregistry
+              client_secret: secret
+              allow_private_hosts: "yes"
+            """,
+        )

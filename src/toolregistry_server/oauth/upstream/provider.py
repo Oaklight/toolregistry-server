@@ -58,6 +58,7 @@ from urllib.parse import urlencode, urlsplit
 from toolregistry.config import ToolSource
 
 from ..._vendor.structlog import get_logger
+from .. import _outbound
 from ..verifier import _metadata_url_candidates
 from .config import (
     DEFAULT_EXPIRY_SKEW,
@@ -294,12 +295,9 @@ class UrllibTransport:
     host.  A redirect is reported as :class:`OAuthHTTPError` with its own
     status, which the provider classifies as transient.
 
-    The transport does not apply an outbound address policy.  The operator
-    supplies every URL it dials, but the URLs are not screened by
-    :mod:`toolregistry.netpolicy`: discovery and the token POST can reach a
-    loopback or link-local host if the configuration names one.  That matches
-    :mod:`toolregistry_server.oauth.verifier`.  Screening is tracked as #264;
-    nothing implements it here.
+    The transport itself applies no address policy: the provider screens
+    every URL through :mod:`toolregistry.netpolicy` before calling it (#264),
+    honouring the declaration's ``allow_private_hosts`` opt-in.
     """
 
     def get_json(self, url: str, timeout: float) -> Any:
@@ -907,6 +905,28 @@ class OAuthClientProvider:
         with self._lock:
             return self._metadata.pop(key, None) is not None
 
+    @staticmethod
+    def _screen(declaration: OAuthClientConfig, url: str) -> None:
+        """Refuse an endpoint the outbound address policy does not allow.
+
+        A refusal is transient: it says nothing about the credential, and
+        the grant stays in the store.  The message names neither the URL nor
+        a resolved address.
+
+        Raises:
+            TransientOAuthError: If the policy refuses the host.
+        """
+        try:
+            _outbound.screen_url(
+                url, allow_private_hosts=declaration.allow_private_hosts
+            )
+        except _outbound.OutboundRefused:
+            raise TransientOAuthError(
+                f"{declaration.source}: OAuth endpoint refused by the outbound "
+                "address policy; set allow_private_hosts on its oauth.clients "
+                "entry to permit a private host"
+            ) from None
+
     def _request_token(
         self, declaration: OAuthClientConfig, fields: dict[str, str]
     ) -> dict[str, Any]:
@@ -920,6 +940,7 @@ class OAuthClientProvider:
         else:
             body["client_id"] = declaration.client_id
             body["client_secret"] = secret
+        self._screen(declaration, endpoint)
         payload = self._transport.post_form(endpoint, body, headers, self._timeout)
         if not isinstance(payload, dict):
             raise OAuthClientError("OAuth token endpoint returned a non-object body")
@@ -1241,6 +1262,7 @@ class OAuthClientProvider:
             raise OAuthClientError("no issuer or discovery_url to discover")
         for url in urls:
             try:
+                self._screen(declaration, url)
                 document = self._transport.get_json(url, self._timeout)
             except (OAuthHTTPError, TransientOAuthError):
                 continue

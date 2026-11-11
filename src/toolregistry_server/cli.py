@@ -532,6 +532,15 @@ class CLI:
             ),
         )
         group.add_argument(
+            "--oauth-allow-private-hosts",
+            action="store_true",
+            default=None,
+            help=(
+                "Let OAuth discovery, JWKS and introspection reach a loopback, "
+                "link-local or private address; refused by default"
+            ),
+        )
+        group.add_argument(
             "--oauth-concurrency-claim",
             default=None,
             metavar="CLAIM",

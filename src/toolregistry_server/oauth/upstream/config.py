@@ -80,6 +80,7 @@ OAUTH_CLIENT_KEYS: frozenset[str] = frozenset(
         "client_auth",
         "token_store",
         "redirect_uris",
+        "allow_private_hosts",
     }
 )
 
@@ -122,6 +123,9 @@ class OAuthClientConfig:
         redirect_uris: Callback URLs an authorization-code flow may use,
             compared exactly.  Empty refuses every flow, so a caller that can
             start one cannot have the code delivered to a host it controls.
+        allow_private_hosts: Let discovery and the token request reach a
+            loopback, link-local or private address.  Refused by default by
+            the outbound address policy (#264).
     """
 
     source: str
@@ -138,6 +142,7 @@ class OAuthClientConfig:
     )
     token_store: str | None = None
     redirect_uris: tuple[str, ...] = ()
+    allow_private_hosts: bool = False
 
     @property
     def store_path(self) -> str:
@@ -174,6 +179,8 @@ class OAuthClientConfig:
             data["token_store"] = self.token_store
         if self.redirect_uris:
             data["redirect_uris"] = list(self.redirect_uris)
+        if self.allow_private_hosts:
+            data["allow_private_hosts"] = True
         return data
 
 
@@ -310,6 +317,9 @@ def _build_declaration(entry: Any, index: int) -> OAuthClientConfig:
         client_auth=client_auth,
         token_store=_token_store_path(entry.get("token_store"), where),
         redirect_uris=_parse_redirect_uris(entry.get("redirect_uris"), where),
+        allow_private_hosts=_optional_bool(
+            entry.get("allow_private_hosts"), f"{where}.allow_private_hosts"
+        ),
     )
 
 
@@ -402,6 +412,15 @@ def _parse_scopes(value: Any, where: str) -> tuple[str, ...]:
         if scope not in scopes:
             scopes.append(scope)
     return tuple(scopes)
+
+
+def _optional_bool(value: Any, where: str) -> bool:
+    """Return an optional boolean field, ``False`` when absent."""
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where} must be a boolean, got {value!r}")
+    return value
 
 
 def _parse_redirect_uris(value: Any, where: str) -> tuple[str, ...]:

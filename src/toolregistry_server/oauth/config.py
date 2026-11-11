@@ -72,6 +72,7 @@ OAUTH_SECTION_KEYS = frozenset(
         "introspection_optional",
         "concurrency_claim",
         "client_concurrency",
+        "allow_private_hosts",
         "clients",
     }
 )

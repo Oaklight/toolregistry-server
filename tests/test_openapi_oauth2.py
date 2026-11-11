@@ -190,7 +190,7 @@ class TestDocumentSecurity:
     def test_the_scheme_is_omitted_when_no_endpoint_is_known(self, monkeypatch):
         monkeypatch.setattr(
             "toolregistry_server.oauth.openapi.iter_authorization_server_metadata",
-            lambda issuer, timeout: iter(()),
+            lambda issuer, timeout, **_: iter(()),
         )
 
         document = _document(
@@ -207,7 +207,7 @@ class TestEndpointDiscovery:
     def _metadata(self, monkeypatch, document: dict) -> None:
         monkeypatch.setattr(
             "toolregistry_server.oauth.openapi.iter_authorization_server_metadata",
-            lambda issuer, timeout: iter((document,)),
+            lambda issuer, timeout, **_: iter((document,)),
         )
 
     def test_endpoints_come_from_the_issuer_metadata(self, monkeypatch):
