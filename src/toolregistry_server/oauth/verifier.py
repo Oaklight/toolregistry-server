@@ -42,6 +42,7 @@ from urllib.parse import urlencode
 
 from .._vendor.structlog import get_logger
 from ..keystore import Principal, PrincipalResolver, ScopeSpec
+from . import _outbound
 
 logger = get_logger()
 
@@ -142,6 +143,9 @@ class OAuthSettings:
         client_max_concurrency: Static per-client limits keyed by the
             ``client_id`` or ``azp`` claim.  A valid concurrency claim wins
             over this table.
+        allow_private_hosts: Let discovery, JWKS and introspection reach a
+            loopback, link-local or private address.  By default the
+            outbound address policy refuses such a host (#264).
     """
 
     issuer: str
@@ -165,6 +169,7 @@ class OAuthSettings:
     introspection_optional: bool = False
     concurrency_claim: str = DEFAULT_CONCURRENCY_CLAIM
     client_max_concurrency: Mapping[str, int] = field(default_factory=dict)
+    allow_private_hosts: bool = False
 
     def __post_init__(self) -> None:
         if not self.issuer.strip():
@@ -278,7 +283,7 @@ def _metadata_url_candidates(issuer: str) -> tuple[str, ...]:
     return tuple(unique)
 
 
-def _load_json(url: str, timeout: float) -> Any:
+def _load_json(url: str, timeout: float, *, allow_private_hosts: bool = False) -> Any:
     """Fetch and decode one JSON document.
 
     Kept module-level so tests can patch ``urllib.request.urlopen`` once,
@@ -287,8 +292,10 @@ def _load_json(url: str, timeout: float) -> Any:
 
     Raises:
         Exception: Whatever the transport raises; callers decide whether a
-            discovery document is optional.
+            discovery document is optional; :class:`OutboundRefused` when
+            the outbound address policy refuses the host.
     """
+    _outbound.screen_url(url, allow_private_hosts=allow_private_hosts)
     from urllib.request import urlopen
 
     with urlopen(url, timeout=timeout) as response:  # noqa: S310
@@ -300,6 +307,8 @@ def _post_form(
     fields: Mapping[str, str],
     timeout: float,
     headers: Mapping[str, str],
+    *,
+    allow_private_hosts: bool = False,
 ) -> Any:
     """POST an ``application/x-www-form-urlencoded`` body and decode JSON.
 
@@ -319,6 +328,7 @@ def _post_form(
     Raises:
         Exception: Whatever the transport or decoder raises.
     """
+    _outbound.screen_url(url, allow_private_hosts=allow_private_hosts)
     import urllib.request
 
     request = urllib.request.Request(
@@ -387,7 +397,7 @@ class _IntrospectionCache:
 
 
 def iter_authorization_server_metadata(
-    issuer: str, timeout: float
+    issuer: str, timeout: float, *, allow_private_hosts: bool = False
 ) -> Iterable[dict[str, Any]]:
     """Yield the issuer's authorization-server metadata documents.
 
@@ -399,7 +409,7 @@ def iter_authorization_server_metadata(
     """
     for url in _metadata_url_candidates(issuer):
         try:
-            document = _load_json(url, timeout)
+            document = _load_json(url, timeout, allow_private_hosts=allow_private_hosts)
         except Exception as exc:
             logger.info(f"OAuth metadata discovery from {url} failed: {exc}")
             continue
@@ -408,10 +418,13 @@ def iter_authorization_server_metadata(
 
 
 def fetch_authorization_server_metadata(
-    issuer: str, timeout: float
+    issuer: str, timeout: float, *, allow_private_hosts: bool = False
 ) -> dict[str, Any] | None:
     """Return the first usable authorization-server metadata document."""
-    return next(iter(iter_authorization_server_metadata(issuer, timeout)), None)
+    documents = iter_authorization_server_metadata(
+        issuer, timeout, allow_private_hosts=allow_private_hosts
+    )
+    return next(iter(documents), None)
 
 
 class _JwksCache:
@@ -423,8 +436,10 @@ class _JwksCache:
         ttl: float,
         timeout: float,
         cooldown: float = DEFAULT_REFRESH_COOLDOWN,
+        allow_private_hosts: bool = False,
     ) -> None:
         self._url = url
+        self._allow_private_hosts = allow_private_hosts
         self._ttl = ttl
         self._timeout = timeout
         self._cooldown = cooldown
@@ -438,7 +453,9 @@ class _JwksCache:
         import jwt
 
         self._last_attempt = time.monotonic()
-        document = _load_json(self._url, self._timeout)
+        document = _load_json(
+            self._url, self._timeout, allow_private_hosts=self._allow_private_hosts
+        )
         keys: dict[str, Any] = {}
         for jwk in document.get("keys", ()):
             kid = jwk.get("kid")
@@ -529,7 +546,9 @@ class OAuthTokenVerifier:
         reject a token by themselves; the caller falls back.
         """
         for document in iter_authorization_server_metadata(
-            self._settings.issuer, self._settings.timeout
+            self._settings.issuer,
+            self._settings.timeout,
+            allow_private_hosts=self._settings.allow_private_hosts,
         ):
             jwks_uri = document.get("jwks_uri")
             if isinstance(jwks_uri, str) and jwks_uri.strip():
@@ -559,6 +578,7 @@ class OAuthTokenVerifier:
                         self._settings.cache_ttl,
                         self._settings.timeout,
                         self._settings.refresh_cooldown,
+                        allow_private_hosts=self._settings.allow_private_hosts,
                     )
         return self._cache
 
@@ -648,6 +668,7 @@ class OAuthTokenVerifier:
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Authorization": f"Basic {encoded.decode('ascii')}",
             },
+            allow_private_hosts=self._settings.allow_private_hosts,
         )
         return isinstance(document, Mapping) and document.get("active") is True
 
@@ -909,6 +930,7 @@ def settings_from_args(
     introspection_optional = _config_bool(
         parsed, "oauth_introspection_optional", section
     )
+    allow_private_hosts = _config_bool(parsed, "oauth_allow_private_hosts", section)
     concurrency_claim = _config_text(parsed, "oauth_concurrency_claim", section)
     raw_client_limits = getattr(parsed, "oauth_client_concurrency", None) or []
     file_scope = section.get("scope")
@@ -931,6 +953,7 @@ def settings_from_args(
             or file_scope is not None
             or introspection_ttl is not None
             or introspection_optional
+            or allow_private_hosts
             or raw_client_limits
             or section.get("client_concurrency")
         ):
@@ -971,6 +994,7 @@ def settings_from_args(
         introspection_optional=bool(introspection_optional),
         concurrency_claim=concurrency_claim or DEFAULT_CONCURRENCY_CLAIM,
         client_max_concurrency=client_max_concurrency,
+        allow_private_hosts=bool(allow_private_hosts),
     )
 
 

@@ -121,7 +121,9 @@ class OpenAPIAuth:
         if authorization and token:
             return authorization, token, refresh
         for document in iter_authorization_server_metadata(
-            settings.issuer, settings.timeout
+            settings.issuer,
+            settings.timeout,
+            allow_private_hosts=settings.allow_private_hosts,
         ):
             authorization = authorization or _url_field(
                 document, "authorization_endpoint"
