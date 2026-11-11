@@ -365,11 +365,17 @@ fallback, and `toolregistry_server._vendor.jwt.BACKEND` reports which one is
 active. Without `libcrypto` each verification costs more CPU; the JWKS cache
 bounds the fetch, not the per-token check.
 
-An RSA modulus shorter than 2048 bits is refused, so a key of that size in the
-JWKS is skipped and tokens signed with it are rejected. PyJWT 2.13 warns about
-such a key but still verifies unless `enforce_minimum_key_length` is set, and
-earlier versions do not check it at all, so an identity provider with a
-1024-bit key worked before and does not now.
+An RSA modulus shorter than 2048 bits is refused: `key_from_jwk` raises, the
+key is left out of the JWKS cache, and every token signed with it is rejected.
+
+PyJWT behaved differently. Versions 2.12 and earlier applied no length check at
+all. Version 2.13 and later compare the modulus against `_MIN_KEY_SIZE = 2048`
+in `api_jws`, but by default only record an `InsecureKeyLengthWarning` and
+continue; the signature is refused only when the caller passes
+`options={"enforce_minimum_key_length": True}`, which this verifier never did.
+An identity provider signing with a 1024-bit key therefore verified before and
+does not now. Check the key in the issuer's JWKS and rotate it to at least
+2048 bits, or to an ES256 key.
 
 ### Callback allowlist, outbound screening and the panel flow
 
