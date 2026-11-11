@@ -922,9 +922,9 @@ class GatewayAdminExtension:
         from ...oauth.upstream.provider import OAuthClientError
 
         params = request.query_params
-        error = params.get("error")
-        code = params.get("code")
-        state = params.get("state")
+        error = _first_param(params, "error")
+        code = _first_param(params, "code")
+        state = _first_param(params, "state")
         if error:
             return _callback_page(400, f"The authorization server refused: {error}")
         if not code or not state:
@@ -1017,6 +1017,17 @@ class GatewayAdminExtension:
         filters = parse_filters(request.query_params)
         entries = select_entries(log.get_entries(), filters)
         return summarise(entries)
+
+
+def _first_param(params: Mapping[str, Any], name: str) -> str | None:
+    """Return the first value of a query parameter.
+
+    The admin server parses the query string into ``{key: [values]}``.
+    """
+    value = params.get(name)
+    if isinstance(value, (list, tuple)):
+        return str(value[0]) if value else None
+    return value
 
 
 def _callback_page(status: int, message: str) -> Any:

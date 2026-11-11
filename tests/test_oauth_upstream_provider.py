@@ -1276,6 +1276,9 @@ class _LockedStore:
     def clear(self, source_id):  # pragma: no cover - the read fails first
         raise AssertionError("clear must not run")
 
+    def acquire_refresh_lock(self, source_id, timeout=None):
+        return lambda: None
+
 
 def test_a_store_failure_is_a_typed_transient_error(store, clock):
     provider = _provider(_declaration(), FakeTransport(), _LockedStore(), clock)
