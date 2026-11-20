@@ -1,8 +1,11 @@
 # Label set for this repo — part of the shared taxonomy.
 # See dev-playbook/repo-setup/patterns/01-github-labels.md
 #
-# This file is the source of truth: change it here, then run
-#   sync-labels.sh Oaklight/toolregistry-server .github/labels.yml
+# This file mirrors the labels that exist on GitHub (checked with
+# `gh label list`).  Nothing in this repository reads it: the
+# `sync-labels.sh` script lives in dev-playbook, not here.  When you add or
+# change a label, create it on GitHub too (`gh label create <name> --color
+# <hex> --description "<text>"`, or `gh label edit`) and keep this file in step.
 # Never rename a label by deleting and recreating it — that strips the
 # label from every issue. Use: gh label edit <old> --name <new>
 
@@ -44,6 +47,19 @@
 - name: "pure-move"
   color: "57606A"
   description: "PR only moves code; runs the pure-move CI check"
+- name: "deferred"
+  color: "8c8c8c"
+  description: "Deliberately not scheduled; kept open as a design record"
+
+# === Automation labels — applied by workflows ===
+# `.github/workflows/upstream-compat.yml` files issues with `upstream-compat`
+# and `P1`.  Both exist on GitHub without a description.
+- name: "upstream-compat"
+  color: "ededed"
+  description: ""
+- name: "P1"
+  color: "ededed"
+  description: ""
 
 # === Priority labels — at most one per issue ===
 - name: "priority:critical"
