@@ -59,15 +59,20 @@ For a pure move, state the mechanical proof in the template: the summary of
 Reviewer assignment follows the path, not the author's choice. The repository
 has no `CODEOWNERS` file, so ask the maintainer (`@Oaklight`) to assign the
 reviewer for the area. The areas follow
-the repository's `area:*` labels (`.github/labels.yml`):
+the repository's `area:*` labels (`.github/labels.yml`). Every path below
+exists in the tree (checked with `git ls-files`).
 
 | Paths under `src/toolregistry_server/` | Area |
 | --- | --- |
 | `adapters/` | `area:adapters`: protocol adapters (MCP, OpenAPI) |
 | `route_table.py`, `registry_builder.py`, `session.py` | `area:routing`: route table, registry builder, session management |
-| `auth.py`, `identity.py`, `keystore.py`, `keys_cli.py`, `oauth/` | `area:auth`: authentication, identity, token verification. Security-relevant tier. |
+| `auth.py`, `identity.py`, `isolation.py`, `keystore.py`, `keys_cli.py`, `oauth/` | `area:auth`: authentication, identity, token verification. Security-relevant tier. |
+| `usage.py` | `area:auth`: per-key call counters that `keystore.py` persists. Reviewed with `keystore.py`. |
 | `cli.py`, `_config_file.py`, `app.py`, `banner.py` | `area:cli`: CLI, configuration, app bootstrap |
-| `gateway/`, `ext/` | Gateway and its admin extension (no `area:*` label) |
+| `source_manager.py` | `area:cli`: runtime tool-source list and config write-back. It changes the served tool set, so it takes the runtime-behaviour tier at least. |
+| `adapters/mcp/token_verifier.py`, `_vendor/jwt.py`, `regex_guard.py`, `scoped_discovery.py` | Security-relevant tier as well, whichever `area:*` label the PR carries. They decide who may call (MCP bearer verification, the JWT implementation behind it), what a tool may be called with (scope checks of `discover_tools` and `call_deferred`), and whether an untrusted OpenAPI pattern can stall the process (bounded regex execution). |
+| `_vendor/` | Vendored through zerodep (`_vendor/zerodep.lock.json`). Never edit in place: fix it upstream and re-vendor. |
+| `gateway/`, `ext/gateway/` | No `area:*` label exists for them. The maintainer reviews every PR that touches them. `gateway/admin.py`, `gateway/unix.py`, `gateway/endpoint.py` and the admin panel in `ext/gateway/` decide who can reach the gateway and its keys; ask the maintainer whether the change is security-relevant. |
 | `.github/`, `scripts/`, `Makefile`, `pyproject.toml`, `.pre-commit-config.yaml` | Build, CI, tooling |
 
 Any other path: ask the maintainer.
@@ -79,12 +84,17 @@ Before you open a PR, run the overlap check:
 ```bash
 python scripts/dev/pr_overlap.py            # current branch against origin/master
 python scripts/dev/pr_overlap.py --local    # also other local branches
-python scripts/dev/pr_overlap.py --fail-on-overlap   # exit 1 on overlap
+python scripts/dev/pr_overlap.py --fail-on-overlap   # gate: 1 overlap, 2 unverified
 ```
 
-It lists every open PR that touches the same files. It needs the `gh` CLI and
-always exits 0 unless you pass `--fail-on-overlap`. When `gh` or git fails, it
-says the overlap is unverified and still exits 0.
+It lists every open PR that touches the same files, and leaves out the PR of
+the branch itself (matched by branch name, by head commit, or by
+`$GITHUB_HEAD_REF`), so `--head HEAD` or a SHA works in a detached checkout. It
+needs the `gh` CLI and exits 0 unless you pass `--fail-on-overlap`. That gate
+exits 1 on overlap and 2 when the check could not complete (`gh` missing or
+failing, bad output, or 200 open PRs so the list may be truncated); a gate does
+not pass on a check that did not finish. The base is `origin/master`; pass
+`--base` for another one.
 
 If a PR overlaps, merge a series one PR at a time and rebase the rest after
 each merge.
