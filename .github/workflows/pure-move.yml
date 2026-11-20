@@ -1,27 +1,31 @@
 name: Pure move
 
 # A PR labelled `pure-move` claims that it only moves code.  Reviewers cannot
-# see a dropped `@classmethod` in a large move, so this job compares every def,
-# method and class-level assignment of the changed files by AST between the PR
-# base and the PR head, and fails on a def that is missing or moved with a
-# difference.  An accepted difference goes in `.github/pure-move-allow.txt`
-# (`qualified.name  reason`, one per line).
+# see a dropped `@classmethod` in a large move, so this workflow compares every
+# def, method and class-level assignment of the changed files by AST between the
+# PR base and the PR head and fails on a def that is missing or moved with a
+# difference.
 #
 # The check is opt-in by label.  It is not tied to `refactor` titles because a
-# `refactor:` PR in this repository may change behaviour on purpose.  This is
-# a separate workflow, not a job in `ci.yml`, so that adding or removing the
-# label re-runs only this check and not the lint and test matrix.
-
+# `refactor:` PR in this repository may change behaviour on purpose.
+#
+# It is its own workflow because it must also run when a PR is labelled or
+# unlabelled after it was opened: with the default `pull_request` types a
+# `pure-move` label added later starts no run.  Giving the main CI workflow
+# those types would re-run every job on each label change.
 on:
   pull_request:
     branches: [master]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
 
 permissions:
   contents: read
 
 jobs:
   pure-move:
+    # While this job is skipped for an unlabelled PR, GitHub reports the skipped
+    # check as a success.  If `Pure move` is ever made a required check, a PR
+    # that fails the check can be merged by removing the label.
     if: contains(github.event.pull_request.labels.*.name, 'pure-move')
     runs-on: ubuntu-latest
     steps:
@@ -30,21 +34,31 @@ jobs:
           # The tool needs the merge base of the PR and its base branch.
           fetch-depth: 0
 
-      - name: Set up Python 3.12
+      # 3.10 is the floor of `requires-python` and runs in the CI matrix.
+      - name: Set up Python 3.10
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.10"
 
       - name: Check that the PR is a pure move
-        # `shell: bash` runs `bash -eo pipefail`, so the tool's exit status
-        # survives the `| tee`; the default shell has no `pipefail`.
+        # `shell: bash` is an explicit pin: it runs `bash -eo pipefail`, so the
+        # exit status of `check_move.py | tee` does not depend on the runner's
+        # default shell.
         shell: bash
         env:
           BASE_REF: origin/${{ github.base_ref }}
         run: |
           args=()
-          if [ -f .github/pure-move-allow.txt ]; then
-            args+=(--allow .github/pure-move-allow.txt)
+          # Accepted differences are read from the BASE branch.  A PR that
+          # needs an exemption must land it first, in review; the head cannot
+          # grant itself one.
+          if git cat-file -e "$BASE_REF:.github/pure-move-allow.txt" 2>/dev/null; then
+            git show "$BASE_REF:.github/pure-move-allow.txt" > "$RUNNER_TEMP/pure-move-allow.txt"
+            args+=(--allow "$RUNNER_TEMP/pure-move-allow.txt")
+          fi
+          if [ -f .github/pure-move-allow.txt ] \
+            && ! git diff --quiet "$BASE_REF" HEAD -- .github/pure-move-allow.txt; then
+            echo "::warning file=.github/pure-move-allow.txt::This PR changes the allow-file; the base branch's copy is used, so the change has no effect on this run."
           fi
           python scripts/dev/check_move.py "$BASE_REF" HEAD "${args[@]}" --markdown \
             | tee -a "$GITHUB_STEP_SUMMARY"

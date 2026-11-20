@@ -66,20 +66,45 @@ class), including decorators, arguments, annotations, body and docstring.
 Comments and formatting are ignored. Files under `_vendor/` are skipped. It
 exits nonzero on a def that is `missing` or `moved-with-diff`. It also fails on
 a changed census of `@staticmethod`, `@classmethod` and `@property` decorators
-over the changed files, and on `undefined-global`: a moved function that reads
-a module-level name (a lost `logger` or constant) its new module does not
-define. Added `if TYPE_CHECKING:` stubs, a module-level import of a name that
-used to be imported inside the function, and `getLogger(__name__)` becoming
+over the changed files (only defs matched between base and head count, so a
+split that adds a decorated helper passes, while a decorator dropped from a
+moved def fails), and on `undefined-global`: a moved function that reads a
+module-level name (a lost `logger` or constant) its new module does not define.
+Added `if TYPE_CHECKING:` stubs, a module-level import of a name that used to be
+imported inside the function, and `getLogger(__name__)` becoming
 `getLogger("<old module name>")` are reported but do not fail.
 
-Record an intended difference with a reason in a file of `qualified.name  reason`
-lines and pass it with `--allow FILE` (use `undefined-global:<name>` or
-`decorator-census:<decorator>` for those two checks).
+Record an intended difference with a reason in a file of
+`path::qualified.name  reason` lines and pass it with `--allow FILE`. The path
+is the repo-relative file of the def; for a def that moved between files, the
+head or the base path both work. Use `undefined-global:<head path>::<name>` and
+`decorator-census:<decorator>` for those two checks, with the decorator name as
+the report prints it in `(allow entry: ...)`, for example
+`decorator-census:property` (`decorator-census:@property` is accepted too); the
+census counts across all files, so that entry is not tied to a path. A bare
+`qualified.name` is rejected, because it would excuse the name in every file.
 
 CI runs the same check, as the `Pure move` workflow, on pull requests that
-carry the `pure-move` label, and reads `.github/pure-move-allow.txt` when it
-exists. Apply the label only to a PR you claim is a pure move. A `refactor:`
-PR that changes behaviour on purpose does not get the label.
+carry the `pure-move` label, including when the label is added or removed after
+the PR was opened. The workflow reads `.github/pure-move-allow.txt` from the
+**base branch**, so a PR cannot exempt itself: land the allow-file entry first,
+in its own reviewed change. Apply the label only to a PR you claim is a pure
+move. A `refactor:` PR that changes behaviour on purpose does not get the
+label.
+
+The label is defined in `.github/labels.yml`, but that file does not create it.
+A maintainer creates it once:
+
+```bash
+gh label create pure-move --color 57606A \
+  --description "PR only moves code; runs the pure-move CI check"
+```
+
+The job runs only when the label is present. GitHub counts a job that its `if:`
+skips as a success. If `Pure move` is ever added to the required checks, a PR
+that fails the check can still merge once someone removes the label. To make the
+claim binding, run the job on every PR and have it `exit 0` explicitly when the
+label is absent.
 
 ## License
 
