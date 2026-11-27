@@ -65,6 +65,9 @@ const STRINGS = {
         'gw.keys.expired': 'Expired',
         'gw.keys.revoked': 'Revoked',
         'gw.keys.never': 'Never',
+        'gw.keys.empty': 'No client keys yet.',
+        'gw.keys.unconfigured': 'No client key store is configured.',
+        'gw.keys.unconfiguredHint': 'Start the gateway with --keys-db PATH to create and revoke client keys here.',
         'gw.keys.created.title': 'Key created',
         'gw.keys.created.hint': 'Store this secret now. It is not shown again and cannot be recovered.',
         'gw.keys.rotated.title': 'Key rotated',
@@ -80,6 +83,7 @@ const STRINGS = {
         'gw.clients.calls': 'Calls',
         'gw.clients.errors': 'Errors',
         'gw.clients.active': 'Active',
+        'gw.clients.empty': 'No client has called this gateway since it started.',
         'gw.clients.queued': 'Queued',
 
         'gw.frontends.title': 'Frontends',
@@ -196,6 +200,8 @@ const STRINGS = {
         'gw.logs.avg': 'Average duration',
         'gw.logs.total': 'Entries',
         'gw.logs.byKey': 'By principal',
+        'gw.logs.unconfigured': 'Execution logging is off.',
+        'gw.logs.unconfiguredHint': 'Start the gateway with --execution-log to record calls and show them here.',
     },
     zh: {
         'gw.tab.keys': '密钥',
@@ -254,6 +260,9 @@ const STRINGS = {
         'gw.keys.expired': '已过期',
         'gw.keys.revoked': '已撤销',
         'gw.keys.never': '永不',
+        'gw.keys.empty': '还没有客户端密钥。',
+        'gw.keys.unconfigured': '未配置客户端密钥库。',
+        'gw.keys.unconfiguredHint': '使用 --keys-db PATH 启动网关后，才能在这里创建和撤销客户端密钥。',
         'gw.keys.created.title': '密钥已创建',
         'gw.keys.created.hint': '请立即保存此密钥。它不会再次显示，也无法找回。',
         'gw.keys.rotated.title': '密钥已轮换',
@@ -269,6 +278,7 @@ const STRINGS = {
         'gw.clients.calls': '调用',
         'gw.clients.errors': '错误',
         'gw.clients.active': '进行中',
+        'gw.clients.empty': '网关启动以来还没有客户端发起调用。',
         'gw.clients.queued': '排队',
 
         'gw.frontends.title': '前端',
@@ -385,6 +395,8 @@ const STRINGS = {
         'gw.logs.avg': '平均耗时',
         'gw.logs.total': '记录数',
         'gw.logs.byKey': '按主体统计',
+        'gw.logs.unconfigured': '执行日志未开启。',
+        'gw.logs.unconfiguredHint': '使用 --execution-log 启动网关后，调用会被记录并显示在这里。',
     },
 };
 
@@ -420,7 +432,12 @@ let onLanguageChange = null;
 
 function T(key, params) {
     const table = STRINGS[state.lang] || STRINGS.en;
-    let text = table[key] || STRINGS.en[key] || key;
+    // Two column headers are deliberately empty.  `||` would read that as a
+    // missing entry and print the key itself, which is what the page showed
+    // before: a header reading GW.KEYS.ACTIONS.
+    const has = (source, name) => Object.prototype.hasOwnProperty.call(source, name);
+    let text = has(table, key) ? table[key]
+        : has(STRINGS.en, key) ? STRINGS.en[key] : key;
     if (params) {
         for (const [name, value] of Object.entries(params)) {
             text = text.replace('{' + name + '}', String(value));
@@ -482,8 +499,21 @@ async function call(method, path, body) {
         if (body === undefined) return await client[method](path);
         return await client[method](path, body);
     } catch (error) {
-        throw new Error(T('gw.error', { message: error.message || String(error) }));
+        const wrapped = new Error(T('gw.error', { message: error.message || String(error) }));
+        // A 503 means the feature this page drives is not configured; the
+        // caller explains the switch instead of showing a failed request.
+        wrapped.status = error.status;
+        throw wrapped;
     }
+}
+
+// A page whose feature is not configured explains the switch that turns it on
+// instead of echoing the server's refusal.
+function unconfigured(titleKey, hintKey) {
+    return el('div', { class: 'gw-empty gw-unconfigured' }, [
+        el('p', { class: 'gw-empty-title', text: T(titleKey) }),
+        el('p', { class: 'gw-hint', text: T(hintKey) }),
+    ]);
 }
 
 function formatTime(value) {
@@ -785,12 +815,12 @@ function renderKeys() {
                 text: usage.last_success_at ? formatTime(usage.last_success_at) : '—',
             }),
             el('td', {}, [pill(status.label, status.kind)]),
-            el('td', {}, actions),
+            el('td', { class: 'gw-actions-cell' }, actions),
         ]);
     });
 
     body.push(
-        table(
+        rows.length ? table(
             [
                 'gw.keys.label',
                 'gw.keys.scopes',
@@ -804,7 +834,7 @@ function renderKeys() {
                 'gw.keys.actions',
             ],
             rows,
-        ),
+        ) : el('p', { class: 'gw-empty', text: T('gw.keys.empty') }),
     );
 
     body.push(
@@ -815,6 +845,7 @@ function renderKeys() {
                 createKey(event.currentTarget);
             },
         }, [
+            el('h4', { text: T('gw.keys.create') }),
             el('label', { class: 'gw-field' }, [
                 el('span', { text: T('gw.keys.label') }),
                 el('input', { name: 'label', required: 'required', autocomplete: 'off' }),
@@ -876,6 +907,11 @@ async function loadKeys() {
         }
         renderKeys();
     } catch (error) {
+        if (error.status === 503) {
+            host.replaceChildren(unconfigured(
+                'gw.keys.unconfigured', 'gw.keys.unconfiguredHint'));
+            return;
+        }
         host.replaceChildren(message(error.message, 'error'));
     }
 }
@@ -1077,7 +1113,7 @@ function renderClients() {
                 text: T('gw.refresh'),
                 onclick: () => loadClients(),
             }),
-        ], table(
+        ], state.clients.length ? table(
             [
                 'gw.clients.client',
                 'gw.clients.key',
@@ -1088,7 +1124,7 @@ function renderClients() {
                 'gw.clients.queued',
             ],
             rows,
-        )),
+        ) : el('p', { class: 'gw-empty', text: T('gw.clients.empty') })),
     );
 }
 
@@ -1208,7 +1244,7 @@ function renderSources() {
         const actions = [];
         if (record.kind === 'openapi') {
             actions.push(el('button', {
-                class: 'gw-btn',
+                class: 'gw-btn gw-btn-small',
                 type: 'button',
                 text: T('gw.sources.refreshSpec'),
                 onclick: () => refreshSource(record.id),
@@ -1216,7 +1252,7 @@ function renderSources() {
         }
         if (status.kind === 'failed') {
             actions.push(el('button', {
-                class: 'gw-btn',
+                class: 'gw-btn gw-btn-small',
                 type: 'button',
                 text: T('gw.sources.retry'),
                 onclick: () => retrySource(record.id),
@@ -1224,26 +1260,26 @@ function renderSources() {
         }
         if (record.reauth_required) {
             actions.push(el('button', {
-                class: 'gw-btn',
+                class: 'gw-btn gw-btn-small',
                 type: 'button',
                 text: T('gw.sources.authorize'),
                 onclick: () => authorizeSource(record.id),
             }));
         }
         actions.push(el('button', {
-            class: 'gw-btn',
+            class: 'gw-btn gw-btn-small',
             type: 'button',
             text: T('gw.sources.edit'),
             onclick: () => editSource(record.id),
         }));
         actions.push(el('button', {
-            class: 'gw-btn',
+            class: 'gw-btn gw-btn-small',
             type: 'button',
             text: T('gw.sources.test'),
             onclick: () => testSource(record.id),
         }));
         actions.push(el('button', {
-            class: 'gw-btn',
+            class: 'gw-btn gw-btn-small',
             type: 'button',
             text: state.sourceExpanded === record.id
                 ? T('gw.sources.hideTools')
@@ -1251,7 +1287,7 @@ function renderSources() {
             onclick: () => toggleSourceTools(record.id),
         }));
         actions.push(el('button', {
-            class: 'gw-btn gw-btn-danger',
+            class: 'gw-btn gw-btn-small gw-btn-danger',
             type: 'button',
             text: T('gw.sources.remove'),
             onclick: () => removeSource(record),
@@ -1264,7 +1300,7 @@ function renderSources() {
             el('td', { text: (counts.enabled ?? 0) + '/' + (counts.total ?? 0) }),
             el('td', {}, [pill(status.label, status.kind)]),
             el('td', { class: 'gw-error-cell', text: record.last_error || '' }),
-            el('td', {}, actions),
+            el('td', { class: 'gw-actions-cell' }, actions),
         ]));
         if (state.sourceExpanded === record.id) {
             rows.push(el('tr', {}, [
@@ -1276,7 +1312,7 @@ function renderSources() {
     host.appendChild(
         section('gw.sources.title', 'gw.sources.hint', [
             el('button', {
-                class: 'gw-btn',
+                class: 'gw-btn gw-btn-small',
                 type: 'button',
                 text: T('gw.refresh'),
                 onclick: () => loadSources(),
@@ -1971,6 +2007,11 @@ async function loadLogs() {
         state.logStats = stats;
         renderLogs();
     } catch (error) {
+        if (error.status === 503) {
+            host.replaceChildren(unconfigured(
+                'gw.logs.unconfigured', 'gw.logs.unconfiguredHint'));
+            return;
+        }
         host.replaceChildren(message(error.message, 'error'));
     }
 }

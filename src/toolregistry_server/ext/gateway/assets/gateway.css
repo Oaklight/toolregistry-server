@@ -7,12 +7,17 @@
  */
 
 .ext-container[data-ext-name="gateway"] {
-    --gw-line: var(--border-color, #d8dbe0);
+    /* The panel's own tokens first: a page that falls back to its own palette
+       keeps yesterday's colours when the operator switches scheme or mode.
+       The hex values are the fallback for a shell that predates the tokens. */
+    --gw-line: var(--border, #d8dbe0);
     --gw-muted: var(--text-secondary, #6b7280);
-    --gw-accent: var(--accent-color, #2563eb);
-    --gw-ok: var(--success-color, #0a7d43);
-    --gw-warn: var(--warning-color, #a15c00);
-    --gw-bad: var(--danger-color, #b42318);
+    --gw-accent: var(--accent, #2563eb);
+    --gw-accent-hover: var(--accent-hover, var(--accent, #1d4ed8));
+    --gw-on-accent: var(--on-accent, #fff);
+    --gw-ok: var(--tag-green, #0a7d43);
+    --gw-warn: var(--warning, var(--tag-amber, #a15c00));
+    --gw-bad: var(--tag-red, #b42318);
     font-size: 14px;
 }
 
@@ -72,6 +77,10 @@
 .ext-container[data-ext-name="gateway"] .gw-table {
     width: 100%;
     border-collapse: collapse;
+    /* The shell lays every table out with fixed columns, which fits its own
+       uniform grids.  These tables have a wide text column and a narrow
+       actions column, and fixed layout gave them all the same width. */
+    table-layout: auto;
 }
 
 .ext-container[data-ext-name="gateway"] .gw-table th,
@@ -91,6 +100,38 @@
 .ext-container[data-ext-name="gateway"] .gw-empty {
     color: var(--gw-muted);
     padding: 12px 0;
+}
+
+/* A page whose feature is not configured: a titled statement and the switch
+   that turns it on, not a failed-request banner. */
+.ext-container[data-ext-name="gateway"] .gw-unconfigured {
+    padding: 24px 0 12px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-empty-title {
+    margin: 0 0 4px;
+    color: var(--text-primary, inherit);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+/* Row actions are one group that hugs the right edge.  Forcing nowrap made
+   the whole table wider than its container, which clipped the last button
+   behind a scrollbar; a wrapping group folds instead, and only when the row
+   really is too narrow. */
+.ext-container[data-ext-name="gateway"] .gw-actions-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+    /* Auto table layout hands a content-sized column the minimum it needs,
+       which folded the group onto two lines while the columns beside it kept
+       their slack.  The buttons need this much, so ask for it. */
+    min-width: 230px;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-actions-cell > .gw-btn {
+    margin: 0;
 }
 
 .ext-container[data-ext-name="gateway"] .gw-mono {
@@ -116,7 +157,12 @@
 .ext-container[data-ext-name="gateway"] .gw-btn-primary {
     background: var(--gw-accent);
     border-color: var(--gw-accent);
-    color: #fff;
+    color: var(--gw-on-accent);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-btn-primary:hover {
+    background: var(--gw-accent-hover);
+    border-color: var(--gw-accent-hover);
 }
 
 .ext-container[data-ext-name="gateway"] .gw-btn-danger {
@@ -196,22 +242,33 @@
     color: var(--gw-bad);
 }
 
+/* A grid, not a wrapping flex row: with mixed field heights a flex row
+   staggered the controls, and the hint under one field pushed the next field
+   in the same row down.  Every cell starts at the same line. */
 .ext-container[data-ext-name="gateway"] .gw-form {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: flex-end;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px 16px;
+    align-items: start;
     margin-top: 18px;
     padding-top: 16px;
     border-top: 1px solid var(--gw-line);
+}
+
+.ext-container[data-ext-name="gateway"] .gw-form > h4 {
+    grid-column: 1 / -1;
+    margin: 0;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-form > .gw-actions {
+    grid-column: 1 / -1;
 }
 
 .ext-container[data-ext-name="gateway"] .gw-field {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    min-width: 160px;
-    flex: 1 1 160px;
+    min-width: 0;
 }
 
 .ext-container[data-ext-name="gateway"] .gw-field input,
@@ -221,9 +278,27 @@
     padding: 7px 9px;
     border: 1px solid var(--gw-line);
     border-radius: 6px;
-    background: transparent;
-    color: inherit;
+    background: var(--bg-primary, transparent);
+    color: var(--text-primary, inherit);
     font: inherit;
+}
+
+.ext-container[data-ext-name="gateway"] .gw-field input:focus,
+.ext-container[data-ext-name="gateway"] .gw-field select:focus,
+.ext-container[data-ext-name="gateway"] .gw-field textarea:focus,
+.ext-container[data-ext-name="gateway"] .gw-input-path:focus {
+    outline: none;
+    border-color: var(--gw-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--gw-accent) 20%, transparent);
+}
+
+/* The browser's default checkbox is a different blue from every other
+   control on the page. */
+.ext-container[data-ext-name="gateway"] .gw-field input[type="checkbox"],
+.ext-container[data-ext-name="gateway"] .gw-table input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--gw-accent);
 }
 
 .ext-container[data-ext-name="gateway"] .gw-input-path {

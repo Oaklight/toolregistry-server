@@ -1014,7 +1014,13 @@ class GatewayAdminExtension:
         getter = getattr(registry, "get_execution_log", None)
         log = getter() if getter is not None else None
         if log is None:
-            raise _BadRequest("execution logging is not enabled")
+            # The page exists even when the log is off, and 503 is what the
+            # panel reads as "this feature is not configured" rather than a
+            # failed request it should report as an error.
+            raise _Unavailable(
+                "execution logging is not enabled; start the gateway with "
+                "--execution-log to record calls"
+            )
         return log
 
     @_guard

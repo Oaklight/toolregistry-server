@@ -259,10 +259,13 @@ def _stats(info: Any, query: str = "") -> dict[str, Any]:
 
 
 class TestLogFilters:
-    def test_logging_disabled_is_a_400(self, panel) -> None:
+    def test_logging_disabled_is_unavailable(self, panel) -> None:
+        # 503, not 400: the page reads 503 as "this feature is not configured"
+        # and points at --execution-log instead of reporting a failed request.
         status, payload = _logs(panel)
-        assert status == 400
+        assert status == 503
         assert "not enabled" in payload["message"]
+        assert "--execution-log" in payload["message"]
 
     def test_each_entry_carries_its_principal(self, registry, panel) -> None:
         _seed_log(registry)
